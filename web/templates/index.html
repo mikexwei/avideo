@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AVideo</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" />
+  <style>
+    body { background: #0f0f0f; color: #e5e5e5; }
+    .card-hover { transition: transform .2s, box-shadow .2s; }
+    .card-hover:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,.6); }
+    .cover-img { aspect-ratio: 16/9; object-fit: cover; background: #1a1a1a; }
+    .tag-pill { display: inline-block; background: #1f2937; border-radius: 4px; padding: 2px 8px; font-size: .75rem; margin: 2px; cursor: pointer; }
+    .tag-pill:hover { background: #374151; }
+    .score-badge { background: linear-gradient(135deg, #f59e0b, #d97706); }
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #1a1a1a; } ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+    .fade-enter-active, .fade-leave-active { transition: opacity .15s; }
+    .fade-enter-from, .fade-leave-to { opacity: 0; }
+  </style>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- ========== VideoCard ========== -->
+<script type="text/x-template" id="tpl-video-card">
+  <div class="card-hover cursor-pointer rounded-lg overflow-hidden bg-gray-900" @click="go">
+    <div class="relative">
+      <img v-if="video.cover_path" :src="'/static/' + video.cover_path" class="cover-img w-full" loading="lazy" @error="imgErr" />
+      <div v-else class="cover-img w-full flex items-center justify-center text-gray-600 text-sm">无封面</div>
+      <span v-if="video.score" class="score-badge absolute top-2 right-2 text-white text-xs font-bold px-2 py-0.5 rounded">
+        {{ video.score.toFixed(1) }}
+      </span>
+    </div>
+    <div class="p-2">
+      <div class="text-xs text-indigo-400 font-mono mb-1">{{ video.code }}</div>
+      <div class="text-sm leading-snug line-clamp-2 text-gray-200">{{ video.title_zh || video.title_jp || '暂无标题' }}</div>
+      <div v-if="video.release_date" class="text-xs text-gray-500 mt-1">{{ video.release_date }}</div>
+    </div>
+  </div>
+</script>
+
+<!-- ========== Pagination ========== -->
+<script type="text/x-template" id="tpl-pagination">
+  <div class="flex items-center gap-2 justify-center mt-8" v-if="totalPages > 1">
+    <button @click="$emit('change', page - 1)" :disabled="page <= 1"
+      class="px-3 py-1 rounded bg-gray-800 disabled:opacity-30 hover:bg-gray-700 text-sm">«</button>
+    <template v-for="p in pages" :key="p">
+      <span v-if="p === '...'" class="text-gray-500 px-1">…</span>
+      <button v-else @click="$emit('change', p)"
+        :class="['px-3 py-1 rounded text-sm', p === page ? 'bg-indigo-600 text-white' : 'bg-gray-800 hover:bg-gray-700']">{{ p }}</button>
+    </template>
+    <button @click="$emit('change', page + 1)" :disabled="page >= totalPages"
+      class="px-3 py-1 rounded bg-gray-800 disabled:opacity-30 hover:bg-gray-700 text-sm">»</button>
+    <span class="text-gray-500 text-sm ml-2">{{ total }} 部</span>
+  </div>
+</script>
+
+<!-- ========== HomeView ========== -->
+<script type="text/x-template" id="tpl-home">
+  <div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+        <video-card v-for="v in items" :key="v.id" :video="v" />
+      </div>
+      <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
+    </div>
+  </div>
+</script>
+
+<!-- ========== SearchView ========== -->
+<script type="text/x-template" id="tpl-search">
+  <div>
+    <div class="text-gray-400 mb-4 text-sm" v-if="!loading">
+      「{{ q }}」共 {{ total }} 条结果
+    </div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">搜索中…</div>
+    <div v-else-if="items.length === 0" class="text-center py-20 text-gray-500">无结果</div>
+    <div v-else>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+        <video-card v-for="v in items" :key="v.id" :video="v" />
+      </div>
+      <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
+    </div>
+  </div>
+</script>
+
+<!-- ========== VideoDetail ========== -->
+<script type="text/x-template" id="tpl-video-detail">
+  <div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else-if="!video" class="text-center py-20 text-gray-500">未找到该番号</div>
+    <div v-else class="max-w-5xl mx-auto">
+      <!-- Back + Edit toggle -->
+      <div class="flex items-center justify-between mb-4">
+        <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm">← 返回</button>
+        <div class="flex gap-2">
+          <template v-if="!editing">
+            <button @click="startEdit" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200">编辑</button>
+          </template>
+          <template v-else>
+            <button @click="saveEdit" :disabled="saving"
+              class="px-3 py-1 text-sm rounded bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50">
+              {{ saving ? '保存中…' : '保存' }}
+            </button>
+            <button @click="cancelEdit" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200">取消</button>
+          </template>
+        </div>
+      </div>
+
+      <div class="flex flex-col md:flex-row gap-6">
+        <!-- Cover -->
+        <div class="md:w-80 flex-shrink-0">
+          <img v-if="video.cover_path" :src="'/static/' + video.cover_path" class="w-full rounded-lg" @error="imgErr" />
+          <div v-else class="w-full h-48 bg-gray-800 rounded-lg flex items-center justify-center text-gray-600">无封面</div>
+        </div>
+
+        <!-- Info -->
+        <div class="flex-1 min-w-0">
+          <div class="flex items-start gap-3 mb-3">
+            <span class="font-mono text-indigo-400 text-lg font-bold">{{ video.code }}</span>
+            <span v-if="!editing && video.score" class="score-badge text-white text-sm font-bold px-2 py-0.5 rounded self-start">{{ Number(video.score).toFixed(1) }}</span>
+          </div>
+
+          <!-- View mode -->
+          <template v-if="!editing">
+            <h1 class="text-lg font-semibold leading-snug mb-1">{{ video.title_zh || video.title_jp }}</h1>
+            <p v-if="video.title_zh && video.title_jp" class="text-sm text-gray-500 mb-3">{{ video.title_jp }}</p>
+            <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4">
+              <template v-for="(val, label) in meta" :key="label">
+                <template v-if="val">
+                  <dt class="text-gray-500">{{ label }}</dt>
+                  <dd class="text-gray-200 truncate">{{ val }}</dd>
+                </template>
+              </template>
+            </dl>
+          </template>
+
+          <!-- Edit mode -->
+          <template v-else>
+            <div class="grid grid-cols-1 gap-3 mb-4">
+              <div v-for="f in editFields" :key="f.key" class="relative">
+                <label class="block text-xs text-gray-500 mb-1">{{ f.label }}</label>
+                <input v-model="form[f.key]" :type="f.type || 'text'" :step="f.step"
+                  @input="f.key === 'series' ? onSeriesInput() : null"
+                  @blur="f.key === 'series' ? closeSeriesDropdown() : null"
+                  @focus="f.key === 'series' && form[f.key] ? onSeriesInput() : null"
+                  class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
+                <ul v-if="f.key === 'series' && seriesSuggestions.length"
+                  class="absolute z-50 left-0 right-0 bg-gray-800 border border-gray-600 rounded mt-1 max-h-48 overflow-y-auto shadow-xl">
+                  <li v-for="s in seriesSuggestions" :key="s"
+                    @mousedown.prevent="pickSeries(s)"
+                    class="px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 cursor-pointer">{{ s }}</li>
+                </ul>
+              </div>
+            </div>
+            <p v-if="saveError" class="text-red-400 text-sm mb-3">{{ saveError }}</p>
+          </template>
+
+          <!-- Actors -->
+          <div class="mb-3">
+            <div class="text-gray-500 text-sm mb-1">演员</div>
+            <template v-if="!editing">
+              <div class="flex flex-wrap gap-2">
+                <router-link v-for="a in video.actors" :key="a.id" :to="'/actor/' + a.id"
+                  class="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 rounded-full px-2 py-1 text-sm transition">
+                  <img v-if="a.avatar_path" :src="'/static/' + a.avatar_path" class="w-6 h-6 rounded-full object-cover" @error="imgErr" />
+                  <span class="w-6 h-6 rounded-full bg-gray-600 flex items-center justify-center text-xs" v-else>?</span>
+                  <span>{{ a.name_zh || a.name }}</span>
+                </router-link>
+              </div>
+            </template>
+            <template v-else>
+              <div class="flex flex-wrap gap-2 mb-2">
+                <span v-for="(a, i) in form.actors" :key="a.name"
+                  class="flex items-center gap-1 bg-gray-700 rounded-full px-2 py-1 text-sm">
+                  {{ a.name_zh || a.name }}
+                  <button @click="removeActor(i)" class="text-gray-400 hover:text-red-400 ml-1 leading-none">×</button>
+                </span>
+              </div>
+              <div class="relative">
+                <input v-model="form.newActor" @input="onActorInput" @blur="closeActorDropdown"
+                  @keydown.enter.prevent="addActorFromInput"
+                  placeholder="输入中文或日文演员名搜索…"
+                  class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
+                <ul v-if="actorSuggestions.length"
+                  class="absolute z-50 left-0 right-0 bg-gray-800 border border-gray-600 rounded mt-1 max-h-48 overflow-y-auto shadow-xl">
+                  <li v-for="a in actorSuggestions" :key="a.id"
+                    @mousedown.prevent="pickActor(a)"
+                    class="flex items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 cursor-pointer">
+                    <img v-if="a.avatar_path" :src="'/static/' + a.avatar_path" class="w-6 h-6 rounded-full object-cover" @error="imgErr" />
+                    <span class="w-6 h-6 rounded-full bg-gray-600 flex items-center justify-center text-xs flex-shrink-0" v-else>?</span>
+                    <span>{{ a.name_zh || a.name }}</span>
+                    <span v-if="a.name_zh" class="text-gray-500 text-xs">{{ a.name }}</span>
+                  </li>
+                </ul>
+              </div>
+            </template>
+          </div>
+
+          <!-- Tags -->
+          <div class="mb-4">
+            <div class="text-gray-500 text-sm mb-1">标签</div>
+            <template v-if="!editing">
+              <div class="flex flex-wrap">
+                <router-link v-for="t in video.tags" :key="t.id" :to="'/tag/' + t.id" class="tag-pill text-gray-300 hover:text-white">{{ t.name }}</router-link>
+              </div>
+            </template>
+            <template v-else>
+              <div class="flex flex-wrap gap-2 mb-2">
+                <span v-for="(t, i) in form.tags" :key="t.name"
+                  class="flex items-center gap-1 bg-gray-700 rounded px-2 py-1 text-sm">
+                  {{ t.name }}
+                  <button @click="removeTag(i)" class="text-gray-400 hover:text-red-400 ml-1 leading-none">×</button>
+                </span>
+              </div>
+              <div class="flex gap-2">
+                <input v-model="form.newTag" @keydown.enter.prevent="addTag" placeholder="输入标签名后 Enter"
+                  class="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
+                <button @click="addTag" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600">添加</button>
+              </div>
+            </template>
+          </div>
+
+          <!-- File paths -->
+          <div v-if="fileParts.length" class="mt-2">
+            <div class="text-gray-500 text-sm mb-1">本地文件</div>
+            <div v-for="(f, i) in fileParts" :key="i"
+              class="flex items-center gap-2 bg-gray-800 rounded px-3 py-2 mb-1 group">
+              <span v-if="f.part" class="text-xs text-indigo-400 font-mono w-12 flex-shrink-0">{{ f.part }}</span>
+              <span class="text-xs text-gray-400 font-mono truncate flex-1">{{ f.path }}</span>
+              <button @click="copy(f.path)"
+                class="text-xs text-gray-500 hover:text-white flex-shrink-0 opacity-0 group-hover:opacity-100 transition">复制</button>
+            </div>
+          </div>
+
+          <!-- File meta -->
+          <div v-if="video.file_size" class="mt-2 text-xs text-gray-600 flex gap-4">
+            <span>{{ formatSize(video.file_size) }}</span>
+            <span v-if="video.file_mtime">修改 {{ video.file_mtime.slice(0,10) }}</span>
+            <span v-if="video.file_birthtime">创建 {{ video.file_birthtime.slice(0,10) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</script>
+
+<!-- ========== ActorView ========== -->
+<script type="text/x-template" id="tpl-actor">
+  <div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else-if="!data" class="text-center py-20 text-gray-500">未找到该演员</div>
+    <div v-else>
+      <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm mb-4">← 返回</button>
+      <div class="flex items-center gap-4 mb-6">
+        <img v-if="data.actor.avatar_path" :src="'/static/' + data.actor.avatar_path"
+          class="w-20 h-20 rounded-full object-cover ring-2 ring-indigo-500" @error="imgErr" />
+        <div class="w-20 h-20 rounded-full bg-gray-700 flex items-center justify-center text-2xl" v-else>?</div>
+        <div>
+          <h1 class="text-xl font-bold">{{ data.actor.name_zh || data.actor.name }}</h1>
+          <p v-if="data.actor.name_zh" class="text-gray-500 text-sm">{{ data.actor.name }}</p>
+          <p class="text-gray-500 text-sm mt-1">{{ data.videos.length }} 部作品</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+        <video-card v-for="v in data.videos" :key="v.id" :video="v" />
+      </div>
+    </div>
+  </div>
+</script>
+
+<!-- ========== TagView ========== -->
+<script type="text/x-template" id="tpl-tag">
+  <div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else-if="!data" class="text-center py-20 text-gray-500">未找到该标签</div>
+    <div v-else>
+      <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm mb-4">← 返回</button>
+      <div class="flex items-center gap-3 mb-6">
+        <h1 class="text-xl font-bold">{{ data.tag.name }}</h1>
+        <span class="text-gray-500 text-sm">{{ data.videos.length }} 部作品</span>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+        <video-card v-for="v in data.videos" :key="v.id" :video="v" />
+      </div>
+    </div>
+  </div>
+</script>
+
+<script>
+const { createApp, ref, computed, watch, onMounted } = Vue;
+const { createRouter, createWebHashHistory } = VueRouter;
+
+// ── helpers ──────────────────────────────────────────────
+async function apiFetch(url) {
+  const r = await fetch(url);
+  if (!r.ok) return null;
+  return r.json();
+}
+function imgErr(e) { e.target.style.display = 'none'; }
+function formatSize(bytes) {
+  if (!bytes) return '';
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+  return (bytes / 1e6).toFixed(0) + ' MB';
+}
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => alert('已复制：' + text));
+}
+
+// ── VideoCard ─────────────────────────────────────────────
+const VideoCard = {
+  name: 'VideoCard',
+  template: '#tpl-video-card',
+  props: { video: Object },
+  setup(props) {
+    const router = VueRouter.useRouter();
+    function go() { router.push('/video/' + props.video.code); }
+    return { go, imgErr };
+  }
+};
+
+// ── Pagination ────────────────────────────────────────────
+const Pagination = {
+  name: 'Pagination',
+  template: '#tpl-pagination',
+  props: { page: Number, total: Number, limit: Number },
+  emits: ['change'],
+  setup(props) {
+    const totalPages = computed(() => Math.ceil(props.total / props.limit));
+    const pages = computed(() => {
+      const tp = totalPages.value, cur = props.page, arr = [];
+      for (let i = 1; i <= tp; i++) {
+        if (i === 1 || i === tp || (i >= cur - 2 && i <= cur + 2)) arr.push(i);
+        else if (arr[arr.length - 1] !== '...') arr.push('...');
+      }
+      return arr;
+    });
+    return { totalPages, pages };
+  }
+};
+
+// ── HomeView ──────────────────────────────────────────────
+const HomeView = {
+  template: '#tpl-home',
+  components: { VideoCard, Pagination },
+  setup() {
+    const items = ref([]), total = ref(0), page = ref(1), limit = 24, loading = ref(true);
+    async function load() {
+      loading.value = true;
+      const d = await apiFetch(`/api/videos?page=${page.value}&limit=${limit}`);
+      if (d) { items.value = d.items; total.value = d.total; }
+      loading.value = false;
+    }
+    function changePage(p) { page.value = p; window.scrollTo(0, 0); }
+    watch(page, load);
+    onMounted(load);
+    return { items, total, page, limit, loading, changePage };
+  }
+};
+
+// ── SearchView ────────────────────────────────────────────
+const SearchView = {
+  template: '#tpl-search',
+  components: { VideoCard, Pagination },
+  setup() {
+    const route = VueRouter.useRoute();
+    const items = ref([]), total = ref(0), page = ref(1), limit = 24, loading = ref(false);
+    const q = computed(() => route.query.q || '');
+    async function load() {
+      if (!q.value) return;
+      loading.value = true;
+      const d = await apiFetch(`/api/search?q=${encodeURIComponent(q.value)}&page=${page.value}&limit=${limit}`);
+      if (d) { items.value = d.items; total.value = d.total; }
+      loading.value = false;
+    }
+    function changePage(p) { page.value = p; window.scrollTo(0, 0); }
+    watch([q], () => { page.value = 1; load(); });
+    watch(page, load);
+    onMounted(load);
+    return { items, total, page, limit, loading, q, changePage };
+  }
+};
+
+// ── VideoDetail ───────────────────────────────────────────
+const EDIT_FIELDS = [
+  { key: 'title_zh',     label: '中文标题' },
+  { key: 'title_jp',     label: '日文标题' },
+  { key: 'release_date', label: '发行日期' },
+  { key: 'duration',     label: '时长' },
+  { key: 'maker',        label: '制片方' },
+  { key: 'publisher',    label: '发行商' },
+  { key: 'series',       label: '系列' },
+  { key: 'score',        label: '评分', type: 'number', step: '0.01' },
+];
+
+const VideoDetail = {
+  template: '#tpl-video-detail',
+  setup() {
+    const route = VueRouter.useRoute();
+    const video = ref(null), loading = ref(true);
+    const editing = ref(false), saving = ref(false), saveError = ref('');
+    const form = ref({});
+    const actorSuggestions = ref([]);
+    const seriesSuggestions = ref([]);
+    let actorTimer = null, seriesTimer = null;
+
+    const meta = computed(() => {
+      if (!video.value) return {};
+      const v = video.value;
+      return {
+        '发行日期': v.release_date,
+        '时长': v.duration,
+        '制片方': v.maker,
+        '发行商': v.publisher,
+        '系列': v.series,
+      };
+    });
+    const fileParts = computed(() => {
+      if (!video.value) return [];
+      const v = video.value;
+      if (v.parts && v.parts.length > 1) {
+        return v.parts.map(p => ({ part: p.part, path: p.original_file_path }));
+      }
+      return v.original_file_path ? [{ part: v.part, path: v.original_file_path }] : [];
+    });
+
+    async function load() {
+      loading.value = true;
+      video.value = await apiFetch('/api/videos/' + route.params.code);
+      loading.value = false;
+    }
+
+    function startEdit() {
+      const v = video.value;
+      form.value = {
+        title_zh: v.title_zh || '',
+        title_jp: v.title_jp || '',
+        release_date: v.release_date || '',
+        duration: v.duration || '',
+        maker: v.maker || '',
+        publisher: v.publisher || '',
+        series: v.series || '',
+        score: v.score != null ? v.score : '',
+        actors: [...(v.actors || [])],
+        tags: [...(v.tags || [])],
+        newActor: '',
+        newTag: '',
+      };
+      saveError.value = '';
+      editing.value = true;
+    }
+
+    function cancelEdit() { editing.value = false; }
+
+    function removeActor(i) { form.value.actors.splice(i, 1); }
+
+    function onActorInput() {
+      clearTimeout(actorTimer);
+      const q = form.value.newActor.trim();
+      if (!q) { actorSuggestions.value = []; return; }
+      actorTimer = setTimeout(async () => {
+        const res = await apiFetch('/api/actors?q=' + encodeURIComponent(q));
+        actorSuggestions.value = res || [];
+      }, 200);
+    }
+    function closeActorDropdown() { setTimeout(() => { actorSuggestions.value = []; }, 150); }
+    function pickActor(a) {
+      if (!form.value.actors.find(x => x.name === a.name)) {
+        form.value.actors.push({ name: a.name, name_zh: a.name_zh, avatar_path: a.avatar_path });
+      }
+      form.value.newActor = '';
+      actorSuggestions.value = [];
+    }
+    function addActorFromInput() {
+      const q = form.value.newActor.trim();
+      if (!q) return;
+      if (actorSuggestions.value.length) { pickActor(actorSuggestions.value[0]); return; }
+      if (!form.value.actors.find(a => a.name === q)) {
+        form.value.actors.push({ name: q, name_zh: '' });
+      }
+      form.value.newActor = '';
+    }
+
+    function onSeriesInput() {
+      clearTimeout(seriesTimer);
+      const q = form.value.series.trim();
+      if (!q) { seriesSuggestions.value = []; return; }
+      seriesTimer = setTimeout(async () => {
+        const res = await apiFetch('/api/series?q=' + encodeURIComponent(q));
+        seriesSuggestions.value = res || [];
+      }, 200);
+    }
+    function closeSeriesDropdown() { setTimeout(() => { seriesSuggestions.value = []; }, 150); }
+    function pickSeries(s) { form.value.series = s; seriesSuggestions.value = []; }
+
+    function removeTag(i) { form.value.tags.splice(i, 1); }
+    function addTag() {
+      const name = form.value.newTag.trim();
+      if (name && !form.value.tags.find(t => t.name === name)) {
+        form.value.tags.push({ name });
+      }
+      form.value.newTag = '';
+    }
+
+    async function saveEdit() {
+      saving.value = true;
+      saveError.value = '';
+      const f = form.value;
+      const payload = {
+        title_zh: f.title_zh,
+        title_jp: f.title_jp,
+        release_date: f.release_date,
+        duration: f.duration,
+        maker: f.maker,
+        publisher: f.publisher,
+        series: f.series,
+        actors: f.actors.map(a => a.name),
+        tags: f.tags.map(t => t.name),
+      };
+      if (f.score !== '' && f.score !== null) payload.score = parseFloat(f.score);
+      try {
+        const r = await fetch('/api/videos/' + route.params.code, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) {
+          const err = await r.json();
+          saveError.value = err.error || '保存失败';
+        } else {
+          video.value = await r.json();
+          editing.value = false;
+        }
+      } catch (e) {
+        saveError.value = '网络错误';
+      } finally {
+        saving.value = false;
+      }
+    }
+
+    watch(() => route.params.code, load);
+    onMounted(load);
+    return {
+      video, loading, meta, fileParts,
+      editing, saving, saveError, form,
+      editFields: EDIT_FIELDS,
+      actorSuggestions, seriesSuggestions,
+      startEdit, cancelEdit, saveEdit,
+      removeActor, onActorInput, closeActorDropdown, pickActor, addActorFromInput,
+      onSeriesInput, closeSeriesDropdown, pickSeries,
+      removeTag, addTag,
+      imgErr, formatSize, copy: copyText,
+    };
+  }
+};
+
+// ── ActorView ─────────────────────────────────────────────
+const ActorView = {
+  template: '#tpl-actor',
+  components: { VideoCard },
+  setup() {
+    const route = VueRouter.useRoute();
+    const data = ref(null), loading = ref(true);
+    async function load() {
+      loading.value = true;
+      data.value = await apiFetch('/api/actors/' + route.params.id);
+      loading.value = false;
+    }
+    watch(() => route.params.id, load);
+    onMounted(load);
+    return { data, loading, imgErr };
+  }
+};
+
+// ── TagView ───────────────────────────────────────────────
+const TagView = {
+  template: '#tpl-tag',
+  components: { VideoCard },
+  setup() {
+    const route = VueRouter.useRoute();
+    const data = ref(null), loading = ref(true);
+    async function load() {
+      loading.value = true;
+      data.value = await apiFetch('/api/tags/' + route.params.id);
+      loading.value = false;
+    }
+    watch(() => route.params.id, load);
+    onMounted(load);
+    return { data, loading };
+  }
+};
+
+// ── Router ────────────────────────────────────────────────
+const router = createRouter({
+  history: createWebHashHistory(),
+  routes: [
+    { path: '/', component: HomeView },
+    { path: '/search', component: SearchView },
+    { path: '/video/:code', component: VideoDetail },
+    { path: '/actor/:id', component: ActorView },
+    { path: '/tag/:id', component: TagView },
+  ]
+});
+
+// ── App ───────────────────────────────────────────────────
+const App = {
+  setup() {
+    const router = VueRouter.useRouter();
+    const route = VueRouter.useRoute();
+    const searchQ = ref('');
+
+    function doSearch() {
+      const q = searchQ.value.trim();
+      if (!q) return;
+      router.push({ path: '/search', query: { q } });
+    }
+
+    watch(() => route.query.q, (v) => { if (v) searchQ.value = v; });
+
+    return { searchQ, doSearch };
+  },
+  template: `
+    <div class="min-h-screen">
+      <!-- Navbar -->
+      <header class="sticky top-0 z-50 bg-gray-950 border-b border-gray-800 px-4 py-3 flex items-center gap-4">
+        <router-link to="/" class="text-indigo-400 font-bold text-lg tracking-tight flex-shrink-0">AVideo</router-link>
+        <form @submit.prevent="doSearch" class="flex-1 max-w-xl">
+          <input v-model="searchQ" type="text" placeholder="搜索番号、标题、片商…"
+            class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
+        </form>
+      </header>
+      <!-- Page -->
+      <main class="px-4 py-6 max-w-screen-2xl mx-auto">
+        <transition name="fade" mode="out-in">
+          <router-view :key="$route.fullPath" />
+        </transition>
+      </main>
+    </div>
+  `
+};
+
+createApp(App).use(router).mount('#app');
+</script>
+</body>
+</html>

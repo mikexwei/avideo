@@ -116,6 +116,17 @@ def init_database() -> None:
 
         sample_males = [('清水健', 1), ('森林原人', 1), ('田渊正浩', 1), ('解禁男', 1)]
         cursor.executemany('INSERT OR IGNORE INTO actors (name, is_ignored) VALUES (?, ?)', sample_males)
+
+        for col_def in [
+            "ALTER TABLE videos ADD COLUMN file_size INTEGER",
+            "ALTER TABLE videos ADD COLUMN file_mtime TEXT",
+            "ALTER TABLE videos ADD COLUMN file_birthtime TEXT",
+        ]:
+            try:
+                cursor.execute(col_def)
+            except sqlite3.OperationalError:
+                pass  # 列已存在，忽略
+
         conn.commit()
         logging.info('🎉 数据库表结构升级完毕！多对多关系已建立。')
     except sqlite3.Error as e:

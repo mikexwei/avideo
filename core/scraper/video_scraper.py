@@ -112,8 +112,8 @@ def download_cover(image_url: str, code: str) -> Optional[str]:
         response = requests.get(image_url, headers=headers, timeout=10)
         
         if response.status_code == 200:
-            # 获取图片后缀，如 .jpg
-            ext = Path(image_url).suffix
+            # 获取图片后缀，如 .jpg (用 urlparse 避免 query string 污染后缀)
+            ext = Path(urlparse(image_url).path).suffix
             if not ext:
                 ext = ".jpg"
                 

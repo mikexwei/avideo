@@ -1,0 +1,184 @@
+# Usage Guide
+
+所有命令均在项目根目录下执行，使用 `.venv` 虚拟环境。
+
+---
+
+## 初始化（首次运行）
+
+```bash
+# 安装依赖
+pip install -r requirements.txt
+playwright install chromium
+
+# 初始化数据库（建表 + 迁移）
+.venv/bin/python dal/schema.py
+```
+
+---
+
+## 日常工作流
+
+### 第一步：扫描本地文件
+
+将磁盘上的视频文件扫描入库，提取番号、分集信息和文件元数据（size、mtime、birthtime）。
+
+```bash
+# 扫描 config.py 中配置的所有目录
+.venv/bin/python core/scanner.py
+
+# 或指定单个目录
+.venv/bin/python core/scanner.py /Volumes/12TB
+```
+
+- 已入库的文件自动跳过（`INSERT OR IGNORE`）
+- 新文件以 `PENDING` 状态入库，等待刮削
+
+---
+
+### 第二步：刮削视频元数据
+
+从 JavDB 抓取标题、封面、演员、标签、评分等元数据。
+
+```bash
+.venv/bin/python core/auto_scraper.py
+```
+
+- 自动轮询所有 `PENDING` 的视频
+- 无任务时休眠 10 分钟后再次检查，可长期后台运行
+- 内置随机延迟，防止触发 JavDB 封控
+
+---
+
+### 第三步：刮削演员头像
+
+为没有头像的演员抓取头像和中文译名。
+
+```bash
+.venv/bin/python core/auto_actor_scraper.py
+```
+
+- 自动跳过已有头像的演员和 `is_ignored=1` 的男优
+- 发现同一头像时自动合并重名演员记录
+- 可与视频刮削同时运行（操作不同表，互不干扰）
+
+---
+
+### 第四步：翻译标题
+
+调用本地 Ollama（Sakura 模型）将日文标题翻译为中文。
+
+```bash
+.venv/bin/python utils/translate_titles.py
+```
+
+- 按 `title_jp` 去重翻译，避免同番号多分集重复请求
+- 翻译前自动剥离标题中的番号和演员名，减少大模型幻觉
+- 依赖 `http://10.0.0.40:11434` 的 Ollama 服务，需提前确认可达
+
+---
+
+## 启动 Web 服务
+
+```bash
+.venv/bin/python -m flask --app web.backend.app run --host 0.0.0.0 --port 8000
+```
+
+访问 `http://localhost:8000`
+
+---
+
+## 高级工具
+
+### 系列名聚类（去重合并）
+
+将数据库中拼写相近或属于同一系列的 `series` 字段合并为统一名称，分两步走：
+
+**Step 1：发现并生成聚类方案**
+
+```bash
+.venv/bin/python utils/cluster_series.py
+```
+
+- 使用 NLP 相似度 + Ollama（qwen2.5:32b）双重验证
+- 结果写入 `series_clusters` 表（`is_reviewed=0`）和 `data/logs/cluster_series_dryrun_zh.md`
+- 需要人工审查表中数据，确认无误的行将 `is_reviewed` 改为 `1`
+
+**Step 2：应用已审核的结果**
+
+```bash
+# 先确认（开启 DRY_RUN=True，默认）
+.venv/bin/python utils/cluster_series.py --apply
+
+# 在 cluster_series.py 中将 DRY_RUN 改为 False 后再执行
+.venv/bin/python utils/cluster_series.py --apply
+```
+
+---
+
+### 查找重复视频
+
+找出数据库中 `(code, part)` 相同但有多个物理文件的重复记录。
+
+```bash
+.venv/bin/python utils/find_duplicates.py
+```
+
+---
+
+### 修复分集标记
+
+重新用扫描器的正则逻辑对数据库中已有记录的 `part` 字段进行校正。
+
+```bash
+.venv/bin/python utils/fix_db_parts.py
+```
+
+---
+
+### 命令行翻译调试
+
+交互式测试 Ollama 翻译效果。
+
+```bash
+.venv/bin/python utils/translate_cli.py
+```
+
+---
+
+## 新视频入库标准流程
+
+```
+有新视频到达磁盘
+    ↓
+python core/scanner.py          # 扫描，新文件入库为 PENDING
+    ↓
+python core/auto_scraper.py     # 刮削元数据（可长期后台运行）
+    ↓
+python core/auto_actor_scraper.py  # 刮演员头像（可同时跑）
+    ↓
+python utils/translate_titles.py   # 翻译未翻译的标题
+```
+
+---
+
+## 常见问题
+
+**Q: 刮削时遇到 Cloudflare 拦截**
+脚本会自动处理 5 秒盾和 18 岁确认弹窗。若长时间卡住，检查网络是否能正常访问 `javdb.com`。
+
+**Q: 翻译脚本报连接错误**
+检查 `utils/translate_titles.py` 顶部的 `mac_client = Client(host='http://10.0.0.40:11434')`，确认 Ollama 服务地址正确且可达。
+
+**Q: 某部片子刮削失败（FAILED 状态）**
+数据库中状态为 `FAILED` 的记录不会被自动重试。手动重置状态：
+```bash
+sqlite3 data/avideo.db "UPDATE videos SET scrape_status='PENDING' WHERE code='XXXXX';"
+```
+然后重新运行 `auto_scraper.py`。
+
+**Q: 如何只对单个番号测试刮削**
+修改 `core/scraper/video_scraper.py` 底部 `__main__` 块中的 `test_code`，直接运行该文件：
+```bash
+.venv/bin/python core/scraper/video_scraper.py
+```

@@ -1,5 +1,6 @@
 import re
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union
 
@@ -249,14 +250,27 @@ def scan_directory(directory_path: Union[str, Path]) -> List[Dict]:
         if file_path.suffix.lower() in VIDEO_EXTENSIONS:
             # 仅传入文件名 (不带扩展名) 进行正则匹配
             code, part = extract_video_code(file_path.stem)
-            
+
             if code:
+                try:
+                    st = file_path.stat()
+                    file_meta = {
+                        'file_size': st.st_size,
+                        'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
+                        'file_birthtime': datetime.fromtimestamp(
+                            getattr(st, 'st_birthtime', st.st_mtime)
+                        ).isoformat(),
+                    }
+                except OSError:
+                    file_meta = {'file_size': None, 'file_mtime': None, 'file_birthtime': None}
+
                 # 组装返回的结构化字典
                 results.append({
                     'original_path': file_path,          # Path 对象，方便后续调用移动/重命名
                     'code': code,                        # 标准化番号
                     'part': part,                        # 分集标识
-                    'original_name': file_path.name      # 原完整文件名
+                    'original_name': file_path.name,     # 原完整文件名
+                    **file_meta,
                 })
                 logger.debug(f"✅ 命中: {file_path.name} -> 番号: {code}, 分集: {part}")
             else:

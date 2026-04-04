@@ -50,9 +50,9 @@ def batch_insert_scanned_videos(scanned_results: list) -> tuple[int, int]:
         # 核心 SQL: 使用 INSERT OR IGNORE
         # 如果这个物理路径 (original_file_path) 已经在库里了，就静默跳过，不会报错
         insert_sql = """
-            INSERT OR IGNORE INTO videos 
-            (code, part, original_file_path, scrape_status) 
-            VALUES (?, ?, ?, 'PENDING')
+            INSERT OR IGNORE INTO videos
+            (code, part, original_file_path, scrape_status, file_size, file_mtime, file_birthtime)
+            VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
         """
 
         for item in valid_items:
@@ -60,9 +60,12 @@ def batch_insert_scanned_videos(scanned_results: list) -> tuple[int, int]:
             code = item['code']
             part = item.get('part')
             # 必须转成字符串存入数据库
-            file_path_str = str(item['original_path']) 
-            
-            cursor.execute(insert_sql, (code, part, file_path_str))
+            file_path_str = str(item['original_path'])
+
+            cursor.execute(insert_sql, (
+                code, part, file_path_str,
+                item.get('file_size'), item.get('file_mtime'), item.get('file_birthtime'),
+            ))
             
             # rowcount 为 1 表示插入成功，为 0 表示因为 UNIQUE 约束被 IGNORE 了
             if cursor.rowcount == 1:
@@ -275,13 +278,14 @@ def list_videos(page: int = 1, limit: int = 24) -> Dict[str, Any]:
     try:
         conn = _get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(1) AS total FROM videos")
+        cursor.execute("SELECT COUNT(DISTINCT code) AS total FROM videos")
         total = int(cursor.fetchone()["total"])
         cursor.execute(
             """
             SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status
             FROM videos
-            ORDER BY COALESCE(release_date, ''), id DESC
+            WHERE id IN (SELECT MIN(id) FROM videos GROUP BY code)
+            ORDER BY COALESCE(release_date, '') DESC, id DESC
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
@@ -304,7 +308,8 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
         cursor.execute(
             """
             SELECT id, code, part, title_jp, title_zh, release_date, duration, maker, publisher,
-                   series, score, cover_path, original_file_path, scrape_status
+                   series, score, cover_path, original_file_path, scrape_status,
+                   file_size, file_mtime, file_birthtime
             FROM videos
             WHERE code = ?
             ORDER BY id ASC
@@ -316,6 +321,11 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
             return None
 
         base = dict(video_rows[0])
+        if len(video_rows) > 1:
+            base['parts'] = [
+                {'id': dict(r)['id'], 'part': dict(r)['part'], 'original_file_path': dict(r)['original_file_path']}
+                for r in video_rows
+            ]
 
         cursor.execute(
             """
@@ -366,7 +376,7 @@ def search_videos(query: str, page: int = 1, limit: int = 24) -> Dict[str, Any]:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT COUNT(1) AS total
+            SELECT COUNT(DISTINCT code) AS total
             FROM videos
             WHERE code LIKE ? OR title_jp LIKE ? OR title_zh LIKE ? OR maker LIKE ?
             """,
@@ -377,7 +387,11 @@ def search_videos(query: str, page: int = 1, limit: int = 24) -> Dict[str, Any]:
             """
             SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status
             FROM videos
-            WHERE code LIKE ? OR title_jp LIKE ? OR title_zh LIKE ? OR maker LIKE ?
+            WHERE id IN (
+                SELECT MIN(id) FROM videos
+                WHERE code LIKE ? OR title_jp LIKE ? OR title_zh LIKE ? OR maker LIKE ?
+                GROUP BY code
+            )
             ORDER BY id DESC
             LIMIT ? OFFSET ?
             """,
@@ -449,6 +463,134 @@ def get_tag_with_videos(tag_id: int) -> Optional[Dict[str, Any]]:
     except sqlite3.Error as e:
         logger.error(f"❌ 查询标签失败 [{tag_id}]: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def search_actors(q: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Search actors by name or name_zh, return id/name/name_zh/avatar_path."""
+    like_q = f"%{q}%"
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, name, name_zh, avatar_path
+            FROM actors
+            WHERE is_ignored = 0 AND (name LIKE ? OR name_zh LIKE ?)
+            ORDER BY CASE WHEN name_zh IS NOT NULL AND name_zh != '' THEN 0 ELSE 1 END, name_zh, name
+            LIMIT ?
+            """,
+            (like_q, like_q, limit),
+        )
+        return _rows_to_dicts(cursor.fetchall())
+    except sqlite3.Error as e:
+        logger.error(f"❌ search_actors 失败: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def search_series(q: str, limit: int = 10) -> List[str]:
+    """Return distinct series names containing q."""
+    like_q = f"%{q}%"
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT series FROM videos
+            WHERE series IS NOT NULL AND series != '' AND series LIKE ?
+            ORDER BY series
+            LIMIT ?
+            """,
+            (like_q, limit),
+        )
+        return [r[0] for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logger.error(f"❌ search_series 失败: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+PATCHABLE_FIELDS = {'title_jp', 'title_zh', 'release_date', 'duration', 'maker', 'publisher', 'series', 'score'}
+
+
+def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, tag_names: Optional[List[str]] = None) -> bool:
+    """Replace actor and/or tag links for all rows sharing the given code."""
+    if actor_names is None and tag_names is None:
+        return True
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("PRAGMA foreign_keys = ON;")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM videos WHERE code = ?", (code,))
+        video_ids = [r[0] for r in cursor.fetchall()]
+        if not video_ids:
+            return False
+        ph = ','.join('?' * len(video_ids))
+        if actor_names is not None:
+            cursor.execute(f"DELETE FROM video_actor_link WHERE video_id IN ({ph})", video_ids)
+            for name in actor_names:
+                name = name.strip()
+                if not name:
+                    continue
+                cursor.execute("INSERT OR IGNORE INTO actors (name) VALUES (?)", (name,))
+                cursor.execute("SELECT id FROM actors WHERE name = ?", (name,))
+                row = cursor.fetchone()
+                if row:
+                    for vid in video_ids:
+                        cursor.execute("INSERT OR IGNORE INTO video_actor_link (video_id, actor_id) VALUES (?, ?)", (vid, row[0]))
+        if tag_names is not None:
+            cursor.execute(f"DELETE FROM video_tag_link WHERE video_id IN ({ph})", video_ids)
+            for name in tag_names:
+                name = name.strip()
+                if not name:
+                    continue
+                cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+                cursor.execute("SELECT id FROM tags WHERE name = ?", (name,))
+                row = cursor.fetchone()
+                if row:
+                    for vid in video_ids:
+                        cursor.execute("INSERT OR IGNORE INTO video_tag_link (video_id, tag_id) VALUES (?, ?)", (vid, row[0]))
+        conn.commit()
+        logger.info(f"✏️ patch_video_relations [{code}]: actors={actor_names is not None}, tags={tag_names is not None}")
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"❌ patch_video_relations 失败 [{code}]: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def patch_video(code: str, fields: Dict[str, Any]) -> bool:
+    """Update simple scalar fields for all rows sharing the given code."""
+    allowed = {k: v for k, v in fields.items() if k in PATCHABLE_FIELDS}
+    if not allowed:
+        return False
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        set_clause = ', '.join(f"{k} = ?" for k in allowed)
+        values = list(allowed.values()) + [code]
+        cursor.execute(
+            f"UPDATE videos SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE code = ?",
+            values,
+        )
+        conn.commit()
+        logger.info(f"✏️ patch_video [{code}]: {list(allowed.keys())}")
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error(f"❌ patch_video 失败 [{code}]: {e}")
+        return False
     finally:
         if conn:
             conn.close()
