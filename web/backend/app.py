@@ -5,6 +5,12 @@ from dal.db_manager import (
     get_actor_with_videos,
     get_tag_with_videos,
     get_video_by_code,
+    get_videos_by_prefix,
+    get_videos_by_series,
+    list_all_actors_with_count,
+    list_all_prefixes_with_count,
+    list_all_series_with_count,
+    list_all_tags_with_count,
     list_videos,
     patch_video,
     patch_video_relations,
@@ -21,7 +27,8 @@ app.json.ensure_ascii = False
 def api_videos():
     page = request.args.get('page', 1, type=int) or 1
     limit = request.args.get('limit', 24, type=int) or 24
-    return jsonify(list_videos(page=page, limit=limit))
+    sort = request.args.get('sort', 'date')
+    return jsonify(list_videos(page=page, limit=limit, sort=sort))
 
 
 @app.get('/api/videos/<string:code>')
@@ -69,6 +76,49 @@ def api_series_search():
     if not q:
         return jsonify([])
     return jsonify(search_series(q))
+
+
+@app.get('/api/tags/all')
+def api_tags_all():
+    return jsonify(list_all_tags_with_count())
+
+
+@app.get('/api/actors/all')
+def api_actors_all():
+    return jsonify(list_all_actors_with_count())
+
+
+@app.get('/api/series/all')
+def api_series_all():
+    return jsonify(list_all_series_with_count())
+
+
+@app.get('/api/series/videos')
+def api_series_videos():
+    cid = request.args.get('cid', type=int)
+    s = request.args.get('s', '').strip() or None
+    if not cid and not s:
+        return jsonify({'error': 'missing cid or s'}), 400
+    page = request.args.get('page', 1, type=int) or 1
+    limit = request.args.get('limit', 24, type=int) or 24
+    sort = request.args.get('sort', 'date')
+    return jsonify(get_videos_by_series(series_name=s, cluster_id=cid, page=page, limit=limit, sort=sort))
+
+
+@app.get('/api/prefixes/all')
+def api_prefixes_all():
+    return jsonify(list_all_prefixes_with_count())
+
+
+@app.get('/api/prefixes/videos')
+def api_prefix_videos():
+    prefix = request.args.get('prefix', '').strip()
+    if not prefix:
+        return jsonify({'error': 'missing prefix'}), 400
+    page = request.args.get('page', 1, type=int) or 1
+    limit = request.args.get('limit', 24, type=int) or 24
+    sort = request.args.get('sort', 'date')
+    return jsonify(get_videos_by_prefix(prefix, page=page, limit=limit, sort=sort))
 
 
 @app.get('/api/actors/<int:actor_id>')

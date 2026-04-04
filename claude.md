@@ -43,3 +43,5 @@
 #### 6. 本地文件meta data 的收集与整理
 * 刮削本地文件时, 记录文件本身的meta data, 例如 creation time, last modify time, size 等等
 
+# 全局规则
+## 每次更新代码都需要检查 usage.md, 是否需要更新

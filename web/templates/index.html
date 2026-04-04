@@ -18,6 +18,9 @@
     ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #1a1a1a; } ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
     .fade-enter-active, .fade-leave-active { transition: opacity .15s; }
     .fade-enter-from, .fade-leave-to { opacity: 0; }
+    .nav-tab { padding: 8px 16px; font-size: .875rem; color: #9ca3af; transition: color .15s; border-bottom: 2px solid transparent; white-space: nowrap; }
+    .nav-tab:hover { color: #e5e5e5; }
+    .router-link-exact-active.nav-tab, .router-link-active.nav-tab { color: #fff; border-bottom-color: #6366f1; }
   </style>
 </head>
 <body>
@@ -62,6 +65,9 @@
   <div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else>
+      <div class="flex justify-end mb-3">
+        <sort-bar :sort="sort" @change="changeSort" />
+      </div>
       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
         <video-card v-for="v in items" :key="v.id" :video="v" />
       </div>
@@ -265,8 +271,11 @@
           <p class="text-gray-500 text-sm mt-1">{{ data.videos.length }} 部作品</p>
         </div>
       </div>
+      <div class="flex justify-end mb-3">
+        <sort-bar :sort="sort" @change="changeSort" />
+      </div>
       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-        <video-card v-for="v in data.videos" :key="v.id" :video="v" />
+        <video-card v-for="v in sortedVideos" :key="v.id" :video="v" />
       </div>
     </div>
   </div>
@@ -279,14 +288,164 @@
     <div v-else-if="!data" class="text-center py-20 text-gray-500">未找到该标签</div>
     <div v-else>
       <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm mb-4">← 返回</button>
-      <div class="flex items-center gap-3 mb-6">
-        <h1 class="text-xl font-bold">{{ data.tag.name }}</h1>
-        <span class="text-gray-500 text-sm">{{ data.videos.length }} 部作品</span>
+      <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-3">
+          <h1 class="text-xl font-bold">{{ data.tag.name }}</h1>
+          <span class="text-gray-500 text-sm">{{ data.videos.length }} 部作品</span>
+        </div>
+        <sort-bar :sort="sort" @change="changeSort" />
       </div>
       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-        <video-card v-for="v in data.videos" :key="v.id" :video="v" />
+        <video-card v-for="v in sortedVideos" :key="v.id" :video="v" />
       </div>
     </div>
+  </div>
+</script>
+
+<!-- ========== AllTagsView ========== -->
+<script type="text/x-template" id="tpl-all-tags">
+  <div>
+    <div class="flex items-center gap-4 mb-6">
+      <h1 class="text-xl font-bold">所有类别</h1>
+      <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
+      <input v-model="q" placeholder="过滤类别…"
+        class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-48" />
+    </div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else class="flex flex-wrap">
+      <router-link v-for="t in filtered" :key="t.id" :to="'/tag/' + t.id"
+        class="tag-pill text-gray-300 hover:text-white flex items-center gap-1">
+        {{ t.name }}
+        <span class="text-gray-500 text-xs">{{ t.count }}</span>
+      </router-link>
+    </div>
+  </div>
+</script>
+
+<!-- ========== AllActorsView ========== -->
+<script type="text/x-template" id="tpl-all-actors">
+  <div>
+    <div class="flex items-center gap-4 mb-6 flex-wrap">
+      <h1 class="text-xl font-bold">所有演员</h1>
+      <span class="text-gray-500 text-sm">{{ filtered.length }} 人</span>
+      <input v-model="q" placeholder="搜索演员名…"
+        class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-52" />
+    </div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
+      <router-link v-for="a in filtered" :key="a.id" :to="'/actor/' + a.id"
+        class="flex flex-col items-center gap-1.5 bg-gray-900 hover:bg-gray-800 rounded-lg p-3 text-center transition card-hover">
+        <img v-if="a.avatar_path && a.avatar_path !== 'no_avatar'"
+          :src="'/static/' + a.avatar_path" class="w-14 h-14 rounded-full object-cover" @error="imgErr" />
+        <span v-else class="w-14 h-14 rounded-full bg-gray-700 flex items-center justify-center text-xl flex-shrink-0">?</span>
+        <span class="text-xs text-gray-200 leading-tight line-clamp-2 w-full">{{ a.name_zh || a.name }}</span>
+        <span class="text-xs text-gray-500">{{ a.count }} 部</span>
+      </router-link>
+    </div>
+  </div>
+</script>
+
+<!-- ========== AllSeriesView ========== -->
+<script type="text/x-template" id="tpl-all-series">
+  <div>
+    <div class="flex items-center gap-4 mb-6 flex-wrap">
+      <h1 class="text-xl font-bold">所有系列</h1>
+      <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
+      <input v-model="q" placeholder="搜索系列名…"
+        class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-52" />
+    </div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+      <router-link v-for="s in filtered" :key="s.id != null ? 'c' + s.id : s.series"
+        :to="seriesLink(s)"
+        class="flex items-center justify-between bg-gray-900 hover:bg-gray-800 rounded px-4 py-3 transition">
+        <span class="text-sm text-gray-200 truncate">{{ s.series }}</span>
+        <span class="text-xs text-gray-500 ml-3 flex-shrink-0">{{ s.count }} 部</span>
+      </router-link>
+    </div>
+  </div>
+</script>
+
+<!-- ========== SeriesDetailView ========== -->
+<script type="text/x-template" id="tpl-series-detail">
+  <div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else>
+      <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm mb-4">← 返回</button>
+      <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-3">
+          <h1 class="text-xl font-bold">{{ displayName }}</h1>
+          <span class="text-gray-500 text-sm">{{ total }} 部作品</span>
+        </div>
+        <sort-bar :sort="sort" @change="changeSort" />
+      </div>
+      <div v-if="items.length === 0" class="text-center py-20 text-gray-500">暂无作品</div>
+      <div v-else>
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+          <video-card v-for="v in items" :key="v.id" :video="v" />
+        </div>
+        <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
+      </div>
+    </div>
+  </div>
+</script>
+
+<!-- ========== AllPrefixesView ========== -->
+<script type="text/x-template" id="tpl-all-prefixes">
+  <div>
+    <div class="flex items-center gap-4 mb-6 flex-wrap">
+      <h1 class="text-xl font-bold">所有番号前缀</h1>
+      <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
+      <input v-model="q" placeholder="过滤前缀…"
+        class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-40" />
+    </div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else class="flex flex-wrap gap-2">
+      <router-link v-for="p in filtered" :key="p.prefix" :to="'/prefix/' + p.prefix"
+        class="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 rounded px-3 py-2 transition">
+        <span class="text-indigo-400 font-mono text-sm font-bold">{{ p.prefix }}</span>
+        <span class="text-gray-500 text-xs">{{ p.count }}</span>
+      </router-link>
+    </div>
+  </div>
+</script>
+
+<!-- ========== PrefixDetailView ========== -->
+<script type="text/x-template" id="tpl-prefix-detail">
+  <div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else>
+      <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm mb-4">← 返回</button>
+      <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-3">
+          <h1 class="text-xl font-bold font-mono text-indigo-400">{{ prefix }}</h1>
+          <span class="text-gray-500 text-sm">{{ total }} 部作品</span>
+        </div>
+        <sort-bar :sort="sort" @change="changeSort" />
+      </div>
+      <div v-if="items.length === 0" class="text-center py-20 text-gray-500">暂无作品</div>
+      <div v-else>
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+          <video-card v-for="v in items" :key="v.id" :video="v" />
+        </div>
+        <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
+      </div>
+    </div>
+  </div>
+</script>
+
+<!-- ========== SortBar ========== -->
+<script type="text/x-template" id="tpl-sort-bar">
+  <div class="flex items-center gap-1">
+    <span class="text-gray-500 text-xs mr-1">排序</span>
+    <button @click="$emit('change', 'date')"
+      :class="['px-2.5 py-1 rounded text-xs transition', sort === 'date' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+      时间
+    </button>
+    <button @click="$emit('change', 'score')"
+      :class="['px-2.5 py-1 rounded text-xs transition', sort === 'score' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+      评分
+    </button>
   </div>
 </script>
 
@@ -309,6 +468,14 @@ function formatSize(bytes) {
 function copyText(text) {
   navigator.clipboard.writeText(text).then(() => alert('已复制：' + text));
 }
+
+// ── SortBar ───────────────────────────────────────────────
+const SortBar = {
+  name: 'SortBar',
+  template: '#tpl-sort-bar',
+  props: { sort: { type: String, default: 'date' } },
+  emits: ['change'],
+};
 
 // ── VideoCard ─────────────────────────────────────────────
 const VideoCard = {
@@ -345,19 +512,22 @@ const Pagination = {
 // ── HomeView ──────────────────────────────────────────────
 const HomeView = {
   template: '#tpl-home',
-  components: { VideoCard, Pagination },
+  components: { VideoCard, Pagination, SortBar },
   setup() {
     const items = ref([]), total = ref(0), page = ref(1), limit = 24, loading = ref(true);
+    const sort = ref('date');
     async function load() {
       loading.value = true;
-      const d = await apiFetch(`/api/videos?page=${page.value}&limit=${limit}`);
+      const d = await apiFetch(`/api/videos?page=${page.value}&limit=${limit}&sort=${sort.value}`);
       if (d) { items.value = d.items; total.value = d.total; }
       loading.value = false;
     }
     function changePage(p) { page.value = p; window.scrollTo(0, 0); }
+    function changeSort(s) { sort.value = s; page.value = 1; }
     watch(page, load);
+    watch(sort, load);
     onMounted(load);
-    return { items, total, page, limit, loading, changePage };
+    return { items, total, page, limit, loading, sort, changePage, changeSort };
   }
 };
 
@@ -560,10 +730,16 @@ const VideoDetail = {
 // ── ActorView ─────────────────────────────────────────────
 const ActorView = {
   template: '#tpl-actor',
-  components: { VideoCard },
+  components: { VideoCard, SortBar },
   setup() {
     const route = VueRouter.useRoute();
-    const data = ref(null), loading = ref(true);
+    const data = ref(null), loading = ref(true), sort = ref('date');
+    const sortedVideos = computed(() => {
+      if (!data.value) return [];
+      const arr = [...data.value.videos];
+      if (sort.value === 'score') return arr.sort((a, b) => (b.score || 0) - (a.score || 0));
+      return arr.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
+    });
     async function load() {
       loading.value = true;
       data.value = await apiFetch('/api/actors/' + route.params.id);
@@ -571,17 +747,23 @@ const ActorView = {
     }
     watch(() => route.params.id, load);
     onMounted(load);
-    return { data, loading, imgErr };
+    return { data, loading, imgErr, sort, sortedVideos, changeSort: (s) => { sort.value = s; } };
   }
 };
 
 // ── TagView ───────────────────────────────────────────────
 const TagView = {
   template: '#tpl-tag',
-  components: { VideoCard },
+  components: { VideoCard, SortBar },
   setup() {
     const route = VueRouter.useRoute();
-    const data = ref(null), loading = ref(true);
+    const data = ref(null), loading = ref(true), sort = ref('date');
+    const sortedVideos = computed(() => {
+      if (!data.value) return [];
+      const arr = [...data.value.videos];
+      if (sort.value === 'score') return arr.sort((a, b) => (b.score || 0) - (a.score || 0));
+      return arr.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
+    });
     async function load() {
       loading.value = true;
       data.value = await apiFetch('/api/tags/' + route.params.id);
@@ -589,7 +771,141 @@ const TagView = {
     }
     watch(() => route.params.id, load);
     onMounted(load);
-    return { data, loading };
+    return { data, loading, sort, sortedVideos, changeSort: (s) => { sort.value = s; } };
+  }
+};
+
+// ── AllTagsView ───────────────────────────────────────────
+const AllTagsView = {
+  template: '#tpl-all-tags',
+  setup() {
+    const items = ref([]), loading = ref(true), q = ref('');
+    const filtered = computed(() => {
+      if (!q.value) return items.value;
+      const lower = q.value.toLowerCase();
+      return items.value.filter(t => t.name.toLowerCase().includes(lower));
+    });
+    onMounted(async () => {
+      items.value = await apiFetch('/api/tags/all') || [];
+      loading.value = false;
+    });
+    return { items, loading, q, filtered };
+  }
+};
+
+// ── AllActorsView ─────────────────────────────────────────
+const AllActorsView = {
+  template: '#tpl-all-actors',
+  setup() {
+    const items = ref([]), loading = ref(true), q = ref('');
+    const filtered = computed(() => {
+      if (!q.value) return items.value;
+      const lower = q.value.toLowerCase();
+      return items.value.filter(a =>
+        a.name.toLowerCase().includes(lower) ||
+        (a.name_zh && a.name_zh.toLowerCase().includes(lower))
+      );
+    });
+    onMounted(async () => {
+      items.value = await apiFetch('/api/actors/all') || [];
+      loading.value = false;
+    });
+    return { items, loading, q, filtered, imgErr };
+  }
+};
+
+// ── AllSeriesView ─────────────────────────────────────────
+const AllSeriesView = {
+  template: '#tpl-all-series',
+  setup() {
+    const items = ref([]), loading = ref(true), q = ref('');
+    const filtered = computed(() => {
+      if (!q.value) return items.value;
+      const lower = q.value.toLowerCase();
+      return items.value.filter(s => s.series.toLowerCase().includes(lower));
+    });
+    function seriesLink(s) {
+      return s.id != null
+        ? { path: '/series-detail', query: { cid: s.id, name: s.series } }
+        : { path: '/series-detail', query: { s: s.series } };
+    }
+    onMounted(async () => {
+      items.value = await apiFetch('/api/series/all') || [];
+      loading.value = false;
+    });
+    return { items, loading, q, filtered, seriesLink };
+  }
+};
+
+// ── SeriesDetailView ──────────────────────────────────────
+const SeriesDetailView = {
+  template: '#tpl-series-detail',
+  components: { VideoCard, Pagination, SortBar },
+  setup() {
+    const route = VueRouter.useRoute();
+    const items = ref([]), total = ref(0), page = ref(1), limit = 24, loading = ref(true);
+    const sort = ref('date');
+    const displayName = computed(() => route.query.name || route.query.s || '');
+    async function load() {
+      const cid = route.query.cid;
+      const s = route.query.s;
+      if (!cid && !s) return;
+      loading.value = true;
+      const qs = cid ? `cid=${cid}` : `s=${encodeURIComponent(s)}`;
+      const d = await apiFetch(`/api/series/videos?${qs}&page=${page.value}&limit=${limit}&sort=${sort.value}`);
+      if (d) { items.value = d.items; total.value = d.total; }
+      loading.value = false;
+    }
+    function changePage(p) { page.value = p; window.scrollTo(0, 0); }
+    function changeSort(s) { sort.value = s; page.value = 1; }
+    watch(() => [route.query.cid, route.query.s], () => { page.value = 1; load(); });
+    watch(page, load);
+    watch(sort, load);
+    onMounted(load);
+    return { items, total, page, limit, loading, sort, displayName, changePage, changeSort };
+  }
+};
+
+// ── AllPrefixesView ───────────────────────────────────────
+const AllPrefixesView = {
+  template: '#tpl-all-prefixes',
+  setup() {
+    const items = ref([]), loading = ref(true), q = ref('');
+    const filtered = computed(() => {
+      if (!q.value) return items.value;
+      const upper = q.value.toUpperCase();
+      return items.value.filter(p => p.prefix.includes(upper));
+    });
+    onMounted(async () => {
+      items.value = await apiFetch('/api/prefixes/all') || [];
+      loading.value = false;
+    });
+    return { items, loading, q, filtered };
+  }
+};
+
+// ── PrefixDetailView ──────────────────────────────────────
+const PrefixDetailView = {
+  template: '#tpl-prefix-detail',
+  components: { VideoCard, Pagination, SortBar },
+  setup() {
+    const route = VueRouter.useRoute();
+    const items = ref([]), total = ref(0), page = ref(1), limit = 24, loading = ref(true);
+    const sort = ref('date');
+    const prefix = computed(() => route.params.code || '');
+    async function load() {
+      loading.value = true;
+      const d = await apiFetch(`/api/prefixes/videos?prefix=${encodeURIComponent(prefix.value)}&page=${page.value}&limit=${limit}&sort=${sort.value}`);
+      if (d) { items.value = d.items; total.value = d.total; }
+      loading.value = false;
+    }
+    function changePage(p) { page.value = p; window.scrollTo(0, 0); }
+    function changeSort(s) { sort.value = s; page.value = 1; }
+    watch(() => route.params.code, () => { page.value = 1; load(); });
+    watch(page, load);
+    watch(sort, load);
+    onMounted(load);
+    return { items, total, page, limit, loading, sort, prefix, changePage, changeSort };
   }
 };
 
@@ -602,6 +918,12 @@ const router = createRouter({
     { path: '/video/:code', component: VideoDetail },
     { path: '/actor/:id', component: ActorView },
     { path: '/tag/:id', component: TagView },
+    { path: '/tags', component: AllTagsView },
+    { path: '/actors', component: AllActorsView },
+    { path: '/series', component: AllSeriesView },
+    { path: '/series-detail', component: SeriesDetailView },
+    { path: '/prefixes', component: AllPrefixesView },
+    { path: '/prefix/:code', component: PrefixDetailView },
   ]
 });
 
@@ -624,14 +946,23 @@ const App = {
   },
   template: `
     <div class="min-h-screen">
-      <!-- Navbar -->
-      <header class="sticky top-0 z-50 bg-gray-950 border-b border-gray-800 px-4 py-3 flex items-center gap-4">
-        <router-link to="/" class="text-indigo-400 font-bold text-lg tracking-tight flex-shrink-0">AVideo</router-link>
-        <form @submit.prevent="doSearch" class="flex-1 max-w-xl">
-          <input v-model="searchQ" type="text" placeholder="搜索番号、标题、片商…"
-            class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
-        </form>
-      </header>
+      <div class="sticky top-0 z-50">
+        <!-- Navbar -->
+        <header class="bg-gray-950 border-b border-gray-800 px-4 py-3 flex items-center gap-4">
+          <router-link to="/" class="text-indigo-400 font-bold text-lg tracking-tight flex-shrink-0">AVideo</router-link>
+          <form @submit.prevent="doSearch" class="flex-1 max-w-xl">
+            <input v-model="searchQ" type="text" placeholder="搜索番号、标题、片商…"
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
+          </form>
+        </header>
+        <!-- Sub-nav -->
+        <nav class="bg-gray-950 border-b border-gray-800 px-4 flex overflow-x-auto">
+          <router-link to="/tags"     class="nav-tab">类别</router-link>
+          <router-link to="/actors"   class="nav-tab">演员</router-link>
+          <router-link to="/series"   class="nav-tab">系列</router-link>
+          <router-link to="/prefixes" class="nav-tab">番号</router-link>
+        </nav>
+      </div>
       <!-- Page -->
       <main class="px-4 py-6 max-w-screen-2xl mx-auto">
         <transition name="fade" mode="out-in">

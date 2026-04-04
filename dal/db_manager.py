@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import logging
 from pathlib import Path
@@ -22,6 +23,12 @@ def _get_conn() -> sqlite3.Connection:
 
 def _rows_to_dicts(rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
+
+def _order_clause(sort: str) -> str:
+    """Return the ORDER BY body for video queries."""
+    if sort == 'score':
+        return "COALESCE(score, 0) DESC, COALESCE(release_date, '') DESC, id DESC"
+    return "COALESCE(release_date, '') DESC, id DESC"
 
 def batch_insert_scanned_videos(scanned_results: list) -> tuple[int, int]:
     """
@@ -269,7 +276,7 @@ def update_actor_avatar(actor_id: int, avatar_path: Optional[str], actor_name: s
             conn.close()
 
 
-def list_videos(page: int = 1, limit: int = 24) -> Dict[str, Any]:
+def list_videos(page: int = 1, limit: int = 24, sort: str = 'date') -> Dict[str, Any]:
     page = max(1, page)
     limit = max(1, min(limit, 200))
     offset = (page - 1) * limit
@@ -281,11 +288,11 @@ def list_videos(page: int = 1, limit: int = 24) -> Dict[str, Any]:
         cursor.execute("SELECT COUNT(DISTINCT code) AS total FROM videos")
         total = int(cursor.fetchone()["total"])
         cursor.execute(
-            """
+            f"""
             SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status
             FROM videos
             WHERE id IN (SELECT MIN(id) FROM videos GROUP BY code)
-            ORDER BY COALESCE(release_date, '') DESC, id DESC
+            ORDER BY {_order_clause(sort)}
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
@@ -426,7 +433,8 @@ def get_actor_with_videos(actor_id: int) -> Optional[Dict[str, Any]]:
             FROM videos v
             JOIN video_actor_link val ON val.video_id = v.id
             WHERE val.actor_id = ?
-            ORDER BY v.id DESC
+              AND v.id IN (SELECT MIN(id) FROM videos GROUP BY code)
+            ORDER BY COALESCE(v.release_date, '') DESC, v.id DESC
             """,
             (actor_id,),
         )
@@ -455,7 +463,8 @@ def get_tag_with_videos(tag_id: int) -> Optional[Dict[str, Any]]:
             FROM videos v
             JOIN video_tag_link vtl ON vtl.video_id = v.id
             WHERE vtl.tag_id = ?
-            ORDER BY v.id DESC
+              AND v.id IN (SELECT MIN(id) FROM videos GROUP BY code)
+            ORDER BY COALESCE(v.release_date, '') DESC, v.id DESC
             """,
             (tag_id,),
         )
@@ -569,6 +578,237 @@ def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, ta
     finally:
         if conn:
             conn.close()
+
+def list_all_tags_with_count() -> List[Dict[str, Any]]:
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT t.id, t.name, COUNT(DISTINCT v.code) AS count
+            FROM tags t
+            JOIN video_tag_link vtl ON vtl.tag_id = t.id
+            JOIN videos v ON v.id = vtl.video_id
+            GROUP BY t.id, t.name
+            ORDER BY count DESC, t.name
+            """
+        )
+        return _rows_to_dicts(cursor.fetchall())
+    except sqlite3.Error as e:
+        logger.error(f"❌ list_all_tags_with_count 失败: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def list_all_actors_with_count() -> List[Dict[str, Any]]:
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT a.id, a.name, a.name_zh, a.avatar_path, COUNT(DISTINCT v.code) AS count
+            FROM actors a
+            JOIN video_actor_link val ON val.actor_id = a.id
+            JOIN videos v ON v.id = val.video_id
+            WHERE a.is_ignored = 0
+            GROUP BY a.id
+            ORDER BY count DESC, a.name
+            """
+        )
+        return _rows_to_dicts(cursor.fetchall())
+    except sqlite3.Error as e:
+        logger.error(f"❌ list_all_actors_with_count 失败: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def list_all_series_with_count() -> List[Dict[str, Any]]:
+    """
+    Return series list using series_clusters for aggregation.
+    Clustered series show canonical_name_zh and sum counts across all variants.
+    Unclustered series fall through with their raw name.
+    """
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+
+        # 1. Get per-series video counts from videos table
+        cursor.execute(
+            "SELECT series, COUNT(DISTINCT code) AS cnt FROM videos "
+            "WHERE series IS NOT NULL AND series != '' GROUP BY series"
+        )
+        series_counts: Dict[str, int] = {r["series"]: r["cnt"] for r in cursor.fetchall()}
+
+        # 2. Load all clusters and build name → cluster_id mapping
+        cursor.execute("SELECT id, canonical_name, canonical_name_zh, variations_json FROM series_clusters")
+        clusters = _rows_to_dicts(cursor.fetchall())
+
+        name_to_cluster_id: Dict[str, int] = {}
+        for c in clusters:
+            all_names = set([c["canonical_name"]] + json.loads(c["variations_json"] or "[]"))
+            for name in all_names:
+                if name and name not in name_to_cluster_id:
+                    name_to_cluster_id[name] = c["id"]
+
+        # 3. Aggregate counts by cluster; collect unclustered series
+        cluster_counts: Dict[int, int] = {}
+        unclustered: Dict[str, int] = {}
+        for series, cnt in series_counts.items():
+            cid = name_to_cluster_id.get(series)
+            if cid:
+                cluster_counts[cid] = cluster_counts.get(cid, 0) + cnt
+            else:
+                unclustered[series] = cnt
+
+        # 4. Build result: clusters first (sorted by count), then unclustered
+        cluster_map = {c["id"]: c for c in clusters}
+        result: List[Dict[str, Any]] = []
+
+        for cid, cnt in sorted(cluster_counts.items(), key=lambda x: -x[1]):
+            c = cluster_map[cid]
+            result.append({
+                "id": cid,
+                "series": c["canonical_name_zh"] or c["canonical_name"],
+                "count": cnt,
+                "type": "cluster",
+            })
+        for series, cnt in sorted(unclustered.items(), key=lambda x: -x[1]):
+            result.append({"id": None, "series": series, "count": cnt, "type": "raw"})
+
+        return result
+    except Exception as e:
+        logger.error(f"❌ list_all_series_with_count 失败: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_videos_by_series(series_name: Optional[str] = None, cluster_id: Optional[int] = None,
+                         page: int = 1, limit: int = 24, sort: str = 'date') -> Dict[str, Any]:
+    """
+    Fetch videos for a series. If cluster_id is given, expands all cluster variants.
+    Falls back to exact series_name match otherwise.
+    """
+    page = max(1, page)
+    limit = max(1, min(limit, 200))
+    offset = (page - 1) * limit
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+
+        if cluster_id:
+            cursor.execute(
+                "SELECT canonical_name, variations_json FROM series_clusters WHERE id = ?",
+                (cluster_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                row = dict(row)
+                names = list(set([row["canonical_name"]] + json.loads(row["variations_json"] or "[]")))
+            else:
+                names = []
+        else:
+            names = [series_name] if series_name else []
+
+        if not names:
+            return {"page": page, "limit": limit, "total": 0, "items": []}
+
+        ph = ",".join("?" * len(names))
+        cursor.execute(f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE series IN ({ph})", names)
+        total = int(cursor.fetchone()["total"])
+        cursor.execute(
+            f"""
+            SELECT id, code, title_jp, title_zh, release_date, score, cover_path
+            FROM videos
+            WHERE series IN ({ph})
+              AND id IN (SELECT MIN(id) FROM videos GROUP BY code)
+            ORDER BY {_order_clause(sort)}
+            LIMIT ? OFFSET ?
+            """,
+            names + [limit, offset],
+        )
+        return {"page": page, "limit": limit, "total": total, "items": _rows_to_dicts(cursor.fetchall())}
+    except Exception as e:
+        logger.error(f"❌ get_videos_by_series 失败: {e}")
+        return {"page": page, "limit": limit, "total": 0, "items": []}
+    finally:
+        if conn:
+            conn.close()
+
+
+def list_all_prefixes_with_count() -> List[Dict[str, Any]]:
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+              UPPER(CASE WHEN INSTR(code, '-') > 0
+                         THEN SUBSTR(code, 1, INSTR(code, '-') - 1)
+                         ELSE code END) AS prefix,
+              COUNT(DISTINCT code) AS count
+            FROM videos
+            GROUP BY prefix
+            ORDER BY count DESC, prefix
+            """
+        )
+        return _rows_to_dicts(cursor.fetchall())
+    except sqlite3.Error as e:
+        logger.error(f"❌ list_all_prefixes_with_count 失败: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_videos_by_prefix(prefix: str, page: int = 1, limit: int = 24, sort: str = 'date') -> Dict[str, Any]:
+    page = max(1, page)
+    limit = max(1, min(limit, 200))
+    offset = (page - 1) * limit
+    prefix_upper = prefix.upper()
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        prefix_expr = """
+            UPPER(CASE WHEN INSTR(code, '-') > 0
+                       THEN SUBSTR(code, 1, INSTR(code, '-') - 1)
+                       ELSE code END)
+        """
+        cursor.execute(
+            f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE {prefix_expr} = ?",
+            (prefix_upper,),
+        )
+        total = int(cursor.fetchone()["total"])
+        cursor.execute(
+            f"""
+            SELECT id, code, title_jp, title_zh, release_date, score, cover_path
+            FROM videos
+            WHERE {prefix_expr} = ?
+              AND id IN (SELECT MIN(id) FROM videos GROUP BY code)
+            ORDER BY {_order_clause(sort)}
+            LIMIT ? OFFSET ?
+            """,
+            (prefix_upper, limit, offset),
+        )
+        return {"page": page, "limit": limit, "total": total, "items": _rows_to_dicts(cursor.fetchall())}
+    except sqlite3.Error as e:
+        logger.error(f"❌ get_videos_by_prefix 失败 [{prefix}]: {e}")
+        return {"page": page, "limit": limit, "total": 0, "items": []}
+    finally:
+        if conn:
+            conn.close()
+
 
 def patch_video(code: str, fields: Dict[str, Any]) -> bool:
     """Update simple scalar fields for all rows sharing the given code."""
