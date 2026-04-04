@@ -1,5 +1,7 @@
 import os
-from flask import Flask, jsonify, request, send_from_directory
+from pathlib import Path
+from flask import Flask, jsonify, request, send_file, send_from_directory
+from werkzeug.utils import secure_filename
 
 from dal.db_manager import (
     get_actor_with_videos,
@@ -12,8 +14,16 @@ from dal.db_manager import (
     list_all_series_with_count,
     list_all_tags_with_count,
     list_videos,
+    delete_video,
+    find_actor_by_name,
+    get_video_file_path,
+    merge_actors,
+    patch_actor,
+    patch_actor_avatar,
     patch_video,
+    patch_video_cover,
     patch_video_relations,
+    rename_video_code,
     search_actors,
     search_series,
     search_videos,
@@ -44,14 +54,56 @@ def api_video_patch(code: str):
     body = request.get_json(silent=True) or {}
     actor_names = body.pop('actors', None)
     tag_names = body.pop('tags', None)
+    new_code = body.pop('code', None)
     changed = False
     if body:
         changed = patch_video(code, body)
     if actor_names is not None or tag_names is not None:
         changed = patch_video_relations(code, actor_names, tag_names) or changed
+    if new_code and new_code != code:
+        if not rename_video_code(code, new_code):
+            return jsonify({'error': 'code already exists or not found'}), 400
+        changed = True
+        code = new_code
     if not changed:
         return jsonify({'error': 'no valid fields or not found'}), 400
-    return jsonify(get_video_by_code(code))
+    return jsonify({'new_code': code, **get_video_by_code(code)})
+
+
+@app.get('/api/videos/<string:code>/stream')
+def api_video_stream(code: str):
+    part = request.args.get('part') or None
+    path = get_video_file_path(code, part)
+    if not path or not os.path.exists(path):
+        return jsonify({'error': 'file not found'}), 404
+    return send_file(path, conditional=True)
+
+
+@app.delete('/api/videos/<string:code>')
+def api_video_delete(code: str):
+    result = delete_video(code)
+    if not result['ok']:
+        return jsonify({'error': result.get('error', 'failed')}), 404
+    return jsonify(result)
+
+
+_COVERS_DIR = os.path.join(os.path.dirname(__file__), '..', 'static', 'covers')
+
+@app.post('/api/videos/<string:code>/cover')
+def api_video_upload_cover(code: str):
+    f = request.files.get('file')
+    if not f:
+        return jsonify({'error': 'no file'}), 400
+    ext = Path(secure_filename(f.filename)).suffix.lower()
+    if ext not in {'.jpg', '.jpeg', '.png', '.webp'}:
+        return jsonify({'error': 'unsupported file type'}), 400
+    os.makedirs(_COVERS_DIR, exist_ok=True)
+    filename = f'{code}{ext}'
+    f.save(os.path.join(_COVERS_DIR, filename))
+    rel_path = f'covers/{filename}'
+    if not patch_video_cover(code, rel_path):
+        return jsonify({'error': 'video not found'}), 404
+    return jsonify({'cover_path': rel_path})
 
 
 @app.get('/api/search')
@@ -127,6 +179,46 @@ def api_actor(actor_id: int):
     if not data:
         return jsonify({'error': 'not found'}), 404
     return jsonify(data)
+
+
+@app.patch('/api/actors/<int:actor_id>')
+def api_actor_patch(actor_id: int):
+    body = request.get_json(silent=True) or {}
+    new_name = body.get('name', '').strip()
+
+    # Check if renaming `name` would collide with an existing actor → merge
+    if new_name:
+        conflict = find_actor_by_name(new_name, exclude_id=actor_id)
+        if conflict:
+            merge_actors(source_id=actor_id, target_id=conflict['id'])
+            data = get_actor_with_videos(conflict['id'])
+            return jsonify({'merged': True, 'actor': data['actor'], 'redirect_id': conflict['id']})
+
+    if not patch_actor(actor_id, body):
+        return jsonify({'error': 'no valid fields or not found'}), 400
+    data = get_actor_with_videos(actor_id)
+    return jsonify({'merged': False, 'actor': data['actor']})
+
+
+_AVATARS_DIR = os.path.join(os.path.dirname(__file__), '..', 'static', 'avatars')
+_ALLOWED_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+@app.post('/api/actors/<int:actor_id>/avatar')
+def api_actor_upload_avatar(actor_id: int):
+    f = request.files.get('file')
+    if not f:
+        return jsonify({'error': 'no file'}), 400
+    ext = Path(secure_filename(f.filename)).suffix.lower()
+    if ext not in _ALLOWED_EXT:
+        return jsonify({'error': 'unsupported file type'}), 400
+    os.makedirs(_AVATARS_DIR, exist_ok=True)
+    filename = f'actor_{actor_id}{ext}'
+    save_path = os.path.join(_AVATARS_DIR, filename)
+    f.save(save_path)
+    rel_path = f'avatars/{filename}'
+    if not patch_actor_avatar(actor_id, rel_path):
+        return jsonify({'error': 'actor not found'}), 404
+    return jsonify({'avatar_path': rel_path})
 
 
 @app.get('/api/tags/<int:tag_id>')

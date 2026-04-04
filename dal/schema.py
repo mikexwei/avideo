@@ -121,6 +121,7 @@ def init_database() -> None:
             "ALTER TABLE videos ADD COLUMN file_size INTEGER",
             "ALTER TABLE videos ADD COLUMN file_mtime TEXT",
             "ALTER TABLE videos ADD COLUMN file_birthtime TEXT",
+            "ALTER TABLE videos ADD COLUMN deleted INTEGER DEFAULT 0",
         ]:
             try:
                 cursor.execute(col_def)

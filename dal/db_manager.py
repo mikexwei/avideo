@@ -285,11 +285,11 @@ def list_videos(page: int = 1, limit: int = 24, sort: str = 'date') -> Dict[str,
     try:
         conn = _get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(DISTINCT code) AS total FROM videos")
+        cursor.execute("SELECT COUNT(DISTINCT code) AS total FROM videos WHERE deleted = 0")
         total = int(cursor.fetchone()["total"])
         cursor.execute(
             f"""
-            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status
+            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status, deleted
             FROM videos
             WHERE id IN (SELECT MIN(id) FROM videos GROUP BY code)
             ORDER BY {_order_clause(sort)}
@@ -316,7 +316,7 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
             """
             SELECT id, code, part, title_jp, title_zh, release_date, duration, maker, publisher,
                    series, score, cover_path, original_file_path, scrape_status,
-                   file_size, file_mtime, file_birthtime
+                   file_size, file_mtime, file_birthtime, deleted
             FROM videos
             WHERE code = ?
             ORDER BY id ASC
@@ -385,14 +385,14 @@ def search_videos(query: str, page: int = 1, limit: int = 24) -> Dict[str, Any]:
             """
             SELECT COUNT(DISTINCT code) AS total
             FROM videos
-            WHERE code LIKE ? OR title_jp LIKE ? OR title_zh LIKE ? OR maker LIKE ?
+            WHERE deleted = 0 AND (code LIKE ? OR title_jp LIKE ? OR title_zh LIKE ? OR maker LIKE ?)
             """,
             (like_q, like_q, like_q, like_q),
         )
         total = int(cursor.fetchone()["total"])
         cursor.execute(
             """
-            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status
+            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status, deleted
             FROM videos
             WHERE id IN (
                 SELECT MIN(id) FROM videos
@@ -429,11 +429,15 @@ def get_actor_with_videos(actor_id: int) -> Optional[Dict[str, Any]]:
 
         cursor.execute(
             """
-            SELECT v.id, v.code, v.title_jp, v.title_zh, v.release_date, v.cover_path, v.score
+            SELECT v.id, v.code, v.title_jp, v.title_zh, v.release_date, v.cover_path, v.score, v.deleted
             FROM videos v
-            JOIN video_actor_link val ON val.video_id = v.id
-            WHERE val.actor_id = ?
-              AND v.id IN (SELECT MIN(id) FROM videos GROUP BY code)
+            WHERE v.id IN (
+                SELECT MIN(v2.id)
+                FROM videos v2
+                JOIN video_actor_link val2 ON val2.video_id = v2.id
+                WHERE val2.actor_id = ?
+                GROUP BY v2.code
+            )
             ORDER BY COALESCE(v.release_date, '') DESC, v.id DESC
             """,
             (actor_id,),
@@ -459,11 +463,15 @@ def get_tag_with_videos(tag_id: int) -> Optional[Dict[str, Any]]:
 
         cursor.execute(
             """
-            SELECT v.id, v.code, v.title_jp, v.title_zh, v.release_date, v.cover_path, v.score
+            SELECT v.id, v.code, v.title_jp, v.title_zh, v.release_date, v.cover_path, v.score, v.deleted
             FROM videos v
-            JOIN video_tag_link vtl ON vtl.video_id = v.id
-            WHERE vtl.tag_id = ?
-              AND v.id IN (SELECT MIN(id) FROM videos GROUP BY code)
+            WHERE v.id IN (
+                SELECT MIN(v2.id)
+                FROM videos v2
+                JOIN video_tag_link vtl2 ON vtl2.video_id = v2.id
+                WHERE vtl2.tag_id = ?
+                GROUP BY v2.code
+            )
             ORDER BY COALESCE(v.release_date, '') DESC, v.id DESC
             """,
             (tag_id,),
@@ -590,6 +598,7 @@ def list_all_tags_with_count() -> List[Dict[str, Any]]:
             FROM tags t
             JOIN video_tag_link vtl ON vtl.tag_id = t.id
             JOIN videos v ON v.id = vtl.video_id
+            WHERE v.deleted = 0
             GROUP BY t.id, t.name
             ORDER BY count DESC, t.name
             """
@@ -614,7 +623,7 @@ def list_all_actors_with_count() -> List[Dict[str, Any]]:
             FROM actors a
             JOIN video_actor_link val ON val.actor_id = a.id
             JOIN videos v ON v.id = val.video_id
-            WHERE a.is_ignored = 0
+            WHERE a.is_ignored = 0 AND v.deleted = 0
             GROUP BY a.id
             ORDER BY count DESC, a.name
             """
@@ -642,7 +651,7 @@ def list_all_series_with_count() -> List[Dict[str, Any]]:
         # 1. Get per-series video counts from videos table
         cursor.execute(
             "SELECT series, COUNT(DISTINCT code) AS cnt FROM videos "
-            "WHERE series IS NOT NULL AND series != '' GROUP BY series"
+            "WHERE series IS NOT NULL AND series != '' AND deleted = 0 GROUP BY series"
         )
         series_counts: Dict[str, int] = {r["series"]: r["cnt"] for r in cursor.fetchall()}
 
@@ -723,11 +732,11 @@ def get_videos_by_series(series_name: Optional[str] = None, cluster_id: Optional
             return {"page": page, "limit": limit, "total": 0, "items": []}
 
         ph = ",".join("?" * len(names))
-        cursor.execute(f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE series IN ({ph})", names)
+        cursor.execute(f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE deleted = 0 AND series IN ({ph})", names)
         total = int(cursor.fetchone()["total"])
         cursor.execute(
             f"""
-            SELECT id, code, title_jp, title_zh, release_date, score, cover_path
+            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, deleted
             FROM videos
             WHERE series IN ({ph})
               AND id IN (SELECT MIN(id) FROM videos GROUP BY code)
@@ -758,6 +767,7 @@ def list_all_prefixes_with_count() -> List[Dict[str, Any]]:
                          ELSE code END) AS prefix,
               COUNT(DISTINCT code) AS count
             FROM videos
+            WHERE deleted = 0
             GROUP BY prefix
             ORDER BY count DESC, prefix
             """
@@ -786,13 +796,13 @@ def get_videos_by_prefix(prefix: str, page: int = 1, limit: int = 24, sort: str 
                        ELSE code END)
         """
         cursor.execute(
-            f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE {prefix_expr} = ?",
+            f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE deleted = 0 AND {prefix_expr} = ?",
             (prefix_upper,),
         )
         total = int(cursor.fetchone()["total"])
         cursor.execute(
             f"""
-            SELECT id, code, title_jp, title_zh, release_date, score, cover_path
+            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, deleted
             FROM videos
             WHERE {prefix_expr} = ?
               AND id IN (SELECT MIN(id) FROM videos GROUP BY code)
@@ -805,6 +815,186 @@ def get_videos_by_prefix(prefix: str, page: int = 1, limit: int = 24, sort: str 
     except sqlite3.Error as e:
         logger.error(f"❌ get_videos_by_prefix 失败 [{prefix}]: {e}")
         return {"page": page, "limit": limit, "total": 0, "items": []}
+    finally:
+        if conn:
+            conn.close()
+
+
+def delete_video(code: str) -> Dict[str, Any]:
+    """Set deleted=1 on all rows for code and delete physical files. Returns deleted file paths."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, original_file_path FROM videos WHERE code = ?", (code,))
+        rows = cursor.fetchall()
+        if not rows:
+            return {"ok": False, "error": "not found"}
+        deleted_files = []
+        for row in rows:
+            path = dict(row)["original_file_path"]
+            if path:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                    deleted_files.append(path)
+                except Exception as e:
+                    logger.warning(f"⚠️ 删除文件失败 [{path}]: {e}")
+        cursor.execute("UPDATE videos SET deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE code = ?", (code,))
+        conn.commit()
+        logger.info(f"🗑️ delete_video [{code}]: deleted {len(deleted_files)} files")
+        return {"ok": True, "deleted_files": deleted_files}
+    except sqlite3.Error as e:
+        logger.error(f"❌ delete_video 失败 [{code}]: {e}")
+        return {"ok": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_video_file_path(code: str, part: Optional[str] = None) -> Optional[str]:
+    """Return original_file_path for given code (and optionally part)."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        if part:
+            cursor.execute(
+                "SELECT original_file_path FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1",
+                (code, part),
+            )
+        else:
+            cursor.execute(
+                "SELECT original_file_path FROM videos WHERE code = ? ORDER BY id ASC LIMIT 1",
+                (code,),
+            )
+        row = cursor.fetchone()
+        return row["original_file_path"] if row else None
+    except sqlite3.Error as e:
+        logger.error(f"❌ get_video_file_path 失败 [{code}]: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def patch_actor(actor_id: int, fields: Dict[str, Any]) -> bool:
+    """Update editable scalar fields for an actor (name, name_zh)."""
+    allowed = {k: v for k, v in fields.items() if k in {'name', 'name_zh'}}
+    if not allowed:
+        return False
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        set_clause = ', '.join(f"{k} = ?" for k in allowed)
+        cursor.execute(f"UPDATE actors SET {set_clause} WHERE id = ?", list(allowed.values()) + [actor_id])
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error(f"❌ patch_actor 失败 [actor_id={actor_id}]: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def merge_actors(source_id: int, target_id: int) -> bool:
+    """Move all video links from source actor to target actor, then delete source."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        # Transfer links that don't already exist on target
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO video_actor_link (video_id, actor_id)
+            SELECT video_id, ? FROM video_actor_link WHERE actor_id = ?
+            """,
+            (target_id, source_id),
+        )
+        cursor.execute("DELETE FROM video_actor_link WHERE actor_id = ?", (source_id,))
+        cursor.execute("DELETE FROM actors WHERE id = ?", (source_id,))
+        conn.commit()
+        logger.info(f"🔀 merge_actors: source={source_id} → target={target_id}")
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"❌ merge_actors 失败: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def find_actor_by_name(name: str, exclude_id: int) -> Optional[Dict[str, Any]]:
+    """Return actor with given name (or name_zh) excluding exclude_id, or None."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, name, name_zh FROM actors WHERE (name = ? OR name_zh = ?) AND id != ?",
+            (name, name, exclude_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {'id': row[0], 'name': row[1], 'name_zh': row[2]}
+    finally:
+        if conn:
+            conn.close()
+
+
+def patch_actor_avatar(actor_id: int, avatar_path: str) -> bool:
+    """Update avatar_path for a single actor."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE actors SET avatar_path = ? WHERE id = ?", (avatar_path, actor_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error(f"❌ patch_actor_avatar 失败 [actor_id={actor_id}]: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def patch_video_cover(code: str, cover_path: str) -> bool:
+    """Update cover_path for all rows sharing the given code."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE videos SET cover_path = ? WHERE code = ?", (cover_path, code))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error(f"❌ patch_video_cover 失败 [{code}]: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def rename_video_code(old_code: str, new_code: str) -> bool:
+    """Rename code for all rows sharing old_code. Fails if new_code already exists."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM videos WHERE code = ? LIMIT 1", (new_code,))
+        if cursor.fetchone():
+            logger.warning(f"rename_video_code: new_code '{new_code}' already exists")
+            return False
+        cursor.execute("UPDATE videos SET code = ? WHERE code = ?", (new_code, old_code))
+        conn.commit()
+        logger.info(f"✏️ rename_video_code: {old_code} → {new_code}")
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error(f"❌ rename_video_code 失败: {e}")
+        return False
     finally:
         if conn:
             conn.close()

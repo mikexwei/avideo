@@ -28,7 +28,7 @@
 
 <!-- ========== VideoCard ========== -->
 <script type="text/x-template" id="tpl-video-card">
-  <div class="card-hover cursor-pointer rounded-lg overflow-hidden bg-gray-900" @click="go">
+  <div class="card-hover cursor-pointer rounded-lg overflow-hidden bg-gray-900 relative" @click="go">
     <div class="relative">
       <img v-if="video.cover_path" :src="'/static/' + video.cover_path" class="cover-img w-full" loading="lazy" @error="imgErr" />
       <div v-else class="cover-img w-full flex items-center justify-center text-gray-600 text-sm">无封面</div>
@@ -40,6 +40,10 @@
       <div class="text-xs text-indigo-400 font-mono mb-1">{{ video.code }}</div>
       <div class="text-sm leading-snug line-clamp-2 text-gray-200">{{ video.title_zh || video.title_jp || '暂无标题' }}</div>
       <div v-if="video.release_date" class="text-xs text-gray-500 mt-1">{{ video.release_date }}</div>
+    </div>
+    <!-- Deleted overlay -->
+    <div v-if="video.deleted" class="absolute inset-0 bg-black bg-opacity-60 flex items-center justify-center rounded-lg pointer-events-none">
+      <span class="text-red-400 text-xs font-bold border border-red-400 px-2 py-0.5 rounded">已删除</span>
     </div>
   </div>
 </script>
@@ -68,7 +72,7 @@
       <div class="flex justify-end mb-3">
         <sort-bar :sort="sort" @change="changeSort" />
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
         <video-card v-for="v in items" :key="v.id" :video="v" />
       </div>
       <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
@@ -85,7 +89,7 @@
     <div v-if="loading" class="text-center py-20 text-gray-500">搜索中…</div>
     <div v-else-if="items.length === 0" class="text-center py-20 text-gray-500">无结果</div>
     <div v-else>
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
         <video-card v-for="v in items" :key="v.id" :video="v" />
       </div>
       <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
@@ -98,13 +102,15 @@
   <div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else-if="!video" class="text-center py-20 text-gray-500">未找到该番号</div>
-    <div v-else class="max-w-5xl mx-auto">
+    <div v-else>
       <!-- Back + Edit toggle -->
       <div class="flex items-center justify-between mb-4">
         <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm">← 返回</button>
         <div class="flex gap-2">
           <template v-if="!editing">
-            <button @click="startEdit" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200">编辑</button>
+            <button v-if="!video.deleted" @click="startEdit" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200">编辑</button>
+            <button v-if="!video.deleted" @click="confirmDelete"
+              class="px-3 py-1 text-sm rounded bg-red-800 hover:bg-red-700 text-white">删除</button>
           </template>
           <template v-else>
             <button @click="saveEdit" :disabled="saving"
@@ -116,30 +122,70 @@
         </div>
       </div>
 
-      <div class="flex flex-col md:flex-row gap-6">
-        <!-- Cover -->
-        <div class="md:w-80 flex-shrink-0">
-          <img v-if="video.cover_path" :src="'/static/' + video.cover_path" class="w-full rounded-lg" @error="imgErr" />
-          <div v-else class="w-full h-48 bg-gray-800 rounded-lg flex items-center justify-center text-gray-600">无封面</div>
+      <!-- Deleted banner -->
+      <div v-if="video.deleted" class="mb-4 px-4 py-2 bg-red-900 bg-opacity-50 border border-red-700 rounded text-red-300 text-sm flex items-center gap-2">
+        <span>⚠️</span><span>该视频文件已删除，数据库记录保留。</span>
+      </div>
+
+      <!-- Title -->
+      <div class="mb-4">
+        <div class="flex items-center gap-3 mb-1">
+          <!-- Code: click to edit -->
+          <template v-if="!editingCode">
+            <span class="font-mono text-indigo-400 text-lg font-bold cursor-pointer hover:underline" @click="startEditCode" title="点击修改番号">{{ video.code }}</span>
+          </template>
+          <template v-else>
+            <input v-model="codeDraft" @keydown.enter="saveCode" @keydown.esc="cancelEditCode"
+              class="bg-gray-800 border border-indigo-500 rounded px-2 py-0.5 font-mono text-indigo-300 text-lg font-bold focus:outline-none w-40" />
+            <button @click="saveCode" class="text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white">保存</button>
+            <button @click="cancelEditCode" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">取消</button>
+          </template>
+          <span v-if="!editing && video.score" class="score-badge text-white text-sm font-bold px-2 py-0.5 rounded">{{ Number(video.score).toFixed(1) }}</span>
+        </div>
+        <h1 class="text-xl font-semibold leading-snug">{{ video.title_zh || video.title_jp }}</h1>
+        <p v-if="video.title_zh && video.title_jp" class="text-sm text-gray-500 mt-0.5">{{ video.title_jp }}</p>
+      </div>
+
+      <!-- Cover (60%) + Info (40%) -->
+      <div class="flex gap-6">
+        <!-- Cover with upload overlay -->
+        <div class="w-3/5 flex-shrink-0">
+          <div class="relative group cursor-pointer" @click="triggerCoverUpload">
+            <img v-if="video.cover_path" :src="coverSrc || ('/static/' + video.cover_path)" class="w-full rounded-lg" @error="imgErr" />
+            <div v-else class="w-full h-64 bg-gray-800 rounded-lg flex items-center justify-center text-gray-600">无封面</div>
+            <div class="absolute inset-0 rounded-lg bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
+              <span class="text-white text-sm">{{ coverUploading ? '上传中…' : '更换封面' }}</span>
+            </div>
+            <input ref="coverFileInput" type="file" accept="image/*" class="hidden" @change="uploadCover" />
+          </div>
+          <!-- Playback buttons -->
+          <div class="flex items-center gap-2 mt-2">
+            <select v-if="fileParts.length > 1" v-model="selectedPart"
+              class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none">
+              <option v-for="f in fileParts" :key="f.part" :value="f.part || ''">{{ f.part || '完整' }}</option>
+            </select>
+            <button @click="playVideo"
+              class="flex-1 px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium">▶ Play</button>
+            <button @click="copyStreamUrl"
+              class="flex-1 px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm">
+              {{ copied ? '已复制 ✓' : '⎘ Copy URL' }}
+            </button>
+          </div>
         </div>
 
         <!-- Info -->
-        <div class="flex-1 min-w-0">
-          <div class="flex items-start gap-3 mb-3">
-            <span class="font-mono text-indigo-400 text-lg font-bold">{{ video.code }}</span>
-            <span v-if="!editing && video.score" class="score-badge text-white text-sm font-bold px-2 py-0.5 rounded self-start">{{ Number(video.score).toFixed(1) }}</span>
-          </div>
+        <div class="w-2/5 min-w-0">
 
           <!-- View mode -->
           <template v-if="!editing">
-            <h1 class="text-lg font-semibold leading-snug mb-1">{{ video.title_zh || video.title_jp }}</h1>
-            <p v-if="video.title_zh && video.title_jp" class="text-sm text-gray-500 mb-3">{{ video.title_jp }}</p>
-            <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4">
-              <template v-for="(val, label) in meta" :key="label">
-                <template v-if="val">
-                  <dt class="text-gray-500">{{ label }}</dt>
-                  <dd class="text-gray-200 truncate">{{ val }}</dd>
-                </template>
+            <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-base mb-4">
+              <template v-for="row in meta" :key="row.label">
+                <dt class="text-gray-500">{{ row.label }}</dt>
+                <dd class="truncate">
+                  <router-link v-if="row.link" :to="row.link"
+                    class="text-indigo-400 hover:text-indigo-300 hover:underline">{{ row.val }}</router-link>
+                  <span v-else class="text-gray-200">{{ row.val }}</span>
+                </dd>
               </template>
             </dl>
           </template>
@@ -262,19 +308,52 @@
     <div v-else>
       <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm mb-4">← 返回</button>
       <div class="flex items-center gap-4 mb-6">
-        <img v-if="data.actor.avatar_path" :src="'/static/' + data.actor.avatar_path"
-          class="w-20 h-20 rounded-full object-cover ring-2 ring-indigo-500" @error="imgErr" />
-        <div class="w-20 h-20 rounded-full bg-gray-700 flex items-center justify-center text-2xl" v-else>?</div>
+        <!-- Avatar + upload overlay -->
+        <div class="relative flex-shrink-0 group cursor-pointer" @click="triggerUpload">
+          <img v-if="data.actor.avatar_path" :src="avatarSrc || ('/static/' + data.actor.avatar_path)"
+            class="w-32 h-32 rounded-full object-cover ring-2 ring-indigo-500" @error="imgErr" />
+          <div v-else class="w-32 h-32 rounded-full bg-gray-700 flex items-center justify-center text-2xl">{{ avatarSrc ? '' : '?' }}
+            <img v-if="avatarSrc" :src="avatarSrc" class="w-32 h-32 rounded-full object-cover absolute inset-0" />
+          </div>
+          <div class="absolute inset-0 rounded-full bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
+            <span class="text-white text-xs">{{ uploading ? '上传中…' : '更换头像' }}</span>
+          </div>
+          <input ref="fileInput" type="file" accept="image/*" class="hidden" @change="uploadAvatar" />
+        </div>
         <div>
-          <h1 class="text-xl font-bold">{{ data.actor.name_zh || data.actor.name }}</h1>
-          <p v-if="data.actor.name_zh" class="text-gray-500 text-sm">{{ data.actor.name }}</p>
+          <!-- Chinese name -->
+          <div class="flex items-center gap-2 mb-0.5">
+            <template v-if="!editingName">
+              <h1 class="text-xl font-bold">{{ data.actor.name_zh || data.actor.name }}</h1>
+              <button @click="startEditName" class="text-gray-500 hover:text-gray-300 text-sm" title="修改名字">✏️</button>
+            </template>
+            <template v-else>
+              <div class="flex flex-col gap-1">
+                <div class="flex items-center gap-1">
+                  <span class="text-xs text-gray-500 w-12">中文名</span>
+                  <input v-model="nameZhDraft" @keydown.esc="cancelEditName" placeholder="中文名"
+                    class="bg-gray-800 border border-gray-600 rounded px-2 py-0.5 text-sm text-white focus:outline-none focus:border-indigo-500 w-44" />
+                </div>
+                <div class="flex items-center gap-1">
+                  <span class="text-xs text-gray-500 w-12">日文名</span>
+                  <input v-model="nameDraft" @keydown.esc="cancelEditName" placeholder="日文名（改名可触发合并）"
+                    class="bg-gray-800 border border-gray-600 rounded px-2 py-0.5 text-sm text-white focus:outline-none focus:border-indigo-500 w-44" />
+                </div>
+                <div class="flex gap-2 mt-1">
+                  <button @click="saveEditName" class="text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white">保存</button>
+                  <button @click="cancelEditName" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">取消</button>
+                </div>
+              </div>
+            </template>
+          </div>
+          <p v-if="!editingName" class="text-gray-500 text-sm">{{ data.actor.name }}</p>
           <p class="text-gray-500 text-sm mt-1">{{ data.videos.length }} 部作品</p>
         </div>
       </div>
       <div class="flex justify-end mb-3">
         <sort-bar :sort="sort" @change="changeSort" />
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
         <video-card v-for="v in sortedVideos" :key="v.id" :video="v" />
       </div>
     </div>
@@ -295,7 +374,7 @@
         </div>
         <sort-bar :sort="sort" @change="changeSort" />
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
         <video-card v-for="v in sortedVideos" :key="v.id" :video="v" />
       </div>
     </div>
@@ -332,12 +411,12 @@
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-52" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
-    <div v-else class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
+    <div v-else class="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-4">
       <router-link v-for="a in filtered" :key="a.id" :to="'/actor/' + a.id"
-        class="flex flex-col items-center gap-1.5 bg-gray-900 hover:bg-gray-800 rounded-lg p-3 text-center transition card-hover">
+        class="flex flex-col items-center gap-2 bg-gray-900 hover:bg-gray-800 rounded-lg py-5 px-2 text-center transition card-hover">
         <img v-if="a.avatar_path && a.avatar_path !== 'no_avatar'"
-          :src="'/static/' + a.avatar_path" class="w-14 h-14 rounded-full object-cover" @error="imgErr" />
-        <span v-else class="w-14 h-14 rounded-full bg-gray-700 flex items-center justify-center text-xl flex-shrink-0">?</span>
+          :src="'/static/' + a.avatar_path" class="w-32 h-32 rounded-full object-cover" @error="imgErr" />
+        <span v-else class="w-32 h-32 rounded-full bg-gray-700 flex items-center justify-center text-2xl flex-shrink-0">?</span>
         <span class="text-xs text-gray-200 leading-tight line-clamp-2 w-full">{{ a.name_zh || a.name }}</span>
         <span class="text-xs text-gray-500">{{ a.count }} 部</span>
       </router-link>
@@ -381,7 +460,7 @@
       </div>
       <div v-if="items.length === 0" class="text-center py-20 text-gray-500">暂无作品</div>
       <div v-else>
-        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
           <video-card v-for="v in items" :key="v.id" :video="v" />
         </div>
         <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
@@ -425,7 +504,7 @@
       </div>
       <div v-if="items.length === 0" class="text-center py-20 text-gray-500">暂无作品</div>
       <div v-else>
-        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
           <video-card v-for="v in items" :key="v.id" :video="v" />
         </div>
         <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
@@ -454,8 +533,8 @@ const { createApp, ref, computed, watch, onMounted } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
 // ── helpers ──────────────────────────────────────────────
-async function apiFetch(url) {
-  const r = await fetch(url);
+async function apiFetch(url, options) {
+  const r = await fetch(url, options);
   if (!r.ok) return null;
   return r.json();
 }
@@ -570,6 +649,7 @@ const VideoDetail = {
   template: '#tpl-video-detail',
   setup() {
     const route = VueRouter.useRoute();
+    const router = VueRouter.useRouter();
     const video = ref(null), loading = ref(true);
     const editing = ref(false), saving = ref(false), saveError = ref('');
     const form = ref({});
@@ -577,16 +657,74 @@ const VideoDetail = {
     const seriesSuggestions = ref([]);
     let actorTimer = null, seriesTimer = null;
 
+    // Streaming
+    const selectedPart = ref(''), copied = ref(false);
+    function streamUrl() {
+      const base = window.location.origin + '/api/videos/' + video.value.code + '/stream';
+      return selectedPart.value ? base + '?part=' + encodeURIComponent(selectedPart.value) : base;
+    }
+    function playVideo() { window.open(streamUrl(), '_blank'); }
+    async function copyStreamUrl() {
+      await navigator.clipboard.writeText(streamUrl());
+      copied.value = true;
+      setTimeout(() => { copied.value = false; }, 2000);
+    }
+
+    // Cover upload
+    const coverFileInput = ref(null), coverUploading = ref(false), coverSrc = ref('');
+    function triggerCoverUpload() { if (coverFileInput.value) coverFileInput.value.click(); }
+    async function uploadCover(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      coverUploading.value = true;
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const res = await apiFetch('/api/videos/' + video.value.code + '/cover', { method: 'POST', body: fd });
+        if (res && res.cover_path) {
+          coverSrc.value = '/static/' + res.cover_path + '?t=' + Date.now();
+          video.value.cover_path = res.cover_path;
+        }
+      } finally {
+        coverUploading.value = false;
+        e.target.value = '';
+      }
+    }
+
+    // Delete
+    async function confirmDelete() {
+      if (!confirm(`确认删除「${video.value.code}」？物理文件将被删除，数据库记录保留。`)) return;
+      const res = await apiFetch('/api/videos/' + video.value.code, { method: 'DELETE' });
+      if (res && res.ok) video.value.deleted = 1;
+    }
+
+    // Code rename
+    const editingCode = ref(false), codeDraft = ref('');
+    function startEditCode() { codeDraft.value = video.value.code; editingCode.value = true; }
+    function cancelEditCode() { editingCode.value = false; }
+    async function saveCode() {
+      const newCode = codeDraft.value.trim();
+      if (!newCode || newCode === video.value.code) { editingCode.value = false; return; }
+      const res = await apiFetch('/api/videos/' + video.value.code, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: newCode }),
+      });
+      editingCode.value = false;
+      if (res && res.new_code) router.replace('/video/' + res.new_code);
+    }
+
     const meta = computed(() => {
-      if (!video.value) return {};
+      if (!video.value) return [];
       const v = video.value;
-      return {
-        '发行日期': v.release_date,
-        '时长': v.duration,
-        '制片方': v.maker,
-        '发行商': v.publisher,
-        '系列': v.series,
-      };
+      const rows = [
+        { label: '发行日期', val: v.release_date, link: null },
+        { label: '时长',     val: v.duration,     link: null },
+        { label: '制片方',   val: v.maker,         link: v.maker     ? { path: '/search', query: { q: v.maker } }     : null },
+        { label: '发行商',   val: v.publisher,     link: v.publisher ? { path: '/search', query: { q: v.publisher } } : null },
+        { label: '系列',     val: v.series,        link: v.series    ? { path: '/series-detail', query: { s: v.series } } : null },
+      ];
+      return rows.filter(r => r.val);
     });
     const fileParts = computed(() => {
       if (!video.value) return [];
@@ -723,6 +861,10 @@ const VideoDetail = {
       onSeriesInput, closeSeriesDropdown, pickSeries,
       removeTag, addTag,
       imgErr, formatSize, copy: copyText,
+      selectedPart, copied, playVideo, copyStreamUrl,
+      coverFileInput, coverUploading, coverSrc, triggerCoverUpload, uploadCover,
+      editingCode, codeDraft, startEditCode, cancelEditCode, saveCode,
+      confirmDelete,
     };
   }
 };
@@ -733,7 +875,10 @@ const ActorView = {
   components: { VideoCard, SortBar },
   setup() {
     const route = VueRouter.useRoute();
+    const router = VueRouter.useRouter();
     const data = ref(null), loading = ref(true), sort = ref('date');
+    const fileInput = ref(null), uploading = ref(false), avatarSrc = ref('');
+    const editingName = ref(false), nameZhDraft = ref(''), nameDraft = ref('');
     const sortedVideos = computed(() => {
       if (!data.value) return [];
       const arr = [...data.value.videos];
@@ -742,12 +887,62 @@ const ActorView = {
     });
     async function load() {
       loading.value = true;
+      avatarSrc.value = '';
       data.value = await apiFetch('/api/actors/' + route.params.id);
       loading.value = false;
     }
+    function triggerUpload() {
+      if (fileInput.value) fileInput.value.click();
+    }
+    async function uploadAvatar(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      uploading.value = true;
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const res = await fetch('/api/actors/' + route.params.id + '/avatar', { method: 'POST', body: fd });
+        const json = await res.json();
+        if (json.avatar_path) {
+          avatarSrc.value = '/static/' + json.avatar_path + '?t=' + Date.now();
+          data.value.actor.avatar_path = json.avatar_path;
+        }
+      } finally {
+        uploading.value = false;
+        e.target.value = '';
+      }
+    }
+    function startEditName() {
+      nameZhDraft.value = data.value.actor.name_zh || '';
+      nameDraft.value = data.value.actor.name || '';
+      editingName.value = true;
+    }
+    function cancelEditName() { editingName.value = false; }
+    async function saveEditName() {
+      const payload = {};
+      if (nameZhDraft.value !== (data.value.actor.name_zh || '')) payload.name_zh = nameZhDraft.value;
+      if (nameDraft.value !== (data.value.actor.name || '')) payload.name = nameDraft.value;
+      if (!Object.keys(payload).length) { editingName.value = false; return; }
+      const res = await apiFetch('/api/actors/' + route.params.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      editingName.value = false;
+      if (!res) return;
+      if (res.merged && res.redirect_id) {
+        router.replace('/actor/' + res.redirect_id);
+      } else if (res.actor) {
+        data.value.actor.name_zh = res.actor.name_zh;
+        data.value.actor.name = res.actor.name;
+      }
+    }
+
     watch(() => route.params.id, load);
     onMounted(load);
-    return { data, loading, imgErr, sort, sortedVideos, changeSort: (s) => { sort.value = s; } };
+    return { data, loading, imgErr, sort, sortedVideos, changeSort: (s) => { sort.value = s; },
+             fileInput, uploading, avatarSrc, triggerUpload, uploadAvatar,
+             editingName, nameZhDraft, nameDraft, startEditName, cancelEditName, saveEditName };
   }
 };
 
