@@ -660,12 +660,31 @@ const VideoDetail = {
     // Streaming
     const selectedPart = ref(''), copied = ref(false);
     function streamUrl() {
-      const base = window.location.origin + '/api/videos/' + video.value.code + '/stream';
+      // 取文件扩展名（供 VRPlayer 等依赖 URL 后缀识别格式的播放器使用）
+      const filePath = (video.value.parts && video.value.parts.length > 0)
+        ? (video.value.parts.find(p => p.part === selectedPart.value) || video.value.parts[0]).original_file_path
+        : video.value.original_file_path;
+      const ext = filePath ? filePath.split('.').pop().toLowerCase() : 'mp4';
+      const base = window.location.origin + '/api/videos/' + video.value.code + '/stream.' + ext;
       return selectedPart.value ? base + '?part=' + encodeURIComponent(selectedPart.value) : base;
     }
     function playVideo() { window.open(streamUrl(), '_blank'); }
     async function copyStreamUrl() {
-      await navigator.clipboard.writeText(streamUrl());
+      const url = streamUrl();
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch (e) {
+        // Safari 隐身模式 fallback
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
       copied.value = true;
       setTimeout(() => { copied.value = false; }, 2000);
     }

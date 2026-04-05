@@ -17,7 +17,7 @@ from config import DB_PATH
 
 # --- 聚类引擎配置 ---
 TRANSLATE_ONLY = True      # 仅翻译模式：开启时跳过聚类，直接从本地 JSON 读取数据并翻译
-DRY_RUN = True              # Dry Run 模式：开启时只打印拟更新结果，不写入数据库
+DRY_RUN = False              # Dry Run 模式：开启时只打印拟更新结果，不写入数据库
 SIMILARITY_THRESHOLD = 0.4  # 算法与大模型混合聚类的最低候选分数底线
 FREQUENCY_THRESHOLD = 0     # 降为0：把只出现过1次的错别字、乱码系列名也全部揪出来聚类
 OLLAMA_HOST = 'http://10.0.0.43:11434'
@@ -110,16 +110,32 @@ def cluster_series():
         with open(cluster_map_path, "r", encoding="utf-8") as f:
             final_canonical_map = json.load(f)
             
+        clustered_names = set()
         for canonical_name, members in final_canonical_map.items():
             variations = [m for m in members if m != canonical_name]
             if not variations:
                 continue
+            clustered_names.add(canonical_name)
+            clustered_names.update(variations)
             updates_to_perform.append({
                 "canonical": canonical_name,
-                "variations": variations
+                "variations": variations,
+                "standalone": False,
             })
             update_count += len(variations)
         print(f"✅ 成功从本地读取 {len(updates_to_perform)} 组聚合数据。")
+
+        # 补全所有未被聚合的孤立系列
+        cursor.execute(
+            "SELECT DISTINCT series FROM videos WHERE series IS NOT NULL AND series != ''"
+        )
+        all_series = {row[0] for row in cursor.fetchall()}
+        standalone_added = 0
+        for s in all_series:
+            if s not in clustered_names:
+                updates_to_perform.append({"canonical": s, "variations": [], "standalone": True})
+                standalone_added += 1
+        print(f"✅ 另补充 {standalone_added} 个孤立系列（无变体，直接生效）。")
 
     else:
         # --- 阶段 1: SQL 频率阈值过滤 ---
@@ -256,19 +272,30 @@ def cluster_series():
 
         # --- 阶段 4: 准备待更新数据 ---
         print(f"\n[4/4] 正在准备待更新数据...")
-        
+
+        # 收集所有被归入某个聚合组的系列名（canonical + variations）
+        clustered_names = set()
         for canonical_name, members in final_canonical_map.items():
-            # 确保 members 列表里不包含权威名称本身
             variations = [m for m in members if m != canonical_name]
             if not variations:
                 continue
-                
+            clustered_names.add(canonical_name)
+            clustered_names.update(variations)
             updates_to_perform.append({
                 "canonical": canonical_name,
-                "variations": variations
+                "variations": variations,
+                "standalone": False,
             })
-            # 估算可能影响的视频数，用于最终报告
             update_count += len(variations)
+
+        # 把未被聚合的孤立系列也加入，variations=[]，直接 is_reviewed=1
+        for s in initial_series_list:
+            if s not in clustered_names:
+                updates_to_perform.append({
+                    "canonical": s,
+                    "variations": [],
+                    "standalone": True,
+                })
 
         # --- 新增：持久化保存聚类结果 (无论是否 Dry Run 都会生成) ---
         cluster_map_path = project_root / "data" / "series_clusters.json"
@@ -293,13 +320,29 @@ def cluster_series():
     # 5.2 翻译系列名称
     print("\n🌍 正在调用 Sakura 模型将聚类结果翻译为中文...")
     translated_names = {}
-    
+
     # 收集所有需要翻译的词条（权威名称 + 所有变体，使用 set 去重）
+    # 同时跳过 series_clusters 中已有 canonical_name_zh 的条目，避免重复翻译
+    conn2 = sqlite3.connect(DB_PATH)
+    existing_zh = {
+        row[0]: row[1]
+        for row in conn2.execute(
+            "SELECT canonical_name, canonical_name_zh FROM series_clusters WHERE canonical_name_zh IS NOT NULL AND canonical_name_zh != ''"
+        ).fetchall()
+    }
+    conn2.close()
+
     items_to_translate = set()
     for u in updates_to_perform:
-        items_to_translate.add(u['canonical'])
+        if u['canonical'] not in existing_zh:
+            items_to_translate.add(u['canonical'])
+        else:
+            translated_names[u['canonical']] = existing_zh[u['canonical']]
         for v in u['variations']:
-            items_to_translate.add(v)
+            if v not in existing_zh:
+                items_to_translate.add(v)
+            else:
+                translated_names[v] = existing_zh[v]
     items_to_translate = list(items_to_translate)
     
     if items_to_translate:
@@ -340,25 +383,34 @@ def cluster_series():
              
     # 5.4 将聚类结果写入审核表
     print(f"\n✍️  正在将聚类结果写入审核表 `series_clusters`...")
+    clustered_count = 0
+    standalone_count = 0
     for update in updates_to_perform:
         canonical_name = update['canonical']
         variations = update['variations']
+        standalone = update.get('standalone', False)
         canonical_name_zh = translated_names.get(canonical_name, canonical_name)
         variations_json = json.dumps(variations, ensure_ascii=False)
+        # 孤立系列（无变体）直接标记为已审核，无需人工确认
+        is_reviewed = 1 if standalone else 0
 
         sql = """
-            INSERT INTO series_clusters (canonical_name, canonical_name_zh, variations_json, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO series_clusters (canonical_name, canonical_name_zh, variations_json, is_reviewed, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(canonical_name) DO UPDATE SET
                 canonical_name_zh = excluded.canonical_name_zh,
                 variations_json = excluded.variations_json,
-                is_reviewed = 0,
+                is_reviewed = CASE WHEN series_clusters.is_reviewed = 1 THEN 1 ELSE excluded.is_reviewed END,
                 updated_at = CURRENT_TIMESTAMP;
         """
-        cursor.execute(sql, (canonical_name, canonical_name_zh, variations_json))
-        
+        cursor.execute(sql, (canonical_name, canonical_name_zh, variations_json, is_reviewed))
+        if standalone:
+            standalone_count += 1
+        else:
+            clustered_count += 1
+
     conn.commit()
-    print(f"🎉 聚类结果已写入数据库待审核。")
+    print(f"🎉 聚类结果已写入数据库：{clustered_count} 组聚合（待审核），{standalone_count} 个孤立系列（已直接生效）。")
 
     print(f"\n🎉 [发现模式] 检查完成！")
     print(f"📄 详细聚合表格已导出至: {md_file_path}")
