@@ -202,9 +202,12 @@
                   class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
                 <ul v-if="f.key === 'series' && seriesSuggestions.length"
                   class="absolute z-50 left-0 right-0 bg-gray-800 border border-gray-600 rounded mt-1 max-h-48 overflow-y-auto shadow-xl">
-                  <li v-for="s in seriesSuggestions" :key="s"
+                  <li v-for="s in seriesSuggestions" :key="s.name"
                     @mousedown.prevent="pickSeries(s)"
-                    class="px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 cursor-pointer">{{ s }}</li>
+                    class="px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 cursor-pointer flex items-center gap-2">
+                    <span>{{ s.name_zh || s.name }}</span>
+                    <span v-if="s.name_zh" class="text-gray-500 text-xs truncate">{{ s.name }}</span>
+                  </li>
                 </ul>
               </div>
             </div>
@@ -349,6 +352,17 @@
           <p v-if="!editingName" class="text-gray-500 text-sm">{{ data.actor.name }}</p>
           <p class="text-gray-500 text-sm mt-1">{{ data.videos.length }} 部作品</p>
         </div>
+      </div>
+      <!-- Tag filter -->
+      <div v-if="allTags.length" class="flex flex-wrap gap-2 mb-3">
+        <button v-for="t in allTags" :key="t"
+          @click="toggleTag(t)"
+          :class="['text-xs px-2 py-0.5 rounded-full border transition',
+            selectedTags.has(t)
+              ? 'bg-indigo-600 border-indigo-500 text-white'
+              : 'bg-gray-800 border-gray-600 text-gray-300 hover:border-gray-400']">
+          {{ t }}
+        </button>
       </div>
       <div class="flex justify-end mb-3">
         <sort-bar :sort="sort" @change="changeSort" />
@@ -655,6 +669,7 @@ const VideoDetail = {
     const form = ref({});
     const actorSuggestions = ref([]);
     const seriesSuggestions = ref([]);
+    const pickedSeriesClusterId = ref(null);
     let actorTimer = null, seriesTimer = null;
 
     // Streaming
@@ -805,13 +820,14 @@ const VideoDetail = {
       const q = form.value.newActor.trim();
       if (!q) return;
       if (actorSuggestions.value.length) { pickActor(actorSuggestions.value[0]); return; }
-      if (!form.value.actors.find(a => a.name === q)) {
+      if (!form.value.actors.find(a => a.name === q || a.name_zh === q)) {
         form.value.actors.push({ name: q, name_zh: '' });
       }
       form.value.newActor = '';
     }
 
     function onSeriesInput() {
+      pickedSeriesClusterId.value = null;
       clearTimeout(seriesTimer);
       const q = form.value.series.trim();
       if (!q) { seriesSuggestions.value = []; return; }
@@ -821,7 +837,12 @@ const VideoDetail = {
       }, 200);
     }
     function closeSeriesDropdown() { setTimeout(() => { seriesSuggestions.value = []; }, 150); }
-    function pickSeries(s) { form.value.series = s; seriesSuggestions.value = []; }
+    function pickSeries(s) {
+      // s is {name, name_zh, cluster_id}
+      form.value.series = s.name_zh || s.name;
+      pickedSeriesClusterId.value = s.cluster_id || null;
+      seriesSuggestions.value = [];
+    }
 
     function removeTag(i) { form.value.tags.splice(i, 1); }
     function addTag() {
@@ -844,9 +865,12 @@ const VideoDetail = {
         maker: f.maker,
         publisher: f.publisher,
         series: f.series,
-        actors: f.actors.map(a => a.name),
+        actors: f.actors.map(a => ({ name: a.name || '', name_zh: a.name_zh || '' })),
         tags: f.tags.map(t => t.name),
       };
+      if (pickedSeriesClusterId.value) {
+        payload.series_cluster_id = pickedSeriesClusterId.value;
+      }
       if (f.score !== '' && f.score !== null) payload.score = parseFloat(f.score);
       try {
         const r = await fetch('/api/videos/' + route.params.code, {
@@ -898,9 +922,35 @@ const ActorView = {
     const data = ref(null), loading = ref(true), sort = ref('date');
     const fileInput = ref(null), uploading = ref(false), avatarSrc = ref('');
     const editingName = ref(false), nameZhDraft = ref(''), nameDraft = ref('');
+    const selectedTags = ref(new Set());
+
+    // Collect all unique tags from all videos
+    const allTags = computed(() => {
+      if (!data.value) return [];
+      const tagSet = new Set();
+      for (const v of data.value.videos) {
+        if (v.tags) v.tags.forEach(t => tagSet.add(t.name));
+      }
+      return [...tagSet].sort();
+    });
+
+    function toggleTag(t) {
+      const s = new Set(selectedTags.value);
+      s.has(t) ? s.delete(t) : s.add(t);
+      selectedTags.value = s;
+    }
+
     const sortedVideos = computed(() => {
       if (!data.value) return [];
-      const arr = [...data.value.videos];
+      let arr = [...data.value.videos];
+      // Filter: video must have ALL selected tags
+      if (selectedTags.value.size > 0) {
+        arr = arr.filter(v => {
+          const vTags = new Set((v.tags || []).map(t => t.name));
+          for (const t of selectedTags.value) if (!vTags.has(t)) return false;
+          return true;
+        });
+      }
       if (sort.value === 'score') return arr.sort((a, b) => (b.score || 0) - (a.score || 0));
       return arr.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
     });
@@ -957,11 +1007,12 @@ const ActorView = {
       }
     }
 
-    watch(() => route.params.id, load);
+    watch(() => route.params.id, () => { selectedTags.value = new Set(); load(); });
     onMounted(load);
     return { data, loading, imgErr, sort, sortedVideos, changeSort: (s) => { sort.value = s; },
              fileInput, uploading, avatarSrc, triggerUpload, uploadAvatar,
-             editingName, nameZhDraft, nameDraft, startEditName, cancelEditName, saveEditName };
+             editingName, nameZhDraft, nameDraft, startEditName, cancelEditName, saveEditName,
+             allTags, selectedTags, toggleTag };
   }
 };
 

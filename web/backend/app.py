@@ -14,6 +14,7 @@ from dal.db_manager import (
     list_all_series_with_count,
     list_all_tags_with_count,
     list_videos,
+    assign_series_cluster,
     delete_video,
     find_actor_by_name,
     get_video_file_path,
@@ -55,9 +56,14 @@ def api_video_patch(code: str):
     actor_names = body.pop('actors', None)
     tag_names = body.pop('tags', None)
     new_code = body.pop('code', None)
+    cluster_id = body.pop('series_cluster_id', None)
     changed = False
+    # If user picked a cluster, assign via cluster logic (merge old series in)
+    if cluster_id:
+        changed = assign_series_cluster(code, int(cluster_id))
+        body.pop('series', None)  # don't double-write series
     if body:
-        changed = patch_video(code, body)
+        changed = patch_video(code, body) or changed
     if actor_names is not None or tag_names is not None:
         changed = patch_video_relations(code, actor_names, tag_names) or changed
     if new_code and new_code != code:

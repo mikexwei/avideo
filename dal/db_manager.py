@@ -442,7 +442,20 @@ def get_actor_with_videos(actor_id: int) -> Optional[Dict[str, Any]]:
             """,
             (actor_id,),
         )
-        return {"actor": dict(actor), "videos": _rows_to_dicts(cursor.fetchall())}
+        videos = _rows_to_dicts(cursor.fetchall())
+        # Attach tags for each video (for frontend filtering)
+        for v in videos:
+            cursor.execute(
+                """
+                SELECT t.id, t.name FROM tags t
+                JOIN video_tag_link vtl ON vtl.tag_id = t.id
+                JOIN videos vv ON vv.id = vtl.video_id
+                WHERE vv.code = ? ORDER BY t.name
+                """,
+                (v['code'],),
+            )
+            v['tags'] = _rows_to_dicts(cursor.fetchall())
+        return {"actor": dict(actor), "videos": videos}
     except sqlite3.Error as e:
         logger.error(f"❌ 查询演员失败 [{actor_id}]: {e}")
         return None
@@ -511,23 +524,43 @@ def search_actors(q: str, limit: int = 10) -> List[Dict[str, Any]]:
             conn.close()
 
 
-def search_series(q: str, limit: int = 10) -> List[str]:
-    """Return distinct series names containing q."""
+def search_series(q: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Search series by Japanese name or Chinese cluster name.
+    Returns list of {name, name_zh, cluster_id} dicts.
+    """
     like_q = f"%{q}%"
     conn = None
     try:
         conn = _get_conn()
         cursor = conn.cursor()
+        # 1. clusters matching canonical_name_zh or canonical_name
         cursor.execute(
             """
-            SELECT DISTINCT series FROM videos
+            SELECT canonical_name AS name, canonical_name_zh AS name_zh, id AS cluster_id
+            FROM series_clusters
+            WHERE (canonical_name_zh LIKE ? OR canonical_name LIKE ?)
+              AND canonical_name_zh IS NOT NULL AND canonical_name_zh != ''
+            ORDER BY canonical_name_zh
+            LIMIT ?
+            """,
+            (like_q, like_q, limit),
+        )
+        results = _rows_to_dicts(cursor.fetchall())
+        cluster_names = {r['name'] for r in results}
+        # 2. raw series from videos not already covered by a cluster result
+        cursor.execute(
+            """
+            SELECT DISTINCT series AS name FROM videos
             WHERE series IS NOT NULL AND series != '' AND series LIKE ?
             ORDER BY series
             LIMIT ?
             """,
             (like_q, limit),
         )
-        return [r[0] for r in cursor.fetchall()]
+        for r in cursor.fetchall():
+            if r['name'] not in cluster_names:
+                results.append({'name': r['name'], 'name_zh': None, 'cluster_id': None})
+        return results[:limit]
     except sqlite3.Error as e:
         logger.error(f"❌ search_series 失败: {e}")
         return []
@@ -555,13 +588,24 @@ def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, ta
         ph = ','.join('?' * len(video_ids))
         if actor_names is not None:
             cursor.execute(f"DELETE FROM video_actor_link WHERE video_id IN ({ph})", video_ids)
-            for name in actor_names:
-                name = name.strip()
+            for entry in actor_names:
+                if isinstance(entry, dict):
+                    name = (entry.get('name') or '').strip()
+                    name_zh = (entry.get('name_zh') or '').strip()
+                else:
+                    name = entry.strip()
+                    name_zh = ''
                 if not name:
                     continue
-                cursor.execute("INSERT OR IGNORE INTO actors (name) VALUES (?)", (name,))
+                # Find by name, else create
                 cursor.execute("SELECT id FROM actors WHERE name = ?", (name,))
                 row = cursor.fetchone()
+                if not row:
+                    cursor.execute("INSERT INTO actors (name, name_zh) VALUES (?, ?)", (name, name_zh or None))
+                    cursor.execute("SELECT id FROM actors WHERE name = ?", (name,))
+                    row = cursor.fetchone()
+                elif name_zh:
+                    cursor.execute("UPDATE actors SET name_zh = ? WHERE id = ? AND (name_zh IS NULL OR name_zh = '')", (name_zh, row[0]))
                 if row:
                     for vid in video_ids:
                         cursor.execute("INSERT OR IGNORE INTO video_actor_link (video_id, actor_id) VALUES (?, ?)", (vid, row[0]))
@@ -955,6 +999,55 @@ def patch_actor_avatar(actor_id: int, avatar_path: str) -> bool:
         return cursor.rowcount > 0
     except sqlite3.Error as e:
         logger.error(f"❌ patch_actor_avatar 失败 [actor_id={actor_id}]: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def assign_series_cluster(code: str, cluster_id: int) -> bool:
+    """Assign a video's series to an existing cluster.
+    - Adds the video's current series name as a variation in the cluster
+    - Updates videos.series to canonical_name for all rows with this code
+    """
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        # Get cluster info
+        cursor.execute(
+            "SELECT canonical_name, variations_json FROM series_clusters WHERE id = ?",
+            (cluster_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False
+        canonical_name = row['canonical_name']
+        variations = json.loads(row['variations_json'] or '[]')
+        # Get current series of this video (may be empty)
+        cursor.execute("SELECT DISTINCT series FROM videos WHERE code = ? AND series IS NOT NULL AND series != ''", (code,))
+        old_series_rows = cursor.fetchall()
+        for old_row in old_series_rows:
+            old_series = old_row['series']
+            if old_series and old_series != canonical_name and old_series not in variations:
+                variations.append(old_series)
+                # Also reassign any other videos with that series name
+                cursor.execute(
+                    "UPDATE videos SET series = ? WHERE series = ?",
+                    (canonical_name, old_series),
+                )
+        # Update variations_json in cluster
+        cursor.execute(
+            "UPDATE series_clusters SET variations_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (json.dumps(variations, ensure_ascii=False), cluster_id),
+        )
+        # Set this video's series to canonical_name
+        cursor.execute("UPDATE videos SET series = ? WHERE code = ?", (canonical_name, code))
+        conn.commit()
+        logger.info(f"✏️ assign_series_cluster [{code}] → cluster {cluster_id} ({canonical_name})")
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"❌ assign_series_cluster 失败: {e}")
         return False
     finally:
         if conn:
