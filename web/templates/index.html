@@ -387,7 +387,7 @@
     <div class="flex items-center gap-4 mb-6">
       <h1 class="text-xl font-bold">所有类别</h1>
       <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
-      <input v-model="q" placeholder="过滤类别…"
+      <input :value="q" @input="updateQ($event.target.value)" placeholder="过滤类别…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-48" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
@@ -407,7 +407,7 @@
     <div class="flex items-center gap-4 mb-6 flex-wrap">
       <h1 class="text-xl font-bold">所有演员</h1>
       <span class="text-gray-500 text-sm">{{ filtered.length }} 人</span>
-      <input v-model="q" placeholder="搜索演员名…"
+      <input :value="q" @input="updateQ($event.target.value)" placeholder="搜索演员名…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-52" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
@@ -430,7 +430,7 @@
     <div class="flex items-center gap-4 mb-6 flex-wrap">
       <h1 class="text-xl font-bold">所有系列</h1>
       <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
-      <input v-model="q" placeholder="搜索系列名…"
+      <input :value="q" @input="updateQ($event.target.value)" placeholder="搜索系列名…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-52" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
@@ -475,7 +475,7 @@
     <div class="flex items-center gap-4 mb-6 flex-wrap">
       <h1 class="text-xl font-bold">所有番号前缀</h1>
       <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
-      <input v-model="q" placeholder="过滤前缀…"
+      <input :value="q" @input="updateQ($event.target.value)" placeholder="过滤前缀…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-40" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
@@ -593,18 +593,20 @@ const HomeView = {
   template: '#tpl-home',
   components: { VideoCard, Pagination, SortBar },
   setup() {
-    const items = ref([]), total = ref(0), page = ref(1), limit = 24, loading = ref(true);
-    const sort = ref('date');
+    const route = VueRouter.useRoute();
+    const router = VueRouter.useRouter();
+    const items = ref([]), total = ref(0), limit = 24, loading = ref(true);
+    const page = computed(() => parseInt(route.query.page) || 1);
+    const sort = computed(() => route.query.sort || 'date');
     async function load() {
       loading.value = true;
       const d = await apiFetch(`/api/videos?page=${page.value}&limit=${limit}&sort=${sort.value}`);
       if (d) { items.value = d.items; total.value = d.total; }
       loading.value = false;
     }
-    function changePage(p) { page.value = p; window.scrollTo(0, 0); }
-    function changeSort(s) { sort.value = s; page.value = 1; }
-    watch(page, load);
-    watch(sort, load);
+    function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
+    function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
+    watch(() => [route.query.page, route.query.sort], load);
     onMounted(load);
     return { items, total, page, limit, loading, sort, changePage, changeSort };
   }
@@ -876,7 +878,7 @@ const ActorView = {
   setup() {
     const route = VueRouter.useRoute();
     const router = VueRouter.useRouter();
-    const data = ref(null), loading = ref(true), sort = ref('date');
+    const data = ref(null), loading = ref(true);
     const fileInput = ref(null), uploading = ref(false), avatarSrc = ref('');
     const editingName = ref(false), nameZhDraft = ref(''), nameDraft = ref('');
     const sortedVideos = computed(() => {
@@ -938,9 +940,12 @@ const ActorView = {
       }
     }
 
+    const sort = computed(() => route.query.sort || 'date');
+    function changeSort(s) { router.replace({ query: { ...route.query, sort: s } }); }
+
     watch(() => route.params.id, load);
     onMounted(load);
-    return { data, loading, imgErr, sort, sortedVideos, changeSort: (s) => { sort.value = s; },
+    return { data, loading, imgErr, sort, sortedVideos, changeSort,
              fileInput, uploading, avatarSrc, triggerUpload, uploadAvatar,
              editingName, nameZhDraft, nameDraft, startEditName, cancelEditName, saveEditName };
   }
@@ -952,7 +957,9 @@ const TagView = {
   components: { VideoCard, SortBar },
   setup() {
     const route = VueRouter.useRoute();
-    const data = ref(null), loading = ref(true), sort = ref('date');
+    const router = VueRouter.useRouter();
+    const data = ref(null), loading = ref(true);
+    const sort = computed(() => route.query.sort || 'date');
     const sortedVideos = computed(() => {
       if (!data.value) return [];
       const arr = [...data.value.videos];
@@ -964,9 +971,10 @@ const TagView = {
       data.value = await apiFetch('/api/tags/' + route.params.id);
       loading.value = false;
     }
+    function changeSort(s) { router.replace({ query: { ...route.query, sort: s } }); }
     watch(() => route.params.id, load);
     onMounted(load);
-    return { data, loading, sort, sortedVideos, changeSort: (s) => { sort.value = s; } };
+    return { data, loading, sort, sortedVideos, changeSort };
   }
 };
 
@@ -974,17 +982,21 @@ const TagView = {
 const AllTagsView = {
   template: '#tpl-all-tags',
   setup() {
-    const items = ref([]), loading = ref(true), q = ref('');
+    const route = VueRouter.useRoute();
+    const router = VueRouter.useRouter();
+    const items = ref([]), loading = ref(true);
+    const q = computed(() => route.query.q || '');
     const filtered = computed(() => {
       if (!q.value) return items.value;
       const lower = q.value.toLowerCase();
       return items.value.filter(t => t.name.toLowerCase().includes(lower));
     });
+    function updateQ(v) { router.replace({ query: { ...route.query, q: v || undefined } }); }
     onMounted(async () => {
       items.value = await apiFetch('/api/tags/all') || [];
       loading.value = false;
     });
-    return { items, loading, q, filtered };
+    return { items, loading, q, filtered, updateQ };
   }
 };
 
@@ -992,7 +1004,10 @@ const AllTagsView = {
 const AllActorsView = {
   template: '#tpl-all-actors',
   setup() {
-    const items = ref([]), loading = ref(true), q = ref('');
+    const route = VueRouter.useRoute();
+    const router = VueRouter.useRouter();
+    const items = ref([]), loading = ref(true);
+    const q = computed(() => route.query.q || '');
     const filtered = computed(() => {
       if (!q.value) return items.value;
       const lower = q.value.toLowerCase();
@@ -1001,11 +1016,12 @@ const AllActorsView = {
         (a.name_zh && a.name_zh.toLowerCase().includes(lower))
       );
     });
+    function updateQ(v) { router.replace({ query: { ...route.query, q: v || undefined } }); }
     onMounted(async () => {
       items.value = await apiFetch('/api/actors/all') || [];
       loading.value = false;
     });
-    return { items, loading, q, filtered, imgErr };
+    return { items, loading, q, filtered, imgErr, updateQ };
   }
 };
 
@@ -1013,12 +1029,16 @@ const AllActorsView = {
 const AllSeriesView = {
   template: '#tpl-all-series',
   setup() {
-    const items = ref([]), loading = ref(true), q = ref('');
+    const route = VueRouter.useRoute();
+    const router = VueRouter.useRouter();
+    const items = ref([]), loading = ref(true);
+    const q = computed(() => route.query.q || '');
     const filtered = computed(() => {
       if (!q.value) return items.value;
       const lower = q.value.toLowerCase();
       return items.value.filter(s => s.series.toLowerCase().includes(lower));
     });
+    function updateQ(v) { router.replace({ query: { ...route.query, q: v || undefined } }); }
     function seriesLink(s) {
       return s.id != null
         ? { path: '/series-detail', query: { cid: s.id, name: s.series } }
@@ -1028,7 +1048,7 @@ const AllSeriesView = {
       items.value = await apiFetch('/api/series/all') || [];
       loading.value = false;
     });
-    return { items, loading, q, filtered, seriesLink };
+    return { items, loading, q, filtered, updateQ, seriesLink };
   }
 };
 
@@ -1038,8 +1058,10 @@ const SeriesDetailView = {
   components: { VideoCard, Pagination, SortBar },
   setup() {
     const route = VueRouter.useRoute();
-    const items = ref([]), total = ref(0), page = ref(1), limit = 24, loading = ref(true);
-    const sort = ref('date');
+    const router = VueRouter.useRouter();
+    const items = ref([]), total = ref(0), limit = 24, loading = ref(true);
+    const page = computed(() => parseInt(route.query.page) || 1);
+    const sort = computed(() => route.query.sort || 'date');
     const displayName = computed(() => route.query.name || route.query.s || '');
     async function load() {
       const cid = route.query.cid;
@@ -1051,11 +1073,9 @@ const SeriesDetailView = {
       if (d) { items.value = d.items; total.value = d.total; }
       loading.value = false;
     }
-    function changePage(p) { page.value = p; window.scrollTo(0, 0); }
-    function changeSort(s) { sort.value = s; page.value = 1; }
-    watch(() => [route.query.cid, route.query.s], () => { page.value = 1; load(); });
-    watch(page, load);
-    watch(sort, load);
+    function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
+    function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
+    watch(() => [route.query.cid, route.query.s, route.query.page, route.query.sort], load);
     onMounted(load);
     return { items, total, page, limit, loading, sort, displayName, changePage, changeSort };
   }
@@ -1065,17 +1085,21 @@ const SeriesDetailView = {
 const AllPrefixesView = {
   template: '#tpl-all-prefixes',
   setup() {
-    const items = ref([]), loading = ref(true), q = ref('');
+    const route = VueRouter.useRoute();
+    const router = VueRouter.useRouter();
+    const items = ref([]), loading = ref(true);
+    const q = computed(() => route.query.q || '');
     const filtered = computed(() => {
       if (!q.value) return items.value;
       const upper = q.value.toUpperCase();
       return items.value.filter(p => p.prefix.includes(upper));
     });
+    function updateQ(v) { router.replace({ query: { ...route.query, q: v || undefined } }); }
     onMounted(async () => {
       items.value = await apiFetch('/api/prefixes/all') || [];
       loading.value = false;
     });
-    return { items, loading, q, filtered };
+    return { items, loading, q, filtered, updateQ };
   }
 };
 
@@ -1085,8 +1109,10 @@ const PrefixDetailView = {
   components: { VideoCard, Pagination, SortBar },
   setup() {
     const route = VueRouter.useRoute();
-    const items = ref([]), total = ref(0), page = ref(1), limit = 24, loading = ref(true);
-    const sort = ref('date');
+    const router = VueRouter.useRouter();
+    const items = ref([]), total = ref(0), limit = 24, loading = ref(true);
+    const page = computed(() => parseInt(route.query.page) || 1);
+    const sort = computed(() => route.query.sort || 'date');
     const prefix = computed(() => route.params.code || '');
     async function load() {
       loading.value = true;
@@ -1094,11 +1120,9 @@ const PrefixDetailView = {
       if (d) { items.value = d.items; total.value = d.total; }
       loading.value = false;
     }
-    function changePage(p) { page.value = p; window.scrollTo(0, 0); }
-    function changeSort(s) { sort.value = s; page.value = 1; }
-    watch(() => route.params.code, () => { page.value = 1; load(); });
-    watch(page, load);
-    watch(sort, load);
+    function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
+    function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
+    watch(() => [route.params.code, route.query.page, route.query.sort], load);
     onMounted(load);
     return { items, total, page, limit, loading, sort, prefix, changePage, changeSort };
   }
@@ -1107,6 +1131,10 @@ const PrefixDetailView = {
 // ── Router ────────────────────────────────────────────────
 const router = createRouter({
   history: createWebHashHistory(),
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) return savedPosition;
+    return { top: 0 };
+  },
   routes: [
     { path: '/', component: HomeView },
     { path: '/search', component: SearchView },
