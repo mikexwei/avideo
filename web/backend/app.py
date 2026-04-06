@@ -14,6 +14,7 @@ from dal.db_manager import (
     list_all_series_with_count,
     list_all_tags_with_count,
     list_videos,
+    assign_series_cluster,
     delete_video,
     find_actor_by_name,
     get_video_file_path,
@@ -55,9 +56,14 @@ def api_video_patch(code: str):
     actor_names = body.pop('actors', None)
     tag_names = body.pop('tags', None)
     new_code = body.pop('code', None)
+    cluster_id = body.pop('series_cluster_id', None)
     changed = False
+    # If user picked a cluster, assign via cluster logic (merge old series in)
+    if cluster_id:
+        changed = assign_series_cluster(code, int(cluster_id))
+        body.pop('series', None)  # don't double-write series
     if body:
-        changed = patch_video(code, body)
+        changed = patch_video(code, body) or changed
     if actor_names is not None or tag_names is not None:
         changed = patch_video_relations(code, actor_names, tag_names) or changed
     if new_code and new_code != code:
@@ -70,13 +76,50 @@ def api_video_patch(code: str):
     return jsonify({'new_code': code, **get_video_by_code(code)})
 
 
-@app.get('/api/videos/<string:code>/stream')
-def api_video_stream(code: str):
-    part = request.args.get('part') or None
+_MIME_MAP = {
+    '.mp4': 'video/mp4',
+    '.m4v': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.avi': 'video/x-msvideo',
+    '.wmv': 'video/x-ms-wmv',
+    '.mkv': 'video/x-matroska',
+    '.webm': 'video/webm',
+    '.flv': 'video/x-flv',
+}
+
+def _do_stream(code: str, part: str = None):
     path = get_video_file_path(code, part)
     if not path or not os.path.exists(path):
         return jsonify({'error': 'file not found'}), 404
-    return send_file(path, conditional=True)
+    ext = Path(path).suffix.lower()
+    mime = _MIME_MAP.get(ext, 'video/mp4')
+    resp = send_file(path, mimetype=mime, conditional=True)
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Headers'] = 'Range'
+    resp.headers['Access-Control-Expose-Headers'] = 'Content-Range, Accept-Ranges, Content-Length'
+    resp.headers['Accept-Ranges'] = 'bytes'
+    return resp
+
+
+@app.get('/api/videos/<string:code>/stream')
+def api_video_stream(code: str):
+    return _do_stream(code, request.args.get('part') or None)
+
+
+# 带扩展名的别名路由，供 VRPlayer 等依赖 URL 后缀判断格式的播放器使用
+@app.get('/api/videos/<string:code>/stream.<string:ext>')
+def api_video_stream_ext(code: str, ext: str):
+    return _do_stream(code, request.args.get('part') or None)
+
+
+@app.route('/api/videos/<string:code>/stream', methods=['OPTIONS'])
+@app.route('/api/videos/<string:code>/stream.<string:ext>', methods=['OPTIONS'])
+def api_video_stream_options(code: str, **kwargs):
+    resp = app.make_default_options_response()
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Range'
+    return resp
 
 
 @app.delete('/api/videos/<string:code>')
