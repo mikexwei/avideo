@@ -469,7 +469,7 @@
     <div class="flex items-center gap-4 mb-6">
       <h1 class="text-xl font-bold">所有类别</h1>
       <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
-      <input :value="q" @input="updateQ($event.target.value)" placeholder="过滤类别…"
+      <input :value="q" @input="!$event.isComposing && updateQ($event.target.value)" @compositionend="updateQ($event.target.value)" placeholder="过滤类别…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-48" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
@@ -489,7 +489,7 @@
     <div class="flex items-center gap-4 mb-6 flex-wrap">
       <h1 class="text-xl font-bold">所有演员</h1>
       <span class="text-gray-500 text-sm">{{ filtered.length }} 人</span>
-      <input :value="q" @input="updateQ($event.target.value)" placeholder="搜索演员名…"
+      <input :value="q" @input="!$event.isComposing && updateQ($event.target.value)" @compositionend="updateQ($event.target.value)" placeholder="搜索演员名…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-52" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
@@ -512,7 +512,7 @@
     <div class="flex items-center gap-4 mb-6 flex-wrap">
       <h1 class="text-xl font-bold">所有系列</h1>
       <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
-      <input :value="q" @input="updateQ($event.target.value)" placeholder="搜索系列名…"
+      <input :value="q" @input="!$event.isComposing && updateQ($event.target.value)" @compositionend="updateQ($event.target.value)" placeholder="搜索系列名…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-52" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
@@ -557,7 +557,7 @@
     <div class="flex items-center gap-4 mb-6 flex-wrap">
       <h1 class="text-xl font-bold">所有番号前缀</h1>
       <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
-      <input :value="q" @input="updateQ($event.target.value)" placeholder="过滤前缀…"
+      <input :value="q" @input="!$event.isComposing && updateQ($event.target.value)" @compositionend="updateQ($event.target.value)" placeholder="过滤前缀…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-40" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
@@ -613,6 +613,16 @@
   <script>
     const { createApp, ref, computed, watch, onMounted } = Vue;
     const { createRouter, createWebHashHistory } = VueRouter;
+
+    // ── scroll position preservation ─────────────────────────
+    const _scrollMap = new Map();
+    window.addEventListener('scroll', () => {
+      _scrollMap.set(window.location.href, window.scrollY);
+    }, { passive: true });
+    function restoreScroll() {
+      const y = _scrollMap.get(window.location.href);
+      if (y != null) Vue.nextTick(() => window.scrollTo({ top: y, behavior: 'instant' }));
+    }
 
     // ── helpers ──────────────────────────────────────────────
     async function apiFetch(url, options) {
@@ -685,6 +695,7 @@
           const d = await apiFetch(`/api/videos?page=${page.value}&limit=${limit}&sort=${sort.value}`);
           if (d) { items.value = d.items; total.value = d.total; }
           loading.value = false;
+          restoreScroll();
         }
         function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
         function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
@@ -708,6 +719,7 @@
           const d = await apiFetch(`/api/search?q=${encodeURIComponent(q.value)}&page=${page.value}&limit=${limit}`);
           if (d) { items.value = d.items; total.value = d.total; }
           loading.value = false;
+          restoreScroll();
         }
         function changePage(p) { page.value = p; window.scrollTo(0, 0); }
         watch([q], () => { page.value = 1; load(); });
@@ -826,7 +838,7 @@
             { label: '时长', val: v.duration, link: null },
             { label: '制片方', val: v.maker, link: v.maker ? { path: '/search', query: { q: v.maker } } : null },
             { label: '发行商', val: v.publisher, link: v.publisher ? { path: '/search', query: { q: v.publisher } } : null },
-            { label: '系列', val: v.series, link: v.series ? { path: '/series-detail', query: { s: v.series } } : null },
+            { label: '系列', val: v.series_zh || v.series, link: v.series ? (v.series_cluster_id ? { path: '/series-detail', query: { cid: v.series_cluster_id, name: v.series_zh || v.series } } : { path: '/series-detail', query: { s: v.series } }) : null },
           ];
           return rows.filter(r => r.val);
         });
@@ -843,6 +855,7 @@
           loading.value = true;
           video.value = await apiFetch('/api/videos/' + route.params.code);
           loading.value = false;
+          restoreScroll();
         }
 
         function startEdit() {
@@ -992,9 +1005,11 @@
         const data = ref(null), loading = ref(true);
         const fileInput = ref(null), uploading = ref(false), avatarSrc = ref('');
         const editingName = ref(false), nameZhDraft = ref(''), nameDraft = ref('');
-        const selectedTags = ref(new Set());
+        // Tags stored in URL query: ?tags=A,B,C
+        const selectedTags = computed(() => new Set(
+          route.query.tags ? route.query.tags.split(',').filter(Boolean) : []
+        ));
 
-        // Collect all unique tags from all videos
         const allTags = computed(() => {
           if (!data.value) return [];
           const tagSet = new Set();
@@ -1007,13 +1022,13 @@
         function toggleTag(t) {
           const s = new Set(selectedTags.value);
           s.has(t) ? s.delete(t) : s.add(t);
-          selectedTags.value = s;
+          const tags = [...s].join(',') || undefined;
+          router.replace({ query: { ...route.query, tags } });
         }
 
         const sortedVideos = computed(() => {
           if (!data.value) return [];
           let arr = [...data.value.videos];
-          // Filter: video must have ALL selected tags
           if (selectedTags.value.size > 0) {
             arr = arr.filter(v => {
               const vTags = new Set((v.tags || []).map(t => t.name));
@@ -1029,6 +1044,7 @@
           avatarSrc.value = '';
           data.value = await apiFetch('/api/actors/' + route.params.id);
           loading.value = false;
+          restoreScroll();
         }
         function triggerUpload() {
           if (fileInput.value) fileInput.value.click();
@@ -1086,7 +1102,7 @@
           data, loading, imgErr, sort, sortedVideos, changeSort,
           fileInput, uploading, avatarSrc, triggerUpload, uploadAvatar,
           editingName, nameZhDraft, nameDraft, startEditName, cancelEditName, saveEditName,
-          allTags, selectedTags, toggleTag
+          allTags, selectedTags, toggleTag,
         };
       }
     };
@@ -1110,6 +1126,7 @@
           loading.value = true;
           data.value = await apiFetch('/api/tags/' + route.params.id);
           loading.value = false;
+          restoreScroll();
         }
         function changeSort(s) { router.replace({ query: { ...route.query, sort: s } }); }
         watch(() => route.params.id, load);
@@ -1135,6 +1152,7 @@
         onMounted(async () => {
           items.value = await apiFetch('/api/tags/all') || [];
           loading.value = false;
+          restoreScroll();
         });
         return { items, loading, q, filtered, updateQ };
       }
@@ -1160,6 +1178,7 @@
         onMounted(async () => {
           items.value = await apiFetch('/api/actors/all') || [];
           loading.value = false;
+          restoreScroll();
         });
         return { items, loading, q, filtered, imgErr, updateQ };
       }
@@ -1187,6 +1206,7 @@
         onMounted(async () => {
           items.value = await apiFetch('/api/series/all') || [];
           loading.value = false;
+          restoreScroll();
         });
         return { items, loading, q, filtered, updateQ, seriesLink };
       }
@@ -1212,6 +1232,7 @@
           const d = await apiFetch(`/api/series/videos?${qs}&page=${page.value}&limit=${limit}&sort=${sort.value}`);
           if (d) { items.value = d.items; total.value = d.total; }
           loading.value = false;
+          restoreScroll();
         }
         function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
         function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
@@ -1238,6 +1259,7 @@
         onMounted(async () => {
           items.value = await apiFetch('/api/prefixes/all') || [];
           loading.value = false;
+          restoreScroll();
         });
         return { items, loading, q, filtered, updateQ };
       }
@@ -1259,6 +1281,7 @@
           const d = await apiFetch(`/api/prefixes/videos?prefix=${encodeURIComponent(prefix.value)}&page=${page.value}&limit=${limit}&sort=${sort.value}`);
           if (d) { items.value = d.items; total.value = d.total; }
           loading.value = false;
+          restoreScroll();
         }
         function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
         function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
@@ -1272,8 +1295,11 @@
     const router = createRouter({
       history: createWebHashHistory(),
       scrollBehavior(to, from, savedPosition) {
-        if (savedPosition) return savedPosition;
-        return { top: 0 };
+        // Scroll is restored manually after data loads; only reset on new navigation
+        if (!savedPosition && !_scrollMap.has(window.location.origin + window.location.pathname + '#' + to.fullPath)) {
+          return { top: 0 };
+        }
+        return false;
       },
       routes: [
         { path: '/', component: HomeView },
@@ -1296,8 +1322,10 @@
         const router = VueRouter.useRouter();
         const route = VueRouter.useRoute();
         const searchQ = ref('');
+        const composing = ref(false);
 
         function doSearch() {
+          if (composing.value) return;
           const q = searchQ.value.trim();
           if (!q) return;
           router.push({ path: '/search', query: { q } });
@@ -1305,7 +1333,7 @@
 
         watch(() => route.query.q, (v) => { if (v) searchQ.value = v; });
 
-        return { searchQ, doSearch };
+        return { searchQ, composing, doSearch };
       },
       template: `
     <div class="min-h-screen">
@@ -1315,6 +1343,8 @@
           <router-link to="/" class="text-indigo-400 font-bold text-lg tracking-tight flex-shrink-0">AVideo</router-link>
           <form @submit.prevent="doSearch" class="flex-1 max-w-xl">
             <input v-model="searchQ" type="text" placeholder="搜索番号、标题、片商…"
+              @compositionstart="composing = true"
+              @compositionend="composing = false"
               class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
           </form>
         </header>

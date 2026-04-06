@@ -362,6 +362,28 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
 
         base["actors"] = actors
         base["tags"] = tags
+
+        # Attach cluster info for series display
+        series_name = base.get("series")
+        base["series_cluster_id"] = None
+        base["series_zh"] = None
+        if series_name:
+            cursor.execute(
+                "SELECT id, canonical_name, canonical_name_zh, variations_json FROM series_clusters"
+            )
+            for row in cursor.fetchall():
+                c = dict(row)
+                names = {c["canonical_name"]}
+                try:
+                    import json as _json
+                    names.update(_json.loads(c["variations_json"] or "[]"))
+                except Exception:
+                    pass
+                if series_name in names:
+                    base["series_cluster_id"] = c["id"]
+                    base["series_zh"] = c["canonical_name_zh"] or None
+                    break
+
         return base
     except sqlite3.Error as e:
         logger.error(f"❌ 查询影片详情失败 [{code}]: {e}")
