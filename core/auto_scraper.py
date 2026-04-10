@@ -11,7 +11,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from dal.db_manager import get_pending_videos, update_video_metadata
-from core.scraper import scrape_video_info
+from core.scraper import scrape_video_info, load_javdb_cookies
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
@@ -34,7 +34,7 @@ def countdown_sleep(secs: float, reason: str = "防封号"):
     sys.stdout.write(f"\r✅ [{reason}] 休眠结束!{' ' * 20}\n")
     sys.stdout.flush()
 
-def run_background_worker(batch_size: int = 5, sleep_between_items: tuple = (22.5, 37.5)):
+def run_background_worker(batch_size: int = 5, sleep_between_items: tuple = (32.5, 107.5), status: str = 'PENDING'):
     """
     全自动后台刮削引擎
     :param batch_size: 每次从数据库捞取的任务数
@@ -50,6 +50,7 @@ def run_background_worker(batch_size: int = 5, sleep_between_items: tuple = (22.
             # 移除硬编码的 user_agent，让浏览器使用原生匹配的真实 UA，避免指纹冲突
             viewport={'width': 1280, 'height': 800}
         )
+        load_javdb_cookies(context)
         page = context.new_page()
         # 魔法注入：使用 playwright-stealth 专业防反爬插件，全面抹除机器指纹
         Stealth().apply_stealth_sync(page)
@@ -59,12 +60,12 @@ def run_background_worker(batch_size: int = 5, sleep_between_items: tuple = (22.
 
         while True:
             # 1. 向数据库索要 PENDING 任务
-            pending_tasks = get_pending_videos(limit=batch_size)
+            pending_tasks = get_pending_videos(limit=batch_size, status=status)
             
             if not pending_tasks:
                 # 数据库里没有待刮削的片子了，休眠一大段时间后再检查 (比如 10 分钟)
                 logger.info("☕ 当前没有 PENDING 状态的影片。引擎进入休眠，10 分钟后再次检查...")
-                countdown_sleep(900, "等待任务")
+                countdown_sleep(450, "等待任务")
                 continue
                 
             logger.info(f"📥 成功领到 {len(pending_tasks)} 个刮削任务，开始执行批处理...")
@@ -111,13 +112,18 @@ def run_background_worker(batch_size: int = 5, sleep_between_items: tuple = (22.
             logger.info("🏁 本批次任务执行完毕。\n" + "-"*40)
             
             # 批次与批次之间，额外休眠一段时间
-            batch_sleep = random.uniform(7.5, 15.0)
+            batch_sleep = random.uniform(39.5, 107.5)
             countdown_sleep(batch_sleep, "批次间隔")
 
 if __name__ == "__main__":
-    # 强烈建议：把休眠时间设置得越长越安全。JavDB 的封控极其变态。
-    # 这里设置为每爬一部，休息 15 到 25 秒。
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--status', choices=['pending', 'failed'], default='pending',
+                        help='刮削目标状态: pending (默认) 或 failed')
+    args = parser.parse_args()
+
     try:
-        run_background_worker(batch_size=5, sleep_between_items=(22.5, 37.5))
+        run_background_worker(batch_size=5, sleep_between_items=(32.5, 107.5),
+                              status=args.status.upper())
     except KeyboardInterrupt:
         logger.info("🛑 接收到退出信号，后台刮削引擎已安全停止。")

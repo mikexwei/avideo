@@ -92,21 +92,21 @@ def batch_insert_scanned_videos(scanned_results: list) -> tuple[int, int]:
         if conn:
             conn.close()
 
-def get_pending_videos(limit: int = 5) -> List[Tuple[int, str]]:
+def get_pending_videos(limit: int = 5, status: str = 'PENDING') -> List[Tuple[int, str]]:
     """
-    从数据库中捞取指定数量的待刮削 (PENDING) 影片。
+    从数据库中捞取指定数量的待刮削影片。
+    :param status: 'PENDING' 或 'FAILED'
     返回格式: [(id, code), (id, code)...]
     """
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
-        # 按创建时间先后顺序，每次捞取最老的几个 PENDING 任务
-        sql = "SELECT id, code FROM videos WHERE scrape_status = 'PENDING' ORDER BY created_at ASC LIMIT ?"
-        cursor.execute(sql, (limit,))
+
+        sql = "SELECT id, code FROM videos WHERE scrape_status = ? ORDER BY created_at ASC LIMIT ?"
+        cursor.execute(sql, (status.upper(), limit))
         results = cursor.fetchall()
-        
+
         return results
     except sqlite3.Error as e:
         logger.error(f"❌ 捞取 PENDING 任务失败: {e}")

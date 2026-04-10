@@ -10,7 +10,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from dal.db_manager import get_pending_actors, update_actor_avatar
-from core.scraper import scrape_actor_info
+from core.scraper import scrape_actor_info, load_javdb_cookies
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
@@ -33,13 +33,14 @@ def countdown_sleep(secs: float, reason: str = "防封号"):
     sys.stdout.write(f"\r✅ [{reason}] 休眠结束!{' ' * 20}\n")
     sys.stdout.flush()
 
-def run_actor_worker(batch_size: int = 10, sleep_between_items: tuple = (15.0, 25.0)):
+def run_actor_worker(batch_size: int = 10, sleep_between_items: tuple = (15.0, 125.0)):
     logger.info("🚀 启动演员头像后台刮削引擎...")
     
     with sync_playwright() as p:
         logger.info("🌐 正在初始化持久化浏览器环境...")
         browser = p.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
         context = browser.new_context(viewport={'width': 1280, 'height': 800})
+        load_javdb_cookies(context)
         page = context.new_page()
         Stealth().apply_stealth_sync(page)
         
@@ -70,22 +71,22 @@ def run_actor_worker(batch_size: int = 10, sleep_between_items: tuple = (15.0, 2
                 
                 # 防封号休眠策略
                 if total_processed % 100 == 0:
-                    sleep_time = random.uniform(300.0, 350.0)
+                    sleep_time = random.uniform(300.0, 1750.0)
                     countdown_sleep(sleep_time, "深度防封")
                 elif total_processed % 10 == 0:
-                    sleep_time = random.uniform(30.0, 45.0)
+                    sleep_time = random.uniform(30.0, 225.0)
                     countdown_sleep(sleep_time, "周期防封")
                 elif index < len(pending_actors) - 1:
                     sleep_time = random.uniform(*sleep_between_items)
                     countdown_sleep(sleep_time, "基础防封")
                     
             logger.info("🏁 本批次任务执行完毕。\n" + "-"*40)
-            batch_sleep = random.uniform(7.5, 15.0)
+            batch_sleep = random.uniform(7.5, 75.0)
             countdown_sleep(batch_sleep, "批次间隔")
 
 if __name__ == "__main__":
     # 演员刮削对封控要求相对视频稍微好一点点，但也必须保持警惕
     try:
-        run_actor_worker(batch_size=10, sleep_between_items=(15.0, 25.0))
+        run_actor_worker(batch_size=10, sleep_between_items=(15.0, 125.0))
     except KeyboardInterrupt:
         logger.info("🛑 接收到退出信号，演员刮削引擎已安全停止。")

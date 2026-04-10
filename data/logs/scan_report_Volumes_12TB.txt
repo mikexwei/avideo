@@ -8,14 +8,13 @@
 [成功] 052513-598       <-- 052513_598-1pon-720p.avi
 [成功] QUEEN-394        <-- G-Queen-394.wmv
 [成功] GACHIP-359       <-- gachip359.wmv
-[成功] HEYZO-406        <-- heyzo-0406-1080p.mp4
 [成功] 102612-167       <-- 102612-167-carib-720p.wmv
 [成功] HEYZO-498        <-- heyzo-0498-1080p.mp4
 [成功] GACHIG-143       <-- gachig143.wmv
 [成功] HEYZO-469        <-- heyzo-0469-1080p.mp4
 [成功] GACHIPPV-1012    <-- gachiPPV1012.wmv
 [成功] 041614-791       <-- 041614_791-1pon-720p.avi
-[成功] N0783            <-- n0783_ren_azumi_hg_n_fhd.wmv
+[成功] N0783            (分集: part6) <-- n0783_ren_azumi_hg_n_fhd.wmv
 [成功] 070313-620       <-- 070313_620-1pon-720p.avi
 [成功] 063012-062       <-- 063012-062-carib-720p.wmv
 [成功] GACHIG-129       <-- gachig129.wmv
@@ -24,9 +23,9 @@
 [成功] EYAN-056-C       <-- eyan-056-C.mp4
 [成功] XRW-831-C        <-- xrw-831-C.mp4
 [成功] VEC-191-C        <-- vec-191-C.mp4
-[成功] DSVR-1547        <-- dsvr01547-3.mp4
-[成功] DSVR-1547        <-- dsvr01547-2.mp4
-[成功] DSVR-1547        <-- dsvr01547-1.mp4
+[成功] DSVR-1547        (分集: part3) <-- dsvr01547-3.mp4
+[成功] DSVR-1547        (分集: part2) <-- dsvr01547-2.mp4
+[成功] DSVR-1547        (分集: part1) <-- dsvr01547-1.mp4
 [成功] RBD-800-U        <-- RBD-800-UC.mp4
 [成功] RBK-050-C        <-- rbk-050-C.mp4
 [成功] NACR-486         <-- jav20s8.com@NACR-486.mp4
@@ -39,31 +38,31 @@
 [成功] ABP-360-C        <-- abp-360-C.mp4
 [成功] SDMF-021-C       <-- sdmf-021-C.mp4
 [成功] IPX-867-C        <-- ipx-867-C.mp4
-[成功] SIVR-217         <-- sivr-217-1.mp4
-[成功] SIVR-217         <-- sivr-217-2.mp4
-[成功] SIVR-217         <-- sivr-217-3.mp4
+[成功] SIVR-217         (分集: part1) <-- sivr-217-1.mp4
+[成功] SIVR-217         (分集: part2) <-- sivr-217-2.mp4
+[成功] SIVR-217         (分集: part3) <-- sivr-217-3.mp4
 [成功] IPX-851-C        <-- ipx-851-C.mp4
-[成功] IPVR-265         <-- ipvr00265-5.mp4
-[成功] IPVR-265         <-- ipvr00265-2.mp4
-[成功] IPVR-265         <-- ipvr00265-4.mp4
-[成功] IPVR-265         <-- ipvr00265-1.mp4
-[成功] IPVR-265         <-- ipvr00265-3.mp4
+[成功] IPVR-265         (分集: part5) <-- ipvr00265-5.mp4
+[成功] IPVR-265         (分集: part2) <-- ipvr00265-2.mp4
+[成功] IPVR-265         (分集: part4) <-- ipvr00265-4.mp4
+[成功] IPVR-265         (分集: part1) <-- ipvr00265-1.mp4
+[成功] IPVR-265         (分集: part3) <-- ipvr00265-3.mp4
 [成功] JUQ-556-C        <-- JUQ-556-C.mp4
-[成功] SIVR-333         <-- sivr00333-2.mp4
-[成功] SIVR-333         <-- sivr00333-1.mp4
-[成功] MDVR-285         <-- mdvr00285-4.mp4
-[成功] MDVR-285         <-- mdvr00285-1.mp4
-[成功] MDVR-285         <-- mdvr00285-2.mp4
-[成功] MDVR-285         <-- mdvr00285-3.mp4
+[成功] SIVR-333         (分集: part2) <-- sivr00333-2.mp4
+[成功] SIVR-333         (分集: part1) <-- sivr00333-1.mp4
+[成功] MDVR-285         (分集: part4) <-- mdvr00285-4.mp4
+[成功] MDVR-285         (分集: part1) <-- mdvr00285-1.mp4
+[成功] MDVR-285         (分集: part2) <-- mdvr00285-2.mp4
+[成功] MDVR-285         (分集: part3) <-- mdvr00285-3.mp4
 [成功] IPVR-099         (分集: part1) <-- fbfb.me@ipvr00099.part1.mp4
 [成功] IPVR-099         (分集: part2) <-- fbfb.me@ipvr00099.part2.mp4
 [成功] IPVR-099         (分集: part3) <-- fbfb.me@ipvr00099.part3.mp4
 [成功] RBD-704-U        <-- RBD-704-UC.mp4
 [成功] ADN-537-U        <-- ADN-537-UC.mp4
 [成功] SHKD-367-U       <-- SHKD-367-UC.mp4
-[成功] HNVR-154         <-- hnvr00154-3.mp4
-[成功] HNVR-154         <-- hnvr00154-1.mp4
-[成功] HNVR-154         <-- hnvr00154-2.mp4
+[成功] HNVR-154         (分集: part3) <-- hnvr00154-3.mp4
+[成功] HNVR-154         (分集: part1) <-- hnvr00154-1.mp4
+[成功] HNVR-154         (分集: part2) <-- hnvr00154-2.mp4
 [成功] MIDE-919-U       <-- MIDE-919-UC.mp4
 [成功] ADN-057-U        <-- ADN-057-UC.mp4
 [成功] JUQ-547-C        <-- JUQ-547-C.mp4
@@ -74,9 +73,9 @@
 [成功] RBD-160-U        <-- RBD-160-UC.mp4
 [成功] IPZ-382-U        <-- IPZ-382-UC.mp4
 [成功] ADN-530-U        <-- ADN-530-UC.mp4
-[成功] JUVR-185         <-- juvr00185-1.mp4
-[成功] JUVR-185         <-- juvr00185-3.mp4
-[成功] JUVR-185         <-- juvr00185-2.mp4
+[成功] JUVR-185         (分集: part1) <-- juvr00185-1.mp4
+[成功] JUVR-185         (分集: part3) <-- juvr00185-3.mp4
+[成功] JUVR-185         (分集: part2) <-- juvr00185-2.mp4
 [成功] MIDE-957-U       <-- MIDE-957-UC.mp4
 [成功] DLDSS-265-C      <-- DLDSS-265-C.mp4
 [成功] SSPD-124-U       <-- SSPD-124-UC.mp4
@@ -84,27 +83,27 @@
 [成功] DLDSS-256        <-- hhd800.com@DLDSS-256.mp4
 [成功] JUQ-510          <-- juq-510.mp4
 [成功] JUQ-511          <-- hhd800.com@JUQ-511.mp4
-[成功] SIVR-310         <-- sivr00310-2.mp4
-[成功] SIVR-310         <-- sivr00310-3.mp4
-[成功] SIVR-310         <-- sivr00310-1.mp4
-[成功] SIVR-329         <-- sivr00329-1.mp4
-[成功] SIVR-329         <-- sivr00329-2.mp4
-[成功] SIVR-329         <-- sivr00329-3.mp4
-[成功] SIVR-326         <-- sivr00326-1.mp4
-[成功] SIVR-326         <-- sivr00326-2.mp4
-[成功] SIVR-326         <-- sivr00326-3.mp4
-[成功] KAVR-343         <-- kavr00343-4.mp4
-[成功] KAVR-343         <-- kavr00343-6.mp4
-[成功] KAVR-343         <-- kavr00343-1.mp4
-[成功] KAVR-343         <-- kavr00343-2.mp4
-[成功] KAVR-343         <-- kavr00343-5.mp4
-[成功] KAVR-343         <-- kavr00343-3.mp4
-[成功] DSVR-1433        <-- dsvr01433-3.mp4
-[成功] DSVR-1433        <-- dsvr01433-1.mp4
-[成功] DSVR-1433        <-- dsvr01433-4.mp4
-[成功] DSVR-1433        <-- dsvr01433-2.mp4
-[成功] MEVR-003         <-- MEVR-003a-4k60fps.mp4
-[成功] MEVR-003         <-- MEVR-003b-4k60fps.mp4
+[成功] SIVR-310         (分集: part2) <-- sivr00310-2.mp4
+[成功] SIVR-310         (分集: part3) <-- sivr00310-3.mp4
+[成功] SIVR-310         (分集: part1) <-- sivr00310-1.mp4
+[成功] SIVR-329         (分集: part1) <-- sivr00329-1.mp4
+[成功] SIVR-329         (分集: part2) <-- sivr00329-2.mp4
+[成功] SIVR-329         (分集: part3) <-- sivr00329-3.mp4
+[成功] SIVR-326         (分集: part1) <-- sivr00326-1.mp4
+[成功] SIVR-326         (分集: part2) <-- sivr00326-2.mp4
+[成功] SIVR-326         (分集: part3) <-- sivr00326-3.mp4
+[成功] KAVR-343         (分集: part4) <-- kavr00343-4.mp4
+[成功] KAVR-343         (分集: part6) <-- kavr00343-6.mp4
+[成功] KAVR-343         (分集: part1) <-- kavr00343-1.mp4
+[成功] KAVR-343         (分集: part2) <-- kavr00343-2.mp4
+[成功] KAVR-343         (分集: part5) <-- kavr00343-5.mp4
+[成功] KAVR-343         (分集: part3) <-- kavr00343-3.mp4
+[成功] DSVR-1433        (分集: part3) <-- dsvr01433-3.mp4
+[成功] DSVR-1433        (分集: part1) <-- dsvr01433-1.mp4
+[成功] DSVR-1433        (分集: part4) <-- dsvr01433-4.mp4
+[成功] DSVR-1433        (分集: part2) <-- dsvr01433-2.mp4
+[成功] MEVR-003         (分集: part1) <-- MEVR-003a-4k60fps.mp4
+[成功] MEVR-003         (分集: part2) <-- MEVR-003b-4k60fps.mp4
 [成功] FSDSS-365-C      <-- fsdss-365-C.mp4
 [成功] RBD-321-C        <-- rbd-321-C.mp4
 [成功] JBD-264          <-- JBD-264.mp4
@@ -1070,11 +1069,11 @@
 [成功] JUL-257-C        <-- [jul-257][中文][希岛爱里][公公NTR美女人妻希岛爱理被公公睡走的冲击内射影片].mp4
 [成功] URE-058-C        <-- [ure-058][中文][希岛爱里][经典漫改作品之被公公代替老公行使性爱权力的美女人妻希岛爱理子宫内射堕落之日].mp4
 [成功] IPX-520-C        <-- [ipx-520][中文][希岛爱里][超短裙黑丝痴女上司希岛爱理发现了我的办公室恋情用淫语诱惑我和她内射做爱].mp4
-[成功] VRTM-481-C       <-- [vrtm-481][中文][永濑唯,冬爱琴音][被老婆抛弃的离职中年男人把不满发泄在两个可爱女儿身上在她们子宫内留下自己的烙印].mp4
+[成功] VRTM-481         <-- [vrtm-481][中文][永濑唯,冬爱琴音][被老婆抛弃的离职中年男人把不满发泄在两个可爱女儿身上在她们子宫内留下自己的烙印].mp4
 [成功] MEYD-546-C       <-- [meyd-546][中文][永濑唯][老公出差的时候娇弱无助的人气永濑结衣被上司强行侵犯内射].mp4
 [成功] VAGU-229-C       <-- [vagu-229][中文][永濑唯][为了处理投诉而自己成为人偶的可爱女员工永濑唯被各种玩弄却只能强忍着不能露陷].mp4
 [成功] MUDR-109-C       <-- [mudr-109][中文][永濑唯][束缚调教内射纯真无垢制服美少女永濑唯].mp4
-[成功] VRTM-511-C       <-- [vrtm-511][中文][永濑唯][住院美少女被无德医生下了春药拘束强奸醒来过程中被疯狂抽插高潮无数次].mp4
+[成功] VRTM-511         <-- [vrtm-511][中文][永濑唯][住院美少女被无德医生下了春药拘束强奸醒来过程中被疯狂抽插高潮无数次].mp4
 [成功] ATID-145-C       <-- [atid-145][中文][姬咲莉莉亚][牺牲自己的人妻被越狱的两个强奸杀人犯强奸内射独家听译版].mp4
 [成功] SSPD-060-C       <-- [sspd-060][中文][姬咲莉莉亚,早乙女露依][忍者三姐妹的拷问凌辱].mp4
 [成功] RBD-129-C        <-- [rbd-129][中文][姬咲莉莉亚][灌肠奴隶凌辱姐妹].mp4
@@ -1305,7 +1304,6 @@
 [成功] HUNT-539         <-- [hunt-539][莲美恋][贫乳素人女学生].avi
 [成功] HEYZO-406-C      <-- [HEYZO-0406-C][中文][莲美恋][肛门课程].mp4
 [成功] MIAD-949         <-- [miad-949][麻里梨夏][透明人間 办公室入侵].avi
-[成功] MDE-217          <-- [mde-217][金沢文子][有黒崎扇菜的紧缚合集].mp4
 [成功] DASD-063-C       <-- [dasd-063][中文][小泽玛丽亚][集体人妖轮奸乱交强奸小泽玛利亚独家听译版].mp4
 [成功] DASD-031         <-- [dasd-031][小泽玛丽亚][肛门奴隶灌肠喷射！].avi
 [成功] RBD-104-C        <-- [rbd-104][中文][小泽玛丽亚][传教修女小泽玛利亚和妓女的儿子之间坎坷的人生故事].mp4
@@ -2237,3 +2235,20 @@
 [成功] ADN-002-C        <-- adn-002-C.mp4
 [成功] OMHD-010         <-- hhd800.com@OMHD-010.mp4
 [成功] RBD-982-C        <-- rbd-982-C.mp4
+[未提取]                     <-- GirlsDelta-0564-makina.wmv
+[未提取]                     <-- x1x-112538.wmv
+[未提取]                     <-- x1x-112470.wmv
+[未提取]                     <-- [2278][中文][白鸟瑠璃][淫辱之湖的全裸白天鹅白鸟琉璃].mp4
+[未提取]                     <-- [CAV-4000083][橘未稀][美人セックス愛奴2].mp4
+[未提取]                     <-- sexart.19.10.26.sybil.a.follow.my.footsteps.bts.4k.mp4
+[未提取]                     <-- Abigaile Johnson-C.mp4
+[未提取]                     <-- Lubed-Leah Gotti-C.mp4
+[未提取]                     <-- DigitalPlayground - Jillian Janson-C.mp4
+[未提取]                     <-- tushy-keisha grey&leah gotti-C.mp4
+[未提取]                     <-- Blacked-Lana Rhoades&Leah Gotti-C.mp4
+[未提取]                     <-- Vixen-Leah.Gotti-C.mp4
+[未提取]                     <-- mj-nmt.mp4
+[未提取]                     <-- mj-ngg-1.mp4
+[未提取]                     <-- mj-ngg-3.mp4
+[未提取]                     <-- mj-ngg-2.mp4
+[未提取]                     <-- mj-ngg-4.mp4

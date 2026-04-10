@@ -26,6 +26,9 @@ AVATARS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 
+# JavDB Cookie 文件路径（从 Cookie Editor 导出的 JSON）
+JAVDB_COOKIES_FILE = BASE_DIR / "javdb_cookie.json"
+
 MEDIA_LIBRARIES = [
     Path("/Volumes/12TB"),
     Path("/Volumes/8TB/avideo"),

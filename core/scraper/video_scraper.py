@@ -14,9 +14,46 @@ project_root = Path(__file__).resolve().parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from config import COVERS_DIR, AVATARS_DIR
+from config import COVERS_DIR, AVATARS_DIR, JAVDB_COOKIES_FILE
 
 logger = logging.getLogger(__name__)
+
+_SAMESITE_MAP = {
+    "no_restriction": "None",
+    "lax": "Lax",
+    "strict": "Strict",
+    "unspecified": "None",
+}
+
+def load_javdb_cookies(context):
+    """从 Cookie Editor 导出的 JSON 注入 Cookie 到 Playwright context。"""
+    import json
+    if not JAVDB_COOKIES_FILE.exists():
+        logger.warning(f"⚠️ 未找到 Cookie 文件: {JAVDB_COOKIES_FILE}，将以未登录状态运行。")
+        return
+    try:
+        raw = json.loads(JAVDB_COOKIES_FILE.read_text(encoding="utf-8"))
+        cookies = []
+        for c in raw:
+            same_site_raw = (c.get("sameSite") or "").lower()
+            same_site = _SAMESITE_MAP.get(same_site_raw, "None")
+            cookie = {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c["domain"],
+                "path": c.get("path", "/"),
+                "secure": c.get("secure", False),
+                "httpOnly": c.get("httpOnly", False),
+                "sameSite": same_site,
+            }
+            exp = c.get("expirationDate")
+            if exp:
+                cookie["expires"] = int(exp)
+            cookies.append(cookie)
+        context.add_cookies(cookies)
+        logger.info(f"🍪 成功注入 {len(cookies)} 条 JavDB Cookie，已登录状态就绪。")
+    except Exception as e:
+        logger.error(f"❌ 注入 Cookie 失败: {e}")
 
 # JavDB 基础域名 (如果国内被墙，后续可配置为镜像站域名如 javdb36.com 等)
 BASE_URL = "https://javdb.com"
@@ -75,7 +112,7 @@ def bypass_javdb_security(page: Page):
     if over18_btn.count() > 0:
         logger.info("🔞 触发 18 岁验证拦截，正在自动点击通过...")
         over18_btn.first.click()
-        random_sleep(2.25, 3.75)
+        random_sleep(5.67, 10.75)
         
     try:
         cf_iframe = page.locator('iframe[src*="cloudflare"], iframe[src*="turnstile"]').first
@@ -88,7 +125,7 @@ def bypass_javdb_security(page: Page):
             target_y = box['y'] + box['height'] / 2
             
             page.mouse.move(target_x, target_y, steps=random.randint(15, 25))
-            time.sleep(random.uniform(0.75, 1.8))
+            time.sleep(random.uniform(0.75, 9.0))
             page.mouse.click(target_x, target_y)
             logger.info("👆 已物理点击验证框，等待盾牌放行...")
     except Exception:
@@ -290,9 +327,9 @@ def _apply_search_cooldown(page: Page, current_count: int):
     """根据当前计数应用防封冷却策略。"""
     if current_count % 10 == 0:
         logger.info("⏳ 触发周期性深度防机器验证冷却 (5-10秒)...")
-        simulate_human_behavior(page, 7.5, 15.0)
+        simulate_human_behavior(page, 22.5, 55.0)
     else:
-        simulate_human_behavior(page, 1.5, 4.5)
+        simulate_human_behavior(page, 5.5, 22.5)
 
 def _open_first_video_detail(page: Page, code: str) -> bool:
     """从搜索结果打开第一条详情页。"""
@@ -352,8 +389,8 @@ def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
             return None
 
         # 6. 详情页稳定等待
-        simulate_human_behavior(page, 1.5, 3.75)
-        
+        simulate_human_behavior(page, 4.5, 18.75)
+
         # 7. 执行页面解析
         scraped_data = parse_detail_page(page, code)
         logger.info(f"✅ 刮削成功: {scraped_data['title_jp'][:60]}...")
@@ -398,9 +435,9 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
             return None, None
 
         if current_count % 10 == 0:
-            simulate_human_behavior(page, 7.5, 15.0)
+            simulate_human_behavior(page, 22.5, 55.0)
         else:
-            simulate_human_behavior(page, 1.5, 4.5)
+            simulate_human_behavior(page, 5.5, 22.5)
 
         # 2. 获取所有搜索结果链接并遍历验证
         search_result_links = []
@@ -428,7 +465,7 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
             else:
                 # === 新增：在轮询下一个搜索结果前，加入随机等待时间，防止请求过快触发风控 ===
                 logger.info(f"⏳ 正在前往下一个搜索结果，模拟人类停顿缓冲...")
-                simulate_human_behavior(page, 5.0, 11.0)
+                simulate_human_behavior(page, 5.0, 55.0)
                 
                 # 后续的由于页面改变了，直接用网络跳转
                 page.goto(full_url, timeout=30000)
@@ -444,7 +481,7 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
                 logger.warning(f"🔒 详情页受限要求登录，跳过。")
                 continue
 
-            simulate_human_behavior(page, 3.0, 7.5)
+            simulate_human_behavior(page, 3.0, 37.5)
             
             name_elem = page.locator(".actor-section-name, .title.is-4").first
             if name_elem.count() > 0:

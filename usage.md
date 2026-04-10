@@ -40,12 +40,22 @@ playwright install chromium
 
 从 JavDB 抓取标题、封面、演员、标签、评分等元数据。
 
+**前置：注入登录 Cookie（首次 / Cookie 过期时操作）**
+
+1. 在浏览器登录 JavDB，用 Cookie Editor 扩展导出为 JSON（不加密）
+2. 将文件保存为项目根目录下的 `javdb_cookie.json`
+3. 刮削器启动时会自动注入，无需其他操作
+
 ```bash
+# 刮削 PENDING 状态（默认）
 .venv/bin/python core/auto_scraper.py
+
+# 重试 FAILED 状态
+.venv/bin/python core/auto_scraper.py --status=failed
 ```
 
-- 自动轮询所有 `PENDING` 的视频
-- 无任务时休眠 10 分钟后再次检查，可长期后台运行
+- 自动轮询所有指定状态的视频
+- 无任务时休眠后再次检查，可长期后台运行
 - 内置随机延迟，防止触发 JavDB 封控
 
 ---
@@ -66,15 +76,24 @@ playwright install chromium
 
 ### 第四步：翻译标题
 
-调用本地 Ollama（Sakura 模型）将日文标题翻译为中文。
+调用本地 Ollama（gemma4:e4b）将日文标题翻译为中文。
 
 ```bash
+# 只翻译尚未翻译的（默认）
 .venv/bin/python utils/translate_titles.py
+
+# 强制全量重新翻译
+.venv/bin/python utils/translate_titles.py --retranslate
+
+# 指定 Ollama 地址或模型
+.venv/bin/python utils/translate_titles.py --host http://10.0.0.43:11434 --model gemma4:e4b
 ```
 
-- 按 `title_jp` 去重翻译，避免同番号多分集重复请求
-- 翻译前自动剥离标题中的番号和演员名，减少大模型幻觉
-- 依赖 `http://10.0.0.40:11434` 的 Ollama 服务，需提前确认可达
+- 按 `title_jp` 去重，避免同番号多分集重复请求
+- 翻译前自动去除番号、颜文字、特殊符号，保留日中英文字
+- 不剥离女优名字（保留完整语义）
+- prompt 风格：原味、简短、不做道德过滤
+- 依赖 Ollama 服务（默认 `http://10.0.0.43:11434`），需提前确认可达
 
 ---
 
@@ -168,14 +187,18 @@ python utils/translate_titles.py   # 翻译未翻译的标题
 脚本会自动处理 5 秒盾和 18 岁确认弹窗。若长时间卡住，检查网络是否能正常访问 `javdb.com`。
 
 **Q: 翻译脚本报连接错误**
-检查 `utils/translate_titles.py` 顶部的 `mac_client = Client(host='http://10.0.0.40:11434')`，确认 Ollama 服务地址正确且可达。
+用 `--host` 参数指定正确的 Ollama 地址，或确认默认地址 `http://10.0.0.43:11434` 可达。
 
 **Q: 某部片子刮削失败（FAILED 状态）**
-数据库中状态为 `FAILED` 的记录不会被自动重试。手动重置状态：
+批量重试所有失败记录：
+```bash
+.venv/bin/python core/auto_scraper.py --status=failed
+```
+重试单条记录，手动重置状态后运行：
 ```bash
 sqlite3 data/avideo.db "UPDATE videos SET scrape_status='PENDING' WHERE code='XXXXX';"
+.venv/bin/python core/auto_scraper.py
 ```
-然后重新运行 `auto_scraper.py`。
 
 **Q: 如何只对单个番号测试刮削**
 修改 `core/scraper/video_scraper.py` 底部 `__main__` 块中的 `test_code`，直接运行该文件：

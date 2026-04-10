@@ -151,26 +151,28 @@ def extract_video_code(filename: str) -> Tuple[Optional[str], Optional[str]]:
 
     return code, part_info
 
-def clean_directory(directory_path: Union[str, Path], min_video_mb: int = 100, dry_run: bool = True):
+def clean_directory(directory_path: Union[str, Path], min_video_mb: int = 100, dry_run: bool = True) -> List[Dict]:
     """
     清理目录：删除非视频/字幕文件，删除小于 min_video_mb 的视频。
     :param dry_run: 试运行模式。为 True 时只打印日志，不执行真实删除。
+    :return: 拟删除的非系统隐藏文件列表，每项含 path 和 reason。
     """
     target_dir = Path(directory_path)
     if not target_dir.exists() or not target_dir.is_dir():
         logger.error(f"❌ 清理目标无效或不存在: {target_dir}")
-        return
+        return []
 
     logger.warning(f"🧹 开始执行目录清理: {target_dir} | 试运行(Dry Run): {dry_run}")
-    
+
     deleted_junk_count = 0
     deleted_sample_count = 0
-    min_size_bytes = min_video_mb * 1024 * 1024 # 转换为字节
+    min_size_bytes = min_video_mb * 1024 * 1024
+    to_delete = []  # 非系统隐藏文件的拟删除列表
 
     for file_path in target_dir.rglob('*'):
         if not file_path.is_file():
             continue
-            
+
         # 忽略 macOS 烦人的系统隐藏文件
         if file_path.name.startswith('._') or file_path.name == '.DS_Store':
             _safe_delete(file_path, dry_run, "系统隐藏文件")
@@ -180,19 +182,22 @@ def clean_directory(directory_path: Union[str, Path], min_video_mb: int = 100, d
 
         # 1. 判断是否在白名单外 (非视频，非字幕)
         if file_ext not in ALL_ALLOWED_EXTENSIONS:
-            if _safe_delete(file_path, dry_run, "非视频/字幕的杂项文件"):
+            reason = "非视频/字幕的杂项文件"
+            if _safe_delete(file_path, dry_run, reason):
                 deleted_junk_count += 1
+                to_delete.append({'path': file_path, 'reason': reason})
             continue
-            
+
         # 2. 如果是视频，检查大小是否小于设定值 (100MB)
         if file_ext in VIDEO_EXTENSIONS:
             try:
-                # 获取文件大小
                 file_size = file_path.stat().st_size
                 if file_size < min_size_bytes:
                     size_mb = file_size / (1024 * 1024)
-                    if _safe_delete(file_path, dry_run, f"体积过小的视频 ({size_mb:.1f}MB)"):
+                    reason = f"体积过小的视频 ({size_mb:.1f}MB)"
+                    if _safe_delete(file_path, dry_run, reason):
                         deleted_sample_count += 1
+                        to_delete.append({'path': file_path, 'reason': reason})
             except OSError as e:
                 logger.error(f"⚠️ 无法读取文件大小 {file_path.name}: {e}")
 
@@ -200,6 +205,7 @@ def clean_directory(directory_path: Union[str, Path], min_video_mb: int = 100, d
     logger.info(f"📊 统计：清理杂项文件 {deleted_junk_count} 个，清理小视频 {deleted_sample_count} 个。")
     if dry_run:
         logger.warning("🚨 注意：当前为【试运行】模式，并未真正删除任何文件。请确认日志无误后，将 dry_run 改为 False 执行。")
+    return to_delete
 
 def _safe_delete(file_path: Path, dry_run: bool, reason: str) -> bool:
     """内部辅助函数：安全执行删除并记录日志"""
@@ -224,31 +230,30 @@ def _safe_delete(file_path: Path, dry_run: bool, reason: str) -> bool:
 
 # (原有的 scan_directory 函数保持不变...)
 
-def scan_directory(directory_path: Union[str, Path]) -> List[Dict]:
+def scan_directory(directory_path: Union[str, Path]) -> Tuple[List[Dict], List[Path]]:
     """
     业务函数：递归扫描目标目录，返回结构化的视频元数据列表。
+    :return: (成功提取番号的结果列表, 未能提取番号的文件路径列表)
     """
     target_dir = Path(directory_path)
-    
-    # 【安全性与合法性校验】
+
     if not target_dir.exists() or not target_dir.is_dir():
         logger.error(f"❌ 扫描目录无效或不存在: {target_dir}")
-        return []
+        return [], []
 
     logger.info(f"🔍 开始递归扫描目录: {target_dir}")
     results = []
-    
-    # pathlib 的 rglob 方法可以极其优雅地实现全自动递归遍历子文件夹
+    no_code_files: List[Path] = []
+
     for file_path in target_dir.rglob('*'):
         if not file_path.is_file():
             continue
-            
+
         # 过滤系统隐藏文件 (如 macOS 的 ._ 资源分支文件或 .DS_Store)
         if file_path.name.startswith('.'):
             continue
-            
+
         if file_path.suffix.lower() in VIDEO_EXTENSIONS:
-            # 仅传入文件名 (不带扩展名) 进行正则匹配
             code, part = extract_video_code(file_path.stem)
 
             if code:
@@ -264,20 +269,20 @@ def scan_directory(directory_path: Union[str, Path]) -> List[Dict]:
                 except OSError:
                     file_meta = {'file_size': None, 'file_mtime': None, 'file_birthtime': None}
 
-                # 组装返回的结构化字典
                 results.append({
-                    'original_path': file_path,          # Path 对象，方便后续调用移动/重命名
-                    'code': code,                        # 标准化番号
-                    'part': part,                        # 分集标识
-                    'original_name': file_path.name,     # 原完整文件名
+                    'original_path': file_path,
+                    'code': code,
+                    'part': part,
+                    'original_name': file_path.name,
                     **file_meta,
                 })
                 logger.debug(f"✅ 命中: {file_path.name} -> 番号: {code}, 分集: {part}")
             else:
                 logger.warning(f"⚠️ 未能提取番号，已跳过: {file_path.name}")
+                no_code_files.append(file_path)
 
-    logger.info(f"🏁 扫描完成，共找到 {len(results)} 个有效视频文件。")
-    return results
+    logger.info(f"🏁 扫描完成，共找到 {len(results)} 个有效视频文件，{len(no_code_files)} 个未能提取番号。")
+    return results, no_code_files
 
 # ----------- 简单的内部测试模块 -----------
 if __name__ == "__main__":
@@ -324,28 +329,31 @@ if __name__ == "__main__":
     
     print("=== 🚀 开始执行 scanner.py 内部连调测试 ===")
     print(f"准备扫描 {len(test_directories)} 个目录...\n")
-    
+
+    all_to_delete: List[Dict] = []   # 跨目录汇总：拟删除的非系统文件
+    all_no_code: List[Path] = []     # 跨目录汇总：未能提取番号的文件
+
     for dir_str in test_directories:
         target = Path(dir_str)
         print(f"{'='*40}")
         print(f"📁 当前处理目录: {target}")
         print(f"{'='*40}")
-        
+
         if not target.exists():
             print(f"⚠️ 该目录不存在，跳过。请检查路径是否正确。\n")
             continue
-            
-        # ---------------- 测试 1: 清理逻辑 (严格保持 Dry Run) ----------------
-        print("\n🧹 [阶段 1: 目录清理测试 (Dry Run)]")
-        # 强制传 dry_run=True，只看日志，绝不删文件
-        clean_directory(target, min_video_mb=100, dry_run=True)
-        
-        # ---------------- 测试 2: 扫描与番号提取 ----------------
-        print("\n🔍 [阶段 2: 番号提取测试]")
-        results = scan_directory(target)
-        # ========== 新增：将扫描结果持久化保存 ==========
-        report_file = project_root / "data" / "logs" / f"scan_report_{target.name}.txt"
-        # 修复：防止不同磁盘下同名目录（比如都叫 AV）导致报告文件互相覆盖
+
+        # ---------------- 阶段 1: 清理逻辑 ----------------
+        print("\n🧹 [阶段 1: 目录清理 (Dry Run)]")
+        to_delete = clean_directory(target, min_video_mb=100, dry_run=True)
+        all_to_delete.extend(to_delete)
+
+        # ---------------- 阶段 2: 扫描与番号提取 ----------------
+        print("\n🔍 [阶段 2: 番号提取]")
+        results, no_code_files = scan_directory(target)
+        all_no_code.extend(no_code_files)
+
+        # 持久化扫描报告
         safe_dir_name = str(target).replace('/', '_').replace('\\', '_').strip('_')
         report_file = project_root / "data" / "logs" / f"scan_report_{safe_dir_name}.txt"
         with open(report_file, 'w', encoding='utf-8') as f:
@@ -353,34 +361,32 @@ if __name__ == "__main__":
             f.write("="*50 + "\n")
             for item in results:
                 part_str = f" (分集: {item['part']})" if item['part'] else ""
-                if item['code']:
-                    f.write(f"[成功] {item['code']:<15} {part_str} <-- {item['original_name']}\n")
-                else:
-                    f.write(f"[未提取] {' '*15}          <-- {item['original_name']}\n")
-        
-        print(f"📄 此目录的详细扫描报告已保存至: {report_file}")
-        # ===============================================
+                f.write(f"[成功] {item['code']:<15} {part_str} <-- {item['original_name']}\n")
+            for p in no_code_files:
+                f.write(f"[未提取]                     <-- {p.name}\n")
+        print(f"📄 详细扫描报告已保存至: {report_file}")
 
-        print("=== 🎉 内部测试全部结束 ===")
-        
-        # ---------------- 打印提取结果的精简摘要 ----------------
-        print("\n📊 [提取结果摘要]")
-        success_count = 0
-        for item in results:
-            # 截断太长的文件名以保持排版整齐
-            short_name = item['original_name'][:30] + '...' if len(item['original_name']) > 30 else item['original_name']
-            
-            if item['code']:
-                success_count += 1
-                part_str = f" | 分集: {item['part']}" if item['part'] else ""
-                print(f"✅ 成功 | 原名: {short_name:<33} | 番号: {item['code']:<12}{part_str}")
-            else:
-                print(f"❌ 失败 | 原名: {short_name:<33} | 未提取到标准番号")
-                
-        print(f"\n💡 目录 {target.name} 总结: 找到 {len(results)} 个视频，成功提取 {success_count} 个番号。\n")
-
-        # 扫描完当前目录直接塞进数据库！
+        # 入库
         new_add, skipped = batch_insert_scanned_videos(results)
-        print(f"💾 目录 {target.name} 入库成功！新增 {new_add} 部待刮削影片。")
+        print(f"💾 目录 {target.name} 入库成功！新增 {new_add} 部待刮削影片，跳过 {skipped} 部已存在。\n")
 
-    print("=== 🎉 内部测试全部结束 ===")
+    # ======== 全局总结（无论 dry_run 与否都输出）========
+    print("\n" + "="*60)
+    print("📋 全局扫描总结")
+    print("="*60)
+
+    print(f"\n【一】拟删除的非系统隐藏文件（共 {len(all_to_delete)} 个）")
+    if all_to_delete:
+        for item in all_to_delete:
+            print(f"  🗑  [{item['reason']}] {item['path']}")
+    else:
+        print("  （无）")
+
+    print(f"\n【二】未能提取番号的视频文件（共 {len(all_no_code)} 个）")
+    if all_no_code:
+        for p in all_no_code:
+            print(f"  ❓  {p}")
+    else:
+        print("  （无）")
+
+    print("\n=== 🎉 全部扫描结束 ===")

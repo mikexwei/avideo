@@ -203,7 +203,7 @@
             <span class="font-mono text-indigo-400 text-lg font-bold cursor-pointer hover:underline" @click="startEditCode" title="点击修改番号">{{ video.code }}</span>
           </template>
           <template v-else>
-            <input v-model="codeDraft" @keydown.enter="saveCode" @keydown.esc="cancelEditCode"
+            <input v-ltrim v-model="codeDraft" @keydown.enter="saveCode" @keydown.esc="cancelEditCode"
               class="bg-gray-800 border border-indigo-500 rounded px-2 py-0.5 font-mono text-indigo-300 text-lg font-bold focus:outline-none w-40" />
             <button @click="saveCode" class="text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white">保存</button>
             <button @click="cancelEditCode" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">取消</button>
@@ -263,7 +263,7 @@
             <div class="grid grid-cols-1 gap-3 mb-4">
               <div v-for="f in editFields" :key="f.key" class="relative">
                 <label class="block text-xs text-gray-500 mb-1">{{ f.label }}</label>
-                <input v-model="form[f.key]" :type="f.type || 'text'" :step="f.step"
+                <input v-ltrim v-model="form[f.key]" :type="f.type || 'text'" :step="f.step"
                   @input="f.key === 'series' ? onSeriesInput() : null"
                   @blur="f.key === 'series' ? closeSeriesDropdown() : null"
                   @focus="f.key === 'series' && form[f.key] ? onSeriesInput() : null"
@@ -304,7 +304,7 @@
                 </span>
               </div>
               <div class="relative">
-                <input v-model="form.newActor" @input="onActorInput" @blur="closeActorDropdown"
+                <input v-ltrim v-model="form.newActor" @input="onActorInput" @blur="closeActorDropdown"
                   @keydown.enter.prevent="addActorFromInput"
                   placeholder="输入中文或日文演员名搜索…"
                   class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
@@ -340,7 +340,7 @@
                 </span>
               </div>
               <div class="flex gap-2">
-                <input v-model="form.newTag" @keydown.enter.prevent="addTag" placeholder="输入标签名后 Enter"
+                <input v-ltrim v-model="form.newTag" @keydown.enter.prevent="addTag" placeholder="输入标签名后 Enter"
                   class="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
                 <button @click="addTag" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600">添加</button>
               </div>
@@ -402,12 +402,12 @@
               <div class="flex flex-col gap-1">
                 <div class="flex items-center gap-1">
                   <span class="text-xs text-gray-500 w-12">中文名</span>
-                  <input v-model="nameZhDraft" @keydown.esc="cancelEditName" placeholder="中文名"
+                  <input v-ltrim v-model="nameZhDraft" @keydown.esc="cancelEditName" placeholder="中文名"
                     class="bg-gray-800 border border-gray-600 rounded px-2 py-0.5 text-sm text-white focus:outline-none focus:border-indigo-500 w-44" />
                 </div>
                 <div class="flex items-center gap-1">
                   <span class="text-xs text-gray-500 w-12">日文名</span>
-                  <input v-model="nameDraft" @keydown.esc="cancelEditName" placeholder="日文名（改名可触发合并）"
+                  <input v-ltrim v-model="nameDraft" @keydown.esc="cancelEditName" placeholder="日文名（改名可触发合并）"
                     class="bg-gray-800 border border-gray-600 rounded px-2 py-0.5 text-sm text-white focus:outline-none focus:border-indigo-500 w-44" />
                 </div>
                 <div class="flex gap-2 mt-1">
@@ -1366,7 +1366,19 @@
   `
     };
 
-    createApp(App).use(router).mount('#app');
+    const app = createApp(App);
+    app.directive('ltrim', {
+      mounted(el) {
+        el.addEventListener('input', () => {
+          const trimmed = el.value.replace(/^\s+/, '');
+          if (trimmed !== el.value) {
+            el.value = trimmed;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        });
+      }
+    });
+    app.use(router).mount('#app');
   </script>
 </body>
 
