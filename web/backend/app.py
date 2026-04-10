@@ -9,6 +9,7 @@ from dal.db_manager import (
     get_video_by_code,
     get_videos_by_prefix,
     get_videos_by_series,
+    get_stats,
     list_all_actors_with_count,
     list_all_prefixes_with_count,
     list_all_series_with_count,
@@ -171,6 +172,11 @@ def api_series_search():
     if not q:
         return jsonify([])
     return jsonify(search_series(q))
+
+
+@app.get('/api/stats')
+def api_stats():
+    return jsonify(get_stats())
 
 
 @app.get('/api/tags/all')

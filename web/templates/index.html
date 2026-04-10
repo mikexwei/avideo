@@ -9,66 +9,117 @@
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" />
   <style>
+    /* ── Background ── */
     body {
-      background: #0f0f0f;
+      background: #070711;
+      background-image:
+        radial-gradient(ellipse 80% 60% at 20% 10%, rgba(99,102,241,.18) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 50% at 80% 80%, rgba(168,85,247,.14) 0%, transparent 55%),
+        radial-gradient(ellipse 50% 40% at 55% 45%, rgba(59,130,246,.10) 0%, transparent 50%);
+      background-attachment: fixed;
       color: #e5e5e5;
+      min-height: 100vh;
     }
 
+    /* ── Glass utility ── */
+    .glass {
+      background: rgba(255,255,255,.04);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+
+    /* ── Navbar / header glass ── */
+    header.glass-nav {
+      background: rgba(7,7,17,.65);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid rgba(255,255,255,.07);
+    }
+    nav.glass-subnav {
+      background: rgba(7,7,17,.50);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+
+    /* ── Cards ── */
     .card-hover {
-      transition: transform .2s, box-shadow .2s;
+      background: rgba(255,255,255,.04);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: .75rem;
+      transition: transform .2s, box-shadow .2s, background .2s;
     }
 
     .card-hover:hover {
       transform: translateY(-4px);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, .6);
+      background: rgba(255,255,255,.08);
+      box-shadow: 0 8px 32px rgba(0,0,0,.5), 0 0 0 1px rgba(99,102,241,.25);
+    }
+
+    /* ── bg-gray-* overrides → glass panels ── */
+    .bg-gray-900 {
+      background: rgba(255,255,255,.04) !important;
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(255,255,255,.07);
+    }
+    .bg-gray-800 {
+      background: rgba(255,255,255,.06) !important;
+    }
+    .bg-gray-700 {
+      background: rgba(255,255,255,.09) !important;
+    }
+    .bg-gray-950 {
+      background: rgba(7,7,17,.0) !important;
+    }
+
+    /* ── Inputs ── */
+    input, select {
+      background: rgba(255,255,255,.06) !important;
+      border-color: rgba(255,255,255,.12) !important;
+    }
+    input:focus, select:focus {
+      border-color: rgba(99,102,241,.6) !important;
+      box-shadow: 0 0 0 2px rgba(99,102,241,.15);
     }
 
     .cover-img {
       aspect-ratio: 16/9;
       object-fit: cover;
-      background: #1a1a1a;
+      background: rgba(255,255,255,.04);
     }
 
     .tag-pill {
       display: inline-block;
-      background: #1f2937;
+      background: rgba(255,255,255,.07);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.1);
       border-radius: 4px;
       padding: 2px 8px;
       font-size: .75rem;
       margin: 2px;
       cursor: pointer;
+      transition: background .15s;
     }
 
     .tag-pill:hover {
-      background: #374151;
+      background: rgba(255,255,255,.13);
     }
 
     .score-badge {
       background: linear-gradient(135deg, #f59e0b, #d97706);
     }
 
-    ::-webkit-scrollbar {
-      width: 6px;
-    }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
 
-    ::-webkit-scrollbar-track {
-      background: #1a1a1a;
-    }
-
-    ::-webkit-scrollbar-thumb {
-      background: #374151;
-      border-radius: 3px;
-    }
-
-    .fade-enter-active,
-    .fade-leave-active {
-      transition: opacity .15s;
-    }
-
-    .fade-enter-from,
-    .fade-leave-to {
-      opacity: 0;
-    }
+    .fade-enter-active, .fade-leave-active { transition: opacity .15s; }
+    .fade-enter-from, .fade-leave-to { opacity: 0; }
 
     .nav-tab {
       padding: 8px 16px;
@@ -78,11 +129,7 @@
       border-bottom: 2px solid transparent;
       white-space: nowrap;
     }
-
-    .nav-tab:hover {
-      color: #e5e5e5;
-    }
-
+    .nav-tab:hover { color: #e5e5e5; }
     .router-link-exact-active.nav-tab,
     .router-link-active.nav-tab {
       color: #fff;
@@ -144,6 +191,124 @@
         <video-card v-for="v in items" :key="v.id" :video="v" />
       </div>
       <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
+    </div>
+  </div>
+</script>
+
+  <!-- ========== DashboardView ========== -->
+  <script type="text/x-template" id="tpl-dashboard">
+  <div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else>
+      <!-- Stat cards -->
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
+        <div v-for="c in statCards" :key="c.label" class="bg-gray-900 rounded-lg px-4 py-4 flex flex-col gap-1">
+          <div class="text-2xl font-bold text-white">{{ c.value.toLocaleString() }}</div>
+          <div class="text-xs text-gray-400">{{ c.label }}</div>
+        </div>
+      </div>
+
+      <!-- Row 1: Year bar + Score dist -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        <!-- By year -->
+        <div class="bg-gray-900 rounded-lg p-5">
+          <h2 class="text-sm font-semibold text-gray-300 mb-4">按年份分布</h2>
+          <div class="space-y-2">
+            <div v-for="y in stats.by_year" :key="y.year" class="flex items-center gap-2">
+              <span class="text-xs text-gray-400 w-10 text-right flex-shrink-0">{{ y.year }}</span>
+              <div class="flex-1 bg-gray-800 rounded-full h-4 overflow-hidden">
+                <div class="h-4 rounded-full bg-indigo-600" :style="{ width: (y.count / maxByYear * 100) + '%' }"></div>
+              </div>
+              <span class="text-xs text-gray-300 w-10 flex-shrink-0">{{ y.count }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Score distribution -->
+        <div class="bg-gray-900 rounded-lg p-5">
+          <h2 class="text-sm font-semibold text-gray-300 mb-4">评分分布</h2>
+          <div class="space-y-2">
+            <div v-for="s in stats.score_dist" :key="s.range" class="flex items-center gap-2">
+              <span class="text-xs text-gray-400 w-16 text-right flex-shrink-0">{{ s.range }}</span>
+              <div class="flex-1 bg-gray-800 rounded-full h-4 overflow-hidden">
+                <div class="h-4 rounded-full bg-emerald-600" :style="{ width: (s.count / maxScoreDist * 100) + '%' }"></div>
+              </div>
+              <span class="text-xs text-gray-300 w-10 flex-shrink-0">{{ s.count }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Row 2: Top makers + Coverage -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        <!-- Top makers -->
+        <div class="bg-gray-900 rounded-lg p-5">
+          <h2 class="text-sm font-semibold text-gray-300 mb-4">Top 10 制片方</h2>
+          <div class="space-y-2">
+            <div v-for="m in stats.top_makers" :key="m.name" class="flex items-center gap-2">
+              <router-link :to="{ path: '/search', query: { q: m.name } }" class="text-xs text-indigo-400 hover:text-indigo-300 truncate flex-shrink-0" style="width:160px">{{ m.name }}</router-link>
+              <div class="flex-1 bg-gray-800 rounded-full h-4 overflow-hidden">
+                <div class="h-4 rounded-full bg-violet-600" :style="{ width: (m.count / maxMaker * 100) + '%' }"></div>
+              </div>
+              <span class="text-xs text-gray-300 w-10 flex-shrink-0">{{ m.count }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Data coverage -->
+        <div class="bg-gray-900 rounded-lg p-5">
+          <h2 class="text-sm font-semibold text-gray-300 mb-4">数据完整度</h2>
+          <div class="space-y-4">
+            <div v-for="cov in coverage" :key="cov.label">
+              <div class="flex justify-between text-xs text-gray-400 mb-1">
+                <span>{{ cov.label }}</span>
+                <span>{{ cov.value }} / {{ stats.total_videos }} ({{ Math.round(cov.value / stats.total_videos * 100) }}%)</span>
+              </div>
+              <div class="w-full bg-gray-800 rounded-full h-3 overflow-hidden">
+                <div class="h-3 rounded-full" :class="cov.color" :style="{ width: (cov.value / stats.total_videos * 100) + '%' }"></div>
+              </div>
+            </div>
+          </div>
+          <!-- Scrape status -->
+          <h2 class="text-sm font-semibold text-gray-300 mt-6 mb-3">刮削状态</h2>
+          <div class="flex flex-wrap gap-2">
+            <span v-for="(cnt, status) in stats.scrape_status" :key="status"
+              class="px-2 py-1 rounded text-xs font-medium"
+              :class="status === 'SUCCESS' ? 'bg-emerald-900 text-emerald-300' : status === 'PENDING' ? 'bg-yellow-900 text-yellow-300' : 'bg-gray-700 text-gray-300'">
+              {{ status }}: {{ cnt }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Row 3: Top actors + Top tags -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Top actors -->
+        <div class="bg-gray-900 rounded-lg p-5">
+          <h2 class="text-sm font-semibold text-gray-300 mb-4">Top 10 演员</h2>
+          <div class="space-y-2">
+            <router-link v-for="a in stats.top_actors" :key="a.id" :to="'/actor/' + a.id"
+              class="flex items-center gap-3 hover:bg-gray-800 rounded px-2 py-1 transition">
+              <img v-if="a.avatar_path" :src="'/static/' + a.avatar_path" class="w-8 h-8 rounded-full object-cover flex-shrink-0" @error="imgErr" />
+              <span v-else class="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-xs flex-shrink-0">?</span>
+              <span class="flex-1 text-sm text-gray-200 truncate">{{ a.name }}</span>
+              <span class="text-xs text-gray-400">{{ a.count }} 部</span>
+            </router-link>
+          </div>
+        </div>
+
+        <!-- Top tags -->
+        <div class="bg-gray-900 rounded-lg p-5">
+          <h2 class="text-sm font-semibold text-gray-300 mb-4">Top 15 类别</h2>
+          <div class="flex flex-wrap gap-2">
+            <router-link v-for="t in stats.top_tags" :key="t.id" :to="'/tag/' + t.id"
+              class="flex items-center gap-1 bg-gray-800 hover:bg-gray-700 rounded-full px-3 py-1 text-sm transition">
+              <span class="text-gray-200">{{ t.name }}</span>
+              <span class="text-gray-500 text-xs">{{ t.count }}</span>
+            </router-link>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </script>
@@ -702,6 +867,47 @@
         watch(() => [route.query.page, route.query.sort], load);
         onMounted(load);
         return { items, total, page, limit, loading, sort, changePage, changeSort };
+      }
+    };
+
+    // ── DashboardView ─────────────────────────────────────────
+    const DashboardView = {
+      template: '#tpl-dashboard',
+      setup() {
+        const stats = ref(null), loading = ref(true);
+        const imgErr = e => { e.target.style.display = 'none'; };
+
+        const maxByYear = computed(() => stats.value ? Math.max(...stats.value.by_year.map(y => y.count), 1) : 1);
+        const maxScoreDist = computed(() => stats.value ? Math.max(...stats.value.score_dist.map(s => s.count), 1) : 1);
+        const maxMaker = computed(() => stats.value ? Math.max(...stats.value.top_makers.map(m => m.count), 1) : 1);
+
+        const statCards = computed(() => {
+          if (!stats.value) return [];
+          return [
+            { label: '影片总数', value: stats.value.total_videos },
+            { label: '演员', value: stats.value.total_actors },
+            { label: '类别', value: stats.value.total_tags },
+            { label: '系列', value: stats.value.total_series },
+            { label: '已删除', value: stats.value.deleted_videos },
+            { label: '已刮削', value: stats.value.scrape_status['SUCCESS'] || 0 },
+          ];
+        });
+
+        const coverage = computed(() => {
+          if (!stats.value) return [];
+          return [
+            { label: '已翻译标题', value: stats.value.translated, color: 'bg-indigo-600' },
+            { label: '有封面', value: stats.value.has_cover, color: 'bg-emerald-600' },
+          ];
+        });
+
+        onMounted(async () => {
+          stats.value = await apiFetch('/api/stats');
+          loading.value = false;
+          restoreScroll();
+        });
+
+        return { stats, loading, maxByYear, maxScoreDist, maxMaker, statCards, coverage, imgErr };
       }
     };
 
@@ -1302,7 +1508,8 @@
         return false;
       },
       routes: [
-        { path: '/', component: HomeView },
+        { path: '/', component: DashboardView },
+        { path: '/videos', component: HomeView },
         { path: '/search', component: SearchView },
         { path: '/video/:code', component: VideoDetail },
         { path: '/actor/:id', component: ActorView },
@@ -1339,7 +1546,7 @@
     <div class="min-h-screen">
       <div class="sticky top-0 z-50">
         <!-- Navbar -->
-        <header class="bg-gray-950 border-b border-gray-800 px-4 py-3 flex items-center gap-4">
+        <header class="glass-nav px-4 py-3 flex items-center gap-4">
           <router-link to="/" class="text-indigo-400 font-bold text-lg tracking-tight flex-shrink-0">AVideo</router-link>
           <form @submit.prevent="doSearch" class="flex-1 max-w-xl">
             <input v-model="searchQ" type="text" placeholder="搜索番号、标题、片商…"
@@ -1349,7 +1556,8 @@
           </form>
         </header>
         <!-- Sub-nav -->
-        <nav class="bg-gray-950 border-b border-gray-800 px-4 flex overflow-x-auto">
+        <nav class="glass-subnav px-4 flex overflow-x-auto">
+          <router-link to="/videos"    class="nav-tab">影片</router-link>
           <router-link to="/tags"     class="nav-tab">类别</router-link>
           <router-link to="/actors"   class="nav-tab">演员</router-link>
           <router-link to="/series"   class="nav-tab">系列</router-link>
@@ -1359,7 +1567,7 @@
       <!-- Page -->
       <main class="px-4 py-6 max-w-screen-2xl mx-auto">
         <transition name="fade" mode="out-in">
-          <router-view :key="$route.fullPath" />
+          <router-view :key="$route.path" />
         </transition>
       </main>
     </div>

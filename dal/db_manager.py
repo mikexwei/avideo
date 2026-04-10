@@ -653,6 +653,112 @@ def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, ta
         if conn:
             conn.close()
 
+def get_stats() -> Dict[str, Any]:
+    """Return aggregate stats for the analytics dashboard."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+
+        # Totals
+        cursor.execute("SELECT COUNT(*) FROM videos WHERE deleted=0")
+        total_videos = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM videos WHERE deleted=1")
+        deleted_videos = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM actors")
+        total_actors = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM tags")
+        total_tags = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM series_clusters")
+        total_series = cursor.fetchone()[0]
+
+        # Scrape status
+        cursor.execute("SELECT scrape_status, COUNT(*) as cnt FROM videos GROUP BY scrape_status")
+        scrape_status = {r['scrape_status']: r['cnt'] for r in cursor.fetchall()}
+
+        # Translation coverage
+        cursor.execute("SELECT COUNT(*) FROM videos WHERE deleted=0 AND title_zh IS NOT NULL AND title_zh != ''")
+        translated = cursor.fetchone()[0]
+
+        # Cover coverage
+        cursor.execute("SELECT COUNT(*) FROM videos WHERE deleted=0 AND cover_path IS NOT NULL AND cover_path != ''")
+        has_cover = cursor.fetchone()[0]
+
+        # By year (top 12)
+        cursor.execute("""
+            SELECT substr(release_date,1,4) as year, COUNT(*) as cnt
+            FROM videos WHERE deleted=0 AND release_date IS NOT NULL AND release_date != ''
+            AND substr(release_date,1,4) GLOB '[0-9][0-9][0-9][0-9]'
+            GROUP BY year ORDER BY year DESC LIMIT 12
+        """)
+        by_year = [{'year': r['year'], 'count': r['cnt']} for r in cursor.fetchall()]
+
+        # Score distribution
+        cursor.execute("""
+            SELECT CASE
+                WHEN score>=4.5 THEN '4.5+'
+                WHEN score>=4.0 THEN '4.0-4.5'
+                WHEN score>=3.5 THEN '3.5-4.0'
+                WHEN score>=3.0 THEN '3.0-3.5'
+                ELSE '<3.0'
+            END as range, COUNT(*) as cnt
+            FROM videos WHERE deleted=0 AND score > 0
+            GROUP BY range ORDER BY range DESC
+        """)
+        score_dist = [{'range': r['range'], 'count': r['cnt']} for r in cursor.fetchall()]
+
+        # Top makers
+        cursor.execute("""
+            SELECT maker, COUNT(*) as cnt FROM videos
+            WHERE deleted=0 AND maker IS NOT NULL AND maker != ''
+            GROUP BY maker ORDER BY cnt DESC LIMIT 10
+        """)
+        top_makers = [{'name': r['maker'], 'count': r['cnt']} for r in cursor.fetchall()]
+
+        # Top actors
+        cursor.execute("""
+            SELECT a.id, COALESCE(a.name_zh, a.name) as name, a.avatar_path, COUNT(DISTINCT v.code) as cnt
+            FROM actors a
+            JOIN video_actor_link val ON val.actor_id = a.id
+            JOIN videos v ON v.id = val.video_id AND v.deleted = 0
+            WHERE a.is_ignored = 0
+            GROUP BY a.id ORDER BY cnt DESC LIMIT 10
+        """)
+        top_actors = [{'id': r['id'], 'name': r['name'], 'avatar_path': r['avatar_path'], 'count': r['cnt']} for r in cursor.fetchall()]
+
+        # Top tags
+        cursor.execute("""
+            SELECT t.id, t.name, COUNT(DISTINCT v.code) as cnt
+            FROM tags t
+            JOIN video_tag_link vtl ON vtl.tag_id = t.id
+            JOIN videos v ON v.id = vtl.video_id AND v.deleted = 0
+            GROUP BY t.id ORDER BY cnt DESC LIMIT 15
+        """)
+        top_tags = [{'id': r['id'], 'name': r['name'], 'count': r['cnt']} for r in cursor.fetchall()]
+
+        return {
+            'total_videos': total_videos,
+            'deleted_videos': deleted_videos,
+            'total_actors': total_actors,
+            'total_tags': total_tags,
+            'total_series': total_series,
+            'scrape_status': scrape_status,
+            'translated': translated,
+            'has_cover': has_cover,
+            'by_year': by_year,
+            'score_dist': score_dist,
+            'top_makers': top_makers,
+            'top_actors': top_actors,
+            'top_tags': top_tags,
+        }
+    except sqlite3.Error as e:
+        logger.error(f"get_stats failed: {e}")
+        return {}
+    finally:
+        if conn:
+            conn.close()
+
+
 def list_all_tags_with_count() -> List[Dict[str, Any]]:
     conn = None
     try:
