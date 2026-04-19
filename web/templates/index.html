@@ -9,131 +9,204 @@
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" />
   <style>
+    /* ── Apple Design System ── */
+
+    /* SF Pro font stack — picks up system font on Apple devices, falls back gracefully */
+    :root {
+      --apple-display: "SF Pro Display", "SF Pro Icons", -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+      --apple-text:    "SF Pro Text",    "SF Pro Icons", -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+      --blue:   #0071e3;
+      --blue-link-dark: #2997ff;
+      --blue-link-light: #0066cc;
+      --surface-1: #272729;
+      --surface-2: #28282a;
+      --surface-3: #2a2a2d;
+      --text-primary: #f5f5f7;
+      --text-secondary: rgba(255,255,255,.6);
+      --text-tertiary: rgba(255,255,255,.4);
+    }
+
     /* ── Background ── */
     body {
-      background: #070711;
-      background-image:
-        radial-gradient(ellipse 80% 60% at 20% 10%, rgba(99,102,241,.18) 0%, transparent 60%),
-        radial-gradient(ellipse 60% 50% at 80% 80%, rgba(168,85,247,.14) 0%, transparent 55%),
-        radial-gradient(ellipse 50% 40% at 55% 45%, rgba(59,130,246,.10) 0%, transparent 50%);
-      background-attachment: fixed;
-      color: #e5e5e5;
+      background: #000;
+      color: var(--text-primary);
       min-height: 100vh;
+      font-family: var(--apple-text);
+      font-size: 17px;
+      line-height: 1.47;
+      letter-spacing: -0.374px;
+      -webkit-font-smoothing: antialiased;
     }
 
-    /* ── Glass utility ── */
+    /* ── Glass utility (kept for opt-in use) ── */
     .glass {
       background: rgba(255,255,255,.04);
-      backdrop-filter: blur(14px);
-      -webkit-backdrop-filter: blur(14px);
-      border: 1px solid rgba(255,255,255,.08);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
     }
 
-    /* ── Navbar / header glass ── */
+    /* ── Navbar ── */
     header.glass-nav {
-      background: rgba(7,7,17,.65);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border-bottom: 1px solid rgba(255,255,255,.07);
+      background: rgba(0,0,0,.8);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      border-bottom: 1px solid rgba(255,255,255,.08);
     }
+
+    header.glass-nav .text-indigo-400 {
+      color: #fff !important;
+      font-family: var(--apple-display);
+      font-size: 1.13rem;
+      font-weight: 600;
+      letter-spacing: -0.28px;
+    }
+
+    /* ── Sub-nav ── */
     nav.glass-subnav {
-      background: rgba(7,7,17,.50);
-      backdrop-filter: blur(14px);
-      -webkit-backdrop-filter: blur(14px);
+      background: rgba(0,0,0,.72);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
       border-bottom: 1px solid rgba(255,255,255,.06);
     }
 
     /* ── Cards ── */
     .card-hover {
-      background: rgba(255,255,255,.04);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border: 1px solid rgba(255,255,255,.07);
-      border-radius: .75rem;
-      transition: transform .2s, box-shadow .2s, background .2s;
+      background: var(--surface-1);
+      border: none;
+      border-radius: 8px;
+      transition: transform .2s ease, box-shadow .2s ease;
+      cursor: pointer;
     }
 
     .card-hover:hover {
-      transform: translateY(-4px);
-      background: rgba(255,255,255,.08);
-      box-shadow: 0 8px 32px rgba(0,0,0,.5), 0 0 0 1px rgba(99,102,241,.25);
+      transform: translateY(-3px);
+      box-shadow: rgba(0,0,0,.22) 3px 5px 30px 0px;
     }
 
-    /* ── bg-gray-* overrides → glass panels ── */
+    /* ── bg-gray-* overrides → Apple dark surfaces ── */
     .bg-gray-900 {
-      background: rgba(255,255,255,.04) !important;
-      backdrop-filter: blur(14px);
-      -webkit-backdrop-filter: blur(14px);
-      border: 1px solid rgba(255,255,255,.07);
+      background: var(--surface-1) !important;
     }
     .bg-gray-800 {
-      background: rgba(255,255,255,.06) !important;
+      background: var(--surface-2) !important;
     }
     .bg-gray-700 {
-      background: rgba(255,255,255,.09) !important;
+      background: var(--surface-3) !important;
     }
     .bg-gray-950 {
-      background: rgba(7,7,17,.0) !important;
+      background: transparent !important;
     }
 
     /* ── Inputs ── */
     input, select {
-      background: rgba(255,255,255,.06) !important;
+      background: var(--surface-2) !important;
       border-color: rgba(255,255,255,.12) !important;
+      font-family: var(--apple-text);
+      font-size: 15px;
+      letter-spacing: -0.24px;
+      color: #f5f5f7 !important;
     }
+    input::placeholder { color: rgba(255,255,255,.32) !important; }
     input:focus, select:focus {
-      border-color: rgba(99,102,241,.6) !important;
-      box-shadow: 0 0 0 2px rgba(99,102,241,.15);
+      border-color: var(--blue) !important;
+      box-shadow: 0 0 0 2px rgba(0,113,227,.25) !important;
+      outline: none;
     }
 
+    /* ── Cover image ── */
     .cover-img {
       aspect-ratio: 16/9;
       object-fit: cover;
-      background: rgba(255,255,255,.04);
+      background: var(--surface-2);
     }
 
+    /* ── Tags ── */
     .tag-pill {
       display: inline-block;
-      background: rgba(255,255,255,.07);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
+      background: var(--surface-2);
       border: 1px solid rgba(255,255,255,.1);
       border-radius: 4px;
       padding: 2px 8px;
-      font-size: .75rem;
+      font-size: 12px;
+      font-family: var(--apple-text);
+      letter-spacing: -0.12px;
       margin: 2px;
       cursor: pointer;
-      transition: background .15s;
+      transition: background .15s, border-color .15s;
+      color: rgba(255,255,255,.7);
     }
-
     .tag-pill:hover {
-      background: rgba(255,255,255,.13);
+      background: var(--surface-3);
+      border-color: rgba(255,255,255,.18);
+      color: #fff;
     }
 
+    /* ── Score badge ── */
     .score-badge {
-      background: linear-gradient(135deg, #f59e0b, #d97706);
+      background: var(--blue);
     }
 
+    /* ── Scrollbar ── */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 3px; }
 
+    /* ── Page transitions ── */
     .fade-enter-active, .fade-leave-active { transition: opacity .15s; }
     .fade-enter-from, .fade-leave-to { opacity: 0; }
 
+    /* ── Sub-nav tabs ── */
     .nav-tab {
       padding: 8px 16px;
-      font-size: .875rem;
-      color: #9ca3af;
+      font-size: 14px;
+      font-family: var(--apple-text);
+      letter-spacing: -0.224px;
+      color: rgba(255,255,255,.5);
       transition: color .15s;
       border-bottom: 2px solid transparent;
       white-space: nowrap;
     }
-    .nav-tab:hover { color: #e5e5e5; }
+    .nav-tab:hover { color: rgba(255,255,255,.8); }
     .router-link-exact-active.nav-tab,
     .router-link-active.nav-tab {
       color: #fff;
-      border-bottom-color: #6366f1;
+      border-bottom-color: var(--blue);
+    }
+
+    /* ── Typography overrides ── */
+    h1, h2, h3 {
+      font-family: var(--apple-display);
+      letter-spacing: -0.28px;
+      line-height: 1.1;
+    }
+    .text-xl  { font-family: var(--apple-display); letter-spacing: -0.28px; }
+    .text-2xl { font-family: var(--apple-display); letter-spacing: -0.28px; }
+    .font-mono { font-family: "SF Mono", "Fira Mono", ui-monospace, monospace; }
+
+    /* ── Indigo → Apple Blue remapping ── */
+    .text-indigo-400 { color: var(--blue-link-dark) !important; }
+    .text-indigo-300 { color: #5ac8fa !important; }
+    .hover\:text-indigo-300:hover { color: #5ac8fa !important; }
+    .bg-indigo-600  { background: var(--blue) !important; }
+    .hover\:bg-indigo-500:hover { background: #0077ed !important; }
+    .bg-indigo-500  { background: #0077ed !important; }
+    .border-indigo-500 { border-color: var(--blue) !important; }
+    .focus\:border-indigo-500:focus { border-color: var(--blue) !important; }
+    .ring-indigo-500 { --tw-ring-color: var(--blue) !important; }
+    /* Emerald bars keep their color — data viz distinction */
+
+    /* ── Buttons ── */
+    button, [role="button"] {
+      font-family: var(--apple-text);
+      letter-spacing: -0.224px;
+    }
+
+    /* ── Reduced motion ── */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        transition-duration: .01ms !important;
+      }
     }
   </style>
 </head>
