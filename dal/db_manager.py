@@ -319,7 +319,7 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
                    file_size, file_mtime, file_birthtime, deleted
             FROM videos
             WHERE code = ?
-            ORDER BY COALESCE(part, '') ASC, id ASC
+            ORDER BY CAST(SUBSTR(COALESCE(part, '0'), 5) AS INTEGER) ASC, id ASC
             """,
             (code,),
         )

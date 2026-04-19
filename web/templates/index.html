@@ -379,13 +379,13 @@
         <p v-if="video.title_zh && video.title_jp" class="text-sm text-gray-500 mt-0.5">{{ video.title_jp }}</p>
       </div>
 
-      <!-- Cover (60%) + Info (40%) -->
-      <div class="flex gap-6">
+      <!-- Cover + Info: side-by-side on md+, stacked on mobile -->
+      <div class="flex flex-col md:flex-row gap-4 md:gap-6">
         <!-- Cover with upload overlay -->
-        <div class="w-3/5 flex-shrink-0">
+        <div class="w-full md:w-3/5 flex-shrink-0">
           <div class="relative group cursor-pointer" @click="triggerCoverUpload">
             <img v-if="video.cover_path" :src="coverSrc || ('/static/' + video.cover_path)" class="w-full rounded-lg" @error="imgErr" />
-            <div v-else class="w-full h-64 bg-gray-800 rounded-lg flex items-center justify-center text-gray-600">无封面</div>
+            <div v-else class="w-full h-48 bg-gray-800 rounded-lg flex items-center justify-center text-gray-600">无封面</div>
             <div class="absolute inset-0 rounded-lg bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
               <span class="text-white text-sm">{{ coverUploading ? '上传中…' : '更换封面' }}</span>
             </div>
@@ -394,20 +394,20 @@
           <!-- Playback buttons -->
           <div class="flex items-center gap-2 mt-2">
             <select v-if="fileParts.length > 1" v-model="selectedPart"
-              class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none">
+              class="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none">
               <option v-for="f in fileParts" :key="f.part" :value="f.part || ''">{{ f.part || '完整' }}</option>
             </select>
             <button @click="playVideo"
-              class="flex-1 px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium">▶ Play</button>
+              class="flex-1 px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium">▶ Play</button>
             <button @click="copyStreamUrl"
-              class="flex-1 px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm">
-              {{ copied ? '已复制 ✓' : '⎘ Copy URL' }}
+              class="flex-1 px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm">
+              {{ copied ? '已复制 ✓' : '复制 URL' }}
             </button>
           </div>
         </div>
 
         <!-- Info -->
-        <div class="w-2/5 min-w-0">
+        <div class="w-full md:w-2/5 min-w-0">
 
           <!-- View mode -->
           <template v-if="!editing">
@@ -516,11 +516,16 @@
           <div v-if="fileParts.length" class="mt-2">
             <div class="text-gray-500 text-sm mb-1">本地文件</div>
             <div v-for="(f, i) in fileParts" :key="i"
-              class="flex items-center gap-2 bg-gray-800 rounded px-3 py-2 mb-1 group">
-              <span v-if="f.part" class="text-xs text-indigo-400 font-mono w-12 flex-shrink-0">{{ f.part }}</span>
-              <span class="text-xs text-gray-400 font-mono truncate flex-1">{{ f.path }}</span>
-              <button @click="copy(f.path)"
-                class="text-xs text-gray-500 hover:text-white flex-shrink-0 opacity-0 group-hover:opacity-100 transition">复制</button>
+              class="bg-gray-800 rounded px-3 py-2 mb-1">
+              <div class="flex items-center justify-between gap-2 mb-0.5">
+                <span v-if="f.part" class="text-xs text-indigo-400 font-mono flex-shrink-0">{{ f.part }}</span>
+                <button @click="copyPath(f.path)"
+                  class="text-xs flex-shrink-0 px-2 py-0.5 rounded transition"
+                  :class="copiedPaths[f.path] ? 'bg-emerald-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'">
+                  {{ copiedPaths[f.path] ? '已复制 ✓' : '复制' }}
+                </button>
+              </div>
+              <span class="text-xs text-gray-400 font-mono break-all leading-relaxed">{{ f.path }}</span>
             </div>
           </div>
 
@@ -801,8 +806,22 @@
       if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
       return (bytes / 1e6).toFixed(0) + ' MB';
     }
-    function copyText(text) {
-      navigator.clipboard.writeText(text).then(() => alert('已复制：' + text));
+    async function copyText(text, doneRef) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      if (doneRef) {
+        doneRef.value = true;
+        setTimeout(() => { doneRef.value = false; }, 2000);
+      }
     }
 
     // ── SortBar ───────────────────────────────────────────────
@@ -962,6 +981,7 @@
 
         // Streaming
         const selectedPart = ref(''), copied = ref(false);
+        const copiedPaths = ref({});
         function streamUrl() {
           // 取文件扩展名（供 VRPlayer 等依赖 URL 后缀识别格式的播放器使用）
           const filePath = (video.value.parts && video.value.parts.length > 0)
@@ -1048,11 +1068,18 @@
           ];
           return rows.filter(r => r.val);
         });
+        function partSortKey(part) {
+          if (!part) return 0;
+          const m = part.match(/(\d+)$/);
+          return m ? parseInt(m[1]) : 0;
+        }
         const fileParts = computed(() => {
           if (!video.value) return [];
           const v = video.value;
           if (v.parts && v.parts.length > 1) {
-            return v.parts.map(p => ({ part: p.part, path: p.original_file_path }));
+            return v.parts
+              .map(p => ({ part: p.part, path: p.original_file_path }))
+              .sort((a, b) => partSortKey(a.part) - partSortKey(b.part));
           }
           return v.original_file_path ? [{ part: v.part, path: v.original_file_path }] : [];
         });
@@ -1192,7 +1219,17 @@
           removeActor, onActorInput, closeActorDropdown, pickActor, addActorFromInput,
           onSeriesInput, closeSeriesDropdown, pickSeries,
           removeTag, addTag,
-          imgErr, formatSize, copy: copyText,
+          imgErr, formatSize,
+          copiedPaths,
+          copyPath(path) {
+            copyText(path, null);
+            copiedPaths.value = { ...copiedPaths.value, [path]: true };
+            setTimeout(() => {
+              const next = { ...copiedPaths.value };
+              delete next[path];
+              copiedPaths.value = next;
+            }, 2000);
+          },
           selectedPart, copied, playVideo, copyStreamUrl,
           coverFileInput, coverUploading, coverSrc, triggerCoverUpload, uploadCover,
           editingCode, codeDraft, startEditCode, cancelEditCode, saveCode,
