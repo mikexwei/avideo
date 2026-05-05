@@ -69,10 +69,8 @@ def run_background_worker(batch_size: int = 5, sleep_between_items: tuple = (32.
             pending_tasks = get_pending_videos(limit=batch_size, status=status)
             
             if not pending_tasks:
-                # 数据库里没有待刮削的片子了，休眠一大段时间后再检查 (比如 10 分钟)
-                logger.info("☕ 当前没有 PENDING 状态的影片。引擎进入休眠，10 分钟后再次检查...")
-                countdown_sleep(450, "等待任务")
-                continue
+                logger.info("✅ 队列已清空，本次刮削结束。")
+                break
                 
             logger.info(f"📥 成功领到 {len(pending_tasks)} 个刮削任务，开始执行批处理...")
             

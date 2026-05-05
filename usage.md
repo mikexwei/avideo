@@ -55,7 +55,7 @@ playwright install chromium
 ```
 
 - 自动轮询所有指定状态的视频
-- 无任务时休眠后再次检查，可长期后台运行
+- 队列清空后自动退出（跑完即退），不再常驻
 - 内置随机延迟，防止触发 JavDB 封控
 
 ---
@@ -167,17 +167,28 @@ playwright install chromium
 
 ## 新视频入库标准流程
 
+手动逐步：
+
 ```
 有新视频到达磁盘
     ↓
 python core/scanner.py          # 扫描，新文件入库为 PENDING
     ↓
-python core/auto_scraper.py     # 刮削元数据（可长期后台运行）
+python core/auto_scraper.py     # 刮削元数据（队列空即退）
     ↓
-python core/auto_actor_scraper.py  # 刮演员头像（可同时跑）
+python core/auto_actor_scraper.py  # 刮演员头像（队列空即退）
     ↓
 python utils/translate_titles.py   # 翻译未翻译的标题
 ```
+
+或者用每日守护进程一次性跑完上述四步、并每天自动重跑：
+
+```bash
+nohup .venv/bin/python daily_pipeline.py > /dev/null 2>&1 &
+tail -f data/logs/daily_pipeline.log
+```
+
+`daily_pipeline.py` 启动后每 24 小时跑一轮，任一步抛异常只记 log 不影响后续。
 
 ---
 

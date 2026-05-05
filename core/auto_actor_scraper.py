@@ -57,9 +57,8 @@ def run_actor_worker(batch_size: int = 10, sleep_between_items: tuple = (15.0, 1
             pending_actors = get_pending_actors(limit=batch_size)
             
             if not pending_actors:
-                logger.info("☕ 当前没有需要抓取头像的演员。引擎进入休眠，10 分钟后再次检查...")
-                countdown_sleep(600, "等待任务")
-                continue
+                logger.info("✅ 队列已清空，本次演员刮削结束。")
+                break
                 
             logger.info(f"📥 成功领到 {len(pending_actors)} 个女优抓取任务...")
             

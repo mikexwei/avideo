@@ -19,6 +19,19 @@ OTHER_ALLOWED_EXTENSIONS = {''}
 # 合并所有允许保留的扩展名
 ALL_ALLOWED_EXTENSIONS = VIDEO_EXTENSIONS | SUBTITLE_EXTENSIONS | OTHER_ALLOWED_EXTENSIONS
 
+def _normalize_code_for_dup(code: str) -> str:
+    """重复检测专用：剥离尾部的 -UC / -U / -C 后缀（不区分大小写）。
+    只剥一次，优先匹配长后缀（-UC 比 -U/-C 长）。番号本身仍以原样存库；
+    此函数只用于"重复检测分组"这一步，不影响 extract_video_code 的输出。"""
+    if not code:
+        return code or ''
+    upper = code.upper()
+    for suffix in ('-UC', '-U', '-C'):
+        if upper.endswith(suffix):
+            return code[: -len(suffix)]
+    return code
+
+
 def extract_video_code(filename: str) -> Tuple[Optional[str], Optional[str]]:
     """架构师防弹版：免疫一切站长私货、论坛前缀与贪婪误杀"""
     
@@ -173,9 +186,9 @@ def clean_directory(directory_path: Union[str, Path], min_video_mb: int = 100, d
         if not file_path.is_file():
             continue
 
-        # 忽略 macOS 烦人的系统隐藏文件
-        if file_path.name.startswith('._') or file_path.name == '.DS_Store':
-            _safe_delete(file_path, dry_run, "系统隐藏文件")
+        # 系统隐藏文件 (.DS_Store / ._* / .Spotlight-V100 / .Trashes / .fseventsd 等):
+        # 完全跳过——不扫描、不删除、不报告
+        if file_path.name.startswith('.'):
             continue
 
         file_ext = file_path.suffix.lower()
@@ -285,48 +298,25 @@ def scan_directory(directory_path: Union[str, Path]) -> Tuple[List[Dict], List[P
     return results, no_code_files
 
 # ----------- 简单的内部测试模块 -----------
-if __name__ == "__main__":
+def run_scan(directories: Optional[List[str]] = None) -> None:
+    """跑一轮完整扫描：遍历给定目录（默认 config.MEDIA_LIBRARIES）→ 清理 dry-run →
+    番号提取 → 写报告 → 入库 → 全局总结（含重复检测，按 -C/-U/-UC 后缀合并）。
+
+    本函数不重新配置 root logger，统一用 print 输出，以便在 daily_pipeline
+    等外部进程里调用时不破坏对方的日志配置。"""
     import sys
-    import logging
-    from pathlib import Path
-    
-    # 🌟 核心修复逻辑：动态将项目根目录加入 Python 搜索路径
-    # Path(__file__).resolve() 是 scanner.py 的绝对路径
-    # .parent 是 core/ 目录
-    # .parent.parent 就是 avideo/ 项目根目录
-    project_root = Path(__file__).resolve().parent.parent
-    sys.path.append(str(project_root))
-    
-    from config import MEDIA_LIBRARIES 
-    import json
+    import sqlite3
+    from collections import defaultdict
+    from config import MEDIA_LIBRARIES, DB_PATH
     from dal.db_manager import batch_insert_scanned_videos
-    
-    # ---------------- 架构师修复：全局日志双端输出配置 ----------------
-    # 确保 logs 文件夹存在
-    log_dir = project_root / "data" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 设置清理日志的保存路径
-    clean_log_file = log_dir / "scanner_clean.log"
-    
-    # 重新配置基础日志：同时发送给文件和控制台
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(message)s',
-        handlers=[
-            logging.FileHandler(clean_log_file, encoding='utf-8', mode='w'), # 写入到文件 (mode='w'表示每次运行覆写)
-            logging.StreamHandler(sys.stdout)                                # 依然输出到控制台给你看
-        ],
-        force=True # 强制覆盖之前可能存在的旧配置
-    )
-    # ------------------------------------------------------------------    
-    # 优先使用终端传入的路径，如果终端没传，就默认使用 config.py 里的 MEDIA_LIBRARIES
-    if len(sys.argv) > 1:
-        test_directories = sys.argv[1:]
+
+    project_root = Path(__file__).resolve().parent.parent
+
+    if directories is None:
+        test_directories = [str(p) for p in MEDIA_LIBRARIES]
     else:
-        # 直接使用 config.py 里的配置，避免在此处硬编码
-        test_directories = [str(p) for p in MEDIA_LIBRARIES] 
-    
+        test_directories = list(directories)
+
     print("=== 🚀 开始执行 scanner.py 内部连调测试 ===")
     print(f"准备扫描 {len(test_directories)} 个目录...\n")
 
@@ -370,7 +360,7 @@ if __name__ == "__main__":
         new_add, skipped = batch_insert_scanned_videos(results)
         print(f"💾 目录 {target.name} 入库成功！新增 {new_add} 部待刮削影片，跳过 {skipped} 部已存在。\n")
 
-    # ======== 全局总结（无论 dry_run 与否都输出）========
+    # ======== 全局总结 ========
     print("\n" + "="*60)
     print("📋 全局扫描总结")
     print("="*60)
@@ -389,42 +379,66 @@ if __name__ == "__main__":
     else:
         print("  （无）")
 
-    # ======== 【三】重复番号检测（数据库中 code+part 相同的记录）========
-    print(f"\n【三】数据库中重复的番号+分集")
+    # ======== 【三】重复番号检测（按 -C/-U/-UC 后缀合并后再分组）========
+    print(f"\n【三】数据库中重复的番号+分集（已按 -C/-U/-UC 后缀合并）")
     try:
-        import sqlite3
-        from config import DB_PATH
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT original_file_path, code, part
-            FROM videos
-            WHERE (code, IFNULL(part, '')) IN (
-                SELECT code, IFNULL(part, '')
-                FROM videos
-                GROUP BY code, IFNULL(part, '')
-                HAVING COUNT(id) > 1
-            )
-            ORDER BY code, part, original_file_path
-        """)
-        dup_rows = cursor.fetchall()
+        cursor.execute("SELECT original_file_path, code, part FROM videos")
+        rows = cursor.fetchall()
         conn.close()
 
-        if not dup_rows:
+        groups = defaultdict(list)
+        for fpath, code, part in rows:
+            key = (_normalize_code_for_dup(code or ''), part or '')
+            groups[key].append((fpath, code, part))
+
+        dup_groups = {k: v for k, v in groups.items() if len(v) > 1}
+
+        if not dup_groups:
             print("  （无重复）")
         else:
-            current_group = None
-            for file_path, code, part in dup_rows:
-                group_key = (code, part or '')
-                if current_group is not None and current_group != group_key:
+            sorted_keys = sorted(dup_groups.keys())
+            total_files = 0
+            for idx, key in enumerate(sorted_keys):
+                if idx > 0:
                     print(f"  {'─'*56}")
-                part_str = f"  [{part}]" if part else ""
-                filename = Path(file_path).name if file_path else file_path
-                print(f"  {code}{part_str}  {filename}")
-                current_group = group_key
-            dup_groups = len({(r[1], r[2] or '') for r in dup_rows})
-            print(f"\n  共 {len(dup_rows)} 个文件，归属于 {dup_groups} 个重复组。")
+                # 组内按 (原始 code, 文件路径) 排序，让 ABC-001 排在 ABC-001-C 之前
+                items = sorted(dup_groups[key], key=lambda r: (r[1] or '', r[0] or ''))
+                for fpath, code, part in items:
+                    part_str = f"  [{part}]" if part else ""
+                    filename = Path(fpath).name if fpath else fpath
+                    print(f"  {code}{part_str}  {filename}")
+                    total_files += 1
+            print(f"\n  共 {total_files} 个文件，归属于 {len(dup_groups)} 个重复组。")
     except Exception as e:
         print(f"  查询失败: {e}")
 
     print("\n=== 全部扫描结束 ===")
+
+
+if __name__ == "__main__":
+    import sys
+    import logging
+
+    # 🌟 把项目根目录加入 sys.path（作为顶层脚本运行时需要）
+    project_root = Path(__file__).resolve().parent.parent
+    sys.path.append(str(project_root))
+
+    # 全局日志双端输出：清理日志写入 scanner_clean.log + 控制台
+    log_dir = project_root / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    clean_log_file = log_dir / "scanner_clean.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(message)s',
+        handlers=[
+            logging.FileHandler(clean_log_file, encoding='utf-8', mode='w'),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
+    )
+
+    # 终端传入路径优先，否则用 config.MEDIA_LIBRARIES
+    dirs = sys.argv[1:] if len(sys.argv) > 1 else None
+    run_scan(dirs)
