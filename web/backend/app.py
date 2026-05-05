@@ -10,6 +10,7 @@ from dal.db_manager import (
     get_videos_by_prefix,
     get_videos_by_series,
     get_stats,
+    get_recommendations,
     list_all_actors_with_count,
     list_all_prefixes_with_count,
     list_all_series_with_count,
@@ -40,7 +41,18 @@ def api_videos():
     page = request.args.get('page', 1, type=int) or 1
     limit = request.args.get('limit', 24, type=int) or 24
     sort = request.args.get('sort', 'date')
-    return jsonify(list_videos(page=page, limit=limit, sort=sort))
+    year = request.args.get('year') or None
+    score_min = request.args.get('score_min', type=float)
+    score_max = request.args.get('score_max', type=float)
+    has_cover = request.args.get('has_cover') == '1'
+    has_translation = request.args.get('has_translation') == '1'
+    scrape_status = request.args.get('scrape_status') or None
+    return jsonify(list_videos(
+        page=page, limit=limit, sort=sort,
+        year=year, score_min=score_min, score_max=score_max,
+        has_cover=has_cover, has_translation=has_translation,
+        scrape_status=scrape_status,
+    ))
 
 
 @app.get('/api/videos/<string:code>')
@@ -177,6 +189,11 @@ def api_series_search():
 @app.get('/api/stats')
 def api_stats():
     return jsonify(get_stats())
+
+
+@app.get('/api/recommendations')
+def api_recommendations():
+    return jsonify(get_recommendations(count=8))
 
 
 @app.get('/api/tags/all')

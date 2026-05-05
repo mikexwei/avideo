@@ -276,26 +276,61 @@ def update_actor_avatar(actor_id: int, avatar_path: Optional[str], actor_name: s
             conn.close()
 
 
-def list_videos(page: int = 1, limit: int = 24, sort: str = 'date') -> Dict[str, Any]:
+def list_videos(
+    page: int = 1,
+    limit: int = 24,
+    sort: str = 'date',
+    year: str = None,
+    score_min: float = None,
+    score_max: float = None,
+    has_cover: bool = False,
+    has_translation: bool = False,
+    scrape_status: str = None,
+) -> Dict[str, Any]:
     page = max(1, page)
     limit = max(1, min(limit, 200))
     offset = (page - 1) * limit
+
+    # Build dynamic WHERE clauses
+    conditions = ["deleted = 0"]
+    params: list = []
+    if year:
+        conditions.append("substr(release_date, 1, 4) = ?")
+        params.append(str(year))
+    if score_min is not None:
+        conditions.append("score >= ?")
+        params.append(score_min)
+    if score_max is not None:
+        conditions.append("score < ?")
+        params.append(score_max)
+    if has_cover:
+        conditions.append("cover_path IS NOT NULL AND cover_path != ''")
+    if has_translation:
+        conditions.append("title_zh IS NOT NULL AND title_zh != ''")
+    if scrape_status:
+        conditions.append("scrape_status = ?")
+        params.append(scrape_status.upper())
+
+    where = " AND ".join(conditions)
 
     conn = None
     try:
         conn = _get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(DISTINCT code) AS total FROM videos WHERE deleted = 0")
+        cursor.execute(
+            f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE {where}",
+            params,
+        )
         total = int(cursor.fetchone()["total"])
         cursor.execute(
             f"""
             SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status, deleted
             FROM videos
-            WHERE id IN (SELECT MIN(id) FROM videos GROUP BY code)
+            WHERE id IN (SELECT MIN(id) FROM videos v2 WHERE {where} GROUP BY v2.code)
             ORDER BY {_order_clause(sort)}
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            params + [limit, offset],
         )
         items = _rows_to_dicts(cursor.fetchall())
         return {"page": page, "limit": limit, "total": total, "items": items}
@@ -660,10 +695,10 @@ def get_stats() -> Dict[str, Any]:
         conn = _get_conn()
         cursor = conn.cursor()
 
-        # Totals
-        cursor.execute("SELECT COUNT(*) FROM videos WHERE deleted=0")
+        # Totals (distinct codes only)
+        cursor.execute("SELECT COUNT(DISTINCT code) FROM videos WHERE deleted=0")
         total_videos = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM videos WHERE deleted=1")
+        cursor.execute("SELECT COUNT(DISTINCT code) FROM videos WHERE deleted=1")
         deleted_videos = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM actors")
         total_actors = cursor.fetchone()[0]
@@ -676,12 +711,12 @@ def get_stats() -> Dict[str, Any]:
         cursor.execute("SELECT scrape_status, COUNT(*) as cnt FROM videos GROUP BY scrape_status")
         scrape_status = {r['scrape_status']: r['cnt'] for r in cursor.fetchall()}
 
-        # Translation coverage
-        cursor.execute("SELECT COUNT(*) FROM videos WHERE deleted=0 AND title_zh IS NOT NULL AND title_zh != ''")
+        # Translation coverage (distinct codes)
+        cursor.execute("SELECT COUNT(DISTINCT code) FROM videos WHERE deleted=0 AND title_zh IS NOT NULL AND title_zh != ''")
         translated = cursor.fetchone()[0]
 
-        # Cover coverage
-        cursor.execute("SELECT COUNT(*) FROM videos WHERE deleted=0 AND cover_path IS NOT NULL AND cover_path != ''")
+        # Cover coverage (distinct codes)
+        cursor.execute("SELECT COUNT(DISTINCT code) FROM videos WHERE deleted=0 AND cover_path IS NOT NULL AND cover_path != ''")
         has_cover = cursor.fetchone()[0]
 
         # By year (top 12)
@@ -693,7 +728,7 @@ def get_stats() -> Dict[str, Any]:
         """)
         by_year = [{'year': r['year'], 'count': r['cnt']} for r in cursor.fetchall()]
 
-        # Score distribution
+        # Score distribution (ordered high → low via numeric sort key)
         cursor.execute("""
             SELECT CASE
                 WHEN score>=4.5 THEN '4.5+'
@@ -701,9 +736,17 @@ def get_stats() -> Dict[str, Any]:
                 WHEN score>=3.5 THEN '3.5-4.0'
                 WHEN score>=3.0 THEN '3.0-3.5'
                 ELSE '<3.0'
-            END as range, COUNT(*) as cnt
+            END as range,
+            CASE
+                WHEN score>=4.5 THEN 5
+                WHEN score>=4.0 THEN 4
+                WHEN score>=3.5 THEN 3
+                WHEN score>=3.0 THEN 2
+                ELSE 1
+            END as sort_order,
+            COUNT(*) as cnt
             FROM videos WHERE deleted=0 AND score > 0
-            GROUP BY range ORDER BY range DESC
+            GROUP BY range ORDER BY sort_order DESC
         """)
         score_dist = [{'range': r['range'], 'count': r['cnt']} for r in cursor.fetchall()]
 
@@ -754,6 +797,100 @@ def get_stats() -> Dict[str, Any]:
     except sqlite3.Error as e:
         logger.error(f"get_stats failed: {e}")
         return {}
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_recommendations(count: int = 8) -> List[Dict[str, Any]]:
+    """Return `count` diverse high-scored videos (score >= 4.0, no VR tags).
+
+    Uses a single SQL pass: assigns each qualifying video its lexicographically
+    first non-VR tag, shuffles with RANDOM(), then picks one video per tag
+    bucket via GROUP BY.  Fast even on large libraries.
+    """
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+
+        # Pre-compute the set of video IDs that have any VR tag — single scan.
+        cursor.execute(
+            """
+            SELECT DISTINCT v.id
+            FROM videos v
+            JOIN video_tag_link vtl ON vtl.video_id = v.id
+            JOIN tags t ON t.id = vtl.tag_id
+            WHERE UPPER(t.name) LIKE '%VR%'
+            """
+        )
+        vr_ids = {r[0] for r in cursor.fetchall()}
+
+        # Candidates: one representative row per code, high-score, has cover.
+        cursor.execute(
+            """
+            SELECT id, code, title_jp, title_zh, release_date, score, cover_path
+            FROM videos
+            WHERE deleted = 0
+              AND scrape_status = 'SUCCESS'
+              AND score >= 4.0
+              AND cover_path IS NOT NULL
+              AND cover_path != ''
+              AND id = (SELECT MIN(id) FROM videos v2 WHERE v2.code = videos.code)
+            ORDER BY RANDOM()
+            LIMIT 500
+            """
+        )
+        candidates = [dict(r) for r in cursor.fetchall() if r['id'] not in vr_ids]
+        if not candidates:
+            return []
+
+        # For each candidate get its first non-VR tag (batch fetch by code list).
+        codes = [c['code'] for c in candidates]
+        placeholders = ','.join('?' * len(codes))
+        cursor.execute(
+            f"""
+            SELECT vv.code, MIN(t.name) AS tag
+            FROM videos vv
+            JOIN video_tag_link vtl ON vtl.video_id = vv.id
+            JOIN tags t ON t.id = vtl.tag_id
+            WHERE vv.code IN ({placeholders})
+              AND UPPER(t.name) NOT LIKE '%VR%'
+            GROUP BY vv.code
+            """,
+            codes,
+        )
+        code_tag = {r['code']: r['tag'] for r in cursor.fetchall()}
+
+        # Pick one video per tag bucket.
+        import random as _random
+        _random.shuffle(candidates)
+        seen_tags: set = set()
+        picked: list = []
+        leftover: list = []
+        for c in candidates:
+            tag = code_tag.get(c['code'], '__none__')
+            if tag not in seen_tags:
+                seen_tags.add(tag)
+                picked.append(c)
+                if len(picked) == count:
+                    break
+            else:
+                leftover.append(c)
+
+        if len(picked) < count:
+            picked.extend(leftover[:count - len(picked)])
+
+        _random.shuffle(picked)
+        result = picked[:count]
+        # Drop the internal 'id' field before returning
+        for r in result:
+            r.pop('id', None)
+        return result
+
+    except sqlite3.Error as e:
+        logger.error(f"get_recommendations failed: {e}")
+        return []
     finally:
         if conn:
             conn.close()

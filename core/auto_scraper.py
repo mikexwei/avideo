@@ -11,7 +11,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from dal.db_manager import get_pending_videos, update_video_metadata
-from core.scraper import scrape_video_info, load_javdb_cookies
+from core.scraper import scrape_video_info, load_javdb_cookies, check_login_status
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
@@ -54,7 +54,13 @@ def run_background_worker(batch_size: int = 5, sleep_between_items: tuple = (32.
         page = context.new_page()
         # 魔法注入：使用 playwright-stealth 专业防反爬插件，全面抹除机器指纹
         Stealth().apply_stealth_sync(page)
-        
+
+        # 检测登录状态
+        if check_login_status(page):
+            logger.info("🔐 Cookie 有效，已登录状态运行。")
+        else:
+            logger.warning("⚠️ Cookie 无效或已过期，将以访客模式运行。遇到登录拦截时会自动降级，部分内容可能无法访问。")
+
         # 全局计数器，用于触发周期性的中等/深度防封号休眠
         total_processed_tasks = 0
 

@@ -389,4 +389,42 @@ if __name__ == "__main__":
     else:
         print("  （无）")
 
-    print("\n=== 🎉 全部扫描结束 ===")
+    # ======== 【三】重复番号检测（数据库中 code+part 相同的记录）========
+    print(f"\n【三】数据库中重复的番号+分集")
+    try:
+        import sqlite3
+        from config import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT original_file_path, code, part
+            FROM videos
+            WHERE (code, IFNULL(part, '')) IN (
+                SELECT code, IFNULL(part, '')
+                FROM videos
+                GROUP BY code, IFNULL(part, '')
+                HAVING COUNT(id) > 1
+            )
+            ORDER BY code, part, original_file_path
+        """)
+        dup_rows = cursor.fetchall()
+        conn.close()
+
+        if not dup_rows:
+            print("  （无重复）")
+        else:
+            current_group = None
+            for file_path, code, part in dup_rows:
+                group_key = (code, part or '')
+                if current_group is not None and current_group != group_key:
+                    print(f"  {'─'*56}")
+                part_str = f"  [{part}]" if part else ""
+                filename = Path(file_path).name if file_path else file_path
+                print(f"  {code}{part_str}  {filename}")
+                current_group = group_key
+            dup_groups = len({(r[1], r[2] or '') for r in dup_rows})
+            print(f"\n  共 {len(dup_rows)} 个文件，归属于 {dup_groups} 个重复组。")
+    except Exception as e:
+        print(f"  查询失败: {e}")
+
+    print("\n=== 全部扫描结束 ===")

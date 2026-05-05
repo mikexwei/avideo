@@ -279,7 +279,6 @@
 [成功] CACA-286         (分集: part2) <-- caca-286-2.mp4
 [成功] CACA-286         (分集: part1) <-- caca-286-1.mp4
 [成功] SOE-175-U        <-- SOE-175-UC.mp4
-[成功] SOE-242-U        <-- SOE-242-UC.mp4
 [成功] VRKM-276         <-- bbs2048.org@VRKM-276-R3_4K.mp4
 [成功] VRKM-276         <-- bbs2048.org@VRKM-276-R1_4K.mp4
 [成功] VRKM-276         <-- bbs2048.org@VRKM-276-R2_4K.mp4

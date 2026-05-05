@@ -198,7 +198,6 @@
 [成功] SIVR-318         (分集: part2) <-- sivr00318-2.mp4
 [成功] SIVR-318         (分集: part3) <-- sivr00318-3.mp4
 [成功] SIVR-318         (分集: part1) <-- sivr00318-1.mp4
-[成功] SOE-259-U        <-- SOE-259-UC.mp4
 [成功] SSIS-038-U       <-- SSIS-038-UC.mp4
 [成功] SSIS-063-U       <-- SSIS-063-UC.mp4
 [成功] SSIS-117-U       <-- SSIS-117-UC.mp4

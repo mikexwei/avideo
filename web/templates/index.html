@@ -257,6 +257,12 @@
   <div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else>
+      <!-- Active filter banner -->
+      <div v-if="filterLabel" class="flex items-center gap-3 mb-4">
+        <span class="text-gray-300 text-sm font-medium">{{ filterLabel }}</span>
+        <span class="text-gray-500 text-sm">{{ total }} 部</span>
+        <router-link to="/videos" class="ml-auto text-xs text-indigo-400 hover:text-indigo-300">× 清除筛选</router-link>
+      </div>
       <div class="flex justify-end mb-3">
         <sort-bar :sort="sort" @change="changeSort" />
       </div>
@@ -287,13 +293,15 @@
         <div class="bg-gray-900 rounded-lg p-5">
           <h2 class="text-sm font-semibold text-gray-300 mb-4">按年份分布</h2>
           <div class="space-y-2">
-            <div v-for="y in stats.by_year" :key="y.year" class="flex items-center gap-2">
-              <span class="text-xs text-gray-400 w-10 text-right flex-shrink-0">{{ y.year }}</span>
-              <div class="flex-1 bg-gray-800 rounded-full h-4 overflow-hidden">
-                <div class="h-4 rounded-full bg-indigo-600" :style="{ width: (y.count / maxByYear * 100) + '%' }"></div>
+            <router-link v-for="y in stats.by_year" :key="y.year"
+              :to="{ path: '/videos', query: { year: y.year } }"
+              class="flex items-center gap-2 rounded hover:bg-gray-800 px-1 -mx-1 transition group cursor-pointer">
+              <span class="text-xs text-indigo-400 group-hover:text-indigo-300 w-10 text-right flex-shrink-0">{{ y.year }}</span>
+              <div class="flex-1 bg-gray-700 rounded-full h-4 overflow-hidden">
+                <div class="h-4 rounded-full bg-indigo-600 group-hover:bg-indigo-500 transition" :style="{ width: (y.count / maxByYear * 100) + '%' }"></div>
               </div>
               <span class="text-xs text-gray-300 w-10 flex-shrink-0">{{ y.count }}</span>
-            </div>
+            </router-link>
           </div>
         </div>
 
@@ -301,13 +309,15 @@
         <div class="bg-gray-900 rounded-lg p-5">
           <h2 class="text-sm font-semibold text-gray-300 mb-4">评分分布</h2>
           <div class="space-y-2">
-            <div v-for="s in stats.score_dist" :key="s.range" class="flex items-center gap-2">
-              <span class="text-xs text-gray-400 w-16 text-right flex-shrink-0">{{ s.range }}</span>
-              <div class="flex-1 bg-gray-800 rounded-full h-4 overflow-hidden">
-                <div class="h-4 rounded-full bg-emerald-600" :style="{ width: (s.count / maxScoreDist * 100) + '%' }"></div>
+            <router-link v-for="s in stats.score_dist" :key="s.range"
+              :to="{ path: '/videos', query: scoreRangeQuery(s.range) }"
+              class="flex items-center gap-2 rounded hover:bg-gray-800 px-1 -mx-1 transition group cursor-pointer">
+              <span class="text-xs text-indigo-400 group-hover:text-indigo-300 w-16 text-right flex-shrink-0">{{ s.range }}</span>
+              <div class="flex-1 bg-gray-700 rounded-full h-4 overflow-hidden">
+                <div class="h-4 rounded-full bg-green-600" :style="{ width: (s.count / maxScoreDist * 100) + '%' }"></div>
               </div>
               <span class="text-xs text-gray-300 w-10 flex-shrink-0">{{ s.count }}</span>
-            </div>
+            </router-link>
           </div>
         </div>
       </div>
@@ -332,24 +342,27 @@
         <div class="bg-gray-900 rounded-lg p-5">
           <h2 class="text-sm font-semibold text-gray-300 mb-4">数据完整度</h2>
           <div class="space-y-4">
-            <div v-for="cov in coverage" :key="cov.label">
-              <div class="flex justify-between text-xs text-gray-400 mb-1">
-                <span>{{ cov.label }}</span>
-                <span>{{ cov.value }} / {{ stats.total_videos }} ({{ Math.round(cov.value / stats.total_videos * 100) }}%)</span>
+            <router-link v-for="cov in coverage" :key="cov.label"
+              :to="{ path: '/videos', query: cov.query }"
+              class="block group cursor-pointer">
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-indigo-400 group-hover:text-indigo-300 transition">{{ cov.label }}</span>
+                <span class="text-gray-400">{{ cov.value }} / {{ stats.total_videos }} ({{ Math.round(cov.value / stats.total_videos * 100) }}%)</span>
               </div>
-              <div class="w-full bg-gray-800 rounded-full h-3 overflow-hidden">
-                <div class="h-3 rounded-full" :class="cov.color" :style="{ width: (cov.value / stats.total_videos * 100) + '%' }"></div>
+              <div class="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+                <div class="h-3 rounded-full" :style="{ width: (cov.value / stats.total_videos * 100) + '%', background: cov.hex }"></div>
               </div>
-            </div>
+            </router-link>
           </div>
           <!-- Scrape status -->
           <h2 class="text-sm font-semibold text-gray-300 mt-6 mb-3">刮削状态</h2>
           <div class="flex flex-wrap gap-2">
-            <span v-for="(cnt, status) in stats.scrape_status" :key="status"
-              class="px-2 py-1 rounded text-xs font-medium"
-              :class="status === 'SUCCESS' ? 'bg-emerald-900 text-emerald-300' : status === 'PENDING' ? 'bg-yellow-900 text-yellow-300' : 'bg-gray-700 text-gray-300'">
+            <router-link v-for="(cnt, status) in stats.scrape_status" :key="status"
+              :to="{ path: '/videos', query: { scrape_status: status } }"
+              class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition"
+              :class="status === 'SUCCESS' ? 'bg-green-900 text-green-300' : status === 'PENDING' ? 'bg-yellow-900 text-yellow-300' : 'bg-gray-700 text-gray-300'">
               {{ status }}: {{ cnt }}
-            </span>
+            </router-link>
           </div>
         </div>
       </div>
@@ -594,7 +607,7 @@
                 <span v-if="f.part" class="text-xs text-indigo-400 font-mono flex-shrink-0">{{ f.part }}</span>
                 <button @click="copyPath(f.path)"
                   class="text-xs flex-shrink-0 px-2 py-0.5 rounded transition"
-                  :class="copiedPaths[f.path] ? 'bg-emerald-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'">
+                  :class="copiedPaths[f.path] ? 'bg-green-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'">
                   {{ copiedPaths[f.path] ? '已复制 ✓' : '复制' }}
                 </button>
               </div>
@@ -838,6 +851,24 @@
   </div>
 </script>
 
+  <!-- ========== RecommendView ========== -->
+  <script type="text/x-template" id="tpl-recommend">
+  <div>
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-xl font-bold">每日推荐</h1>
+      <button @click="load"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition">
+        <span>换一批</span>
+      </button>
+    </div>
+    <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
+    <div v-else-if="items.length === 0" class="text-center py-20 text-gray-500">暂无符合条件的推荐影片</div>
+    <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+      <video-card v-for="v in items" :key="v.code" :video="v" />
+    </div>
+  </div>
+</script>
+
   <!-- ========== SortBar ========== -->
   <script type="text/x-template" id="tpl-sort-bar">
   <div class="flex items-center gap-1">
@@ -947,18 +978,44 @@
         const items = ref([]), total = ref(0), limit = 24, loading = ref(true);
         const page = computed(() => parseInt(route.query.page) || 1);
         const sort = computed(() => route.query.sort || 'date');
+
+        const filterLabel = computed(() => {
+          const q = route.query;
+          if (q.year) return `${q.year} 年`;
+          if (q.score_min !== undefined || q.score_max !== undefined) {
+            const lo = q.score_min, hi = q.score_max;
+            if (lo && !hi) return `评分 ≥ ${lo}`;
+            if (!lo && hi) return `评分 < ${hi}`;
+            return `评分 ${lo} – ${hi}`;
+          }
+          if (q.has_cover === '1') return '有封面';
+          if (q.has_translation === '1') return '已翻译标题';
+          if (q.scrape_status) return `刮削状态: ${q.scrape_status}`;
+          return '';
+        });
+
         async function load() {
           loading.value = true;
-          const d = await apiFetch(`/api/videos?page=${page.value}&limit=${limit}&sort=${sort.value}`);
+          const q = route.query;
+          const params = new URLSearchParams({
+            page: page.value, limit, sort: sort.value,
+            ...(q.year              ? { year: q.year }                         : {}),
+            ...(q.score_min        ? { score_min: q.score_min }               : {}),
+            ...(q.score_max        ? { score_max: q.score_max }               : {}),
+            ...(q.has_cover        ? { has_cover: q.has_cover }               : {}),
+            ...(q.has_translation  ? { has_translation: q.has_translation }   : {}),
+            ...(q.scrape_status    ? { scrape_status: q.scrape_status }       : {}),
+          });
+          const d = await apiFetch(`/api/videos?${params}`);
           if (d) { items.value = d.items; total.value = d.total; }
           loading.value = false;
           restoreScroll();
         }
         function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
         function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
-        watch(() => [route.query.page, route.query.sort], load);
+        watch(() => route.query, load, { deep: true });
         onMounted(load);
-        return { items, total, page, limit, loading, sort, changePage, changeSort };
+        return { items, total, page, limit, loading, sort, filterLabel, changePage, changeSort };
       }
     };
 
@@ -988,10 +1045,20 @@
         const coverage = computed(() => {
           if (!stats.value) return [];
           return [
-            { label: '已翻译标题', value: stats.value.translated, color: 'bg-indigo-600' },
-            { label: '有封面', value: stats.value.has_cover, color: 'bg-emerald-600' },
+            { label: '已翻译标题', value: stats.value.translated, hex: '#6366f1', query: { has_translation: '1' } },
+            { label: '有封面',     value: stats.value.has_cover,   hex: '#16a34a', query: { has_cover: '1' } },
           ];
         });
+
+        // Map score range label (from get_stats) to /videos query params
+        function scoreRangeQuery(range) {
+          if (range === '4.5+')    return { score_min: '4.5' };
+          if (range === '4.0-4.5') return { score_min: '4.0', score_max: '4.5' };
+          if (range === '3.5-4.0') return { score_min: '3.5', score_max: '4.0' };
+          if (range === '3.0-3.5') return { score_min: '3.0', score_max: '3.5' };
+          if (range === '<3.0')    return { score_max: '3.0' };
+          return {};
+        }
 
         onMounted(async () => {
           stats.value = await apiFetch('/api/stats');
@@ -999,7 +1066,7 @@
           restoreScroll();
         });
 
-        return { stats, loading, maxByYear, maxScoreDist, maxMaker, statCards, coverage, imgErr };
+        return { stats, loading, maxByYear, maxScoreDist, maxMaker, statCards, coverage, scoreRangeQuery, imgErr };
       }
     };
 
@@ -1607,6 +1674,55 @@
       }
     };
 
+    // ── RecommendView ─────────────────────────────────────────
+    const RECOMMEND_CACHE_KEY = 'avideo_recommend_cache';
+    const RECOMMEND_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+    const RecommendView = {
+      template: '#tpl-recommend',
+      components: { VideoCard },
+      setup() {
+        const items = ref([]);
+        const loading = ref(true);
+
+        function readCache() {
+          try {
+            const raw = localStorage.getItem(RECOMMEND_CACHE_KEY);
+            if (!raw) return null;
+            const { ts, data } = JSON.parse(raw);
+            if (Date.now() - ts < RECOMMEND_TTL) return data;
+          } catch(e) {}
+          return null;
+        }
+
+        function writeCache(data) {
+          try {
+            localStorage.setItem(RECOMMEND_CACHE_KEY, JSON.stringify({ ts: Date.now(), data }));
+          } catch(e) {}
+        }
+
+        async function load(force = false) {
+          if (!force) {
+            const cached = readCache();
+            if (cached) { items.value = cached; loading.value = false; return; }
+          }
+          loading.value = true;
+          try {
+            const d = await apiFetch('/api/recommendations');
+            items.value = d || [];
+            if (d) writeCache(d);
+          } catch(e) {
+            items.value = [];
+          } finally {
+            loading.value = false;
+          }
+        }
+
+        onMounted(() => load(false));
+        return { items, loading, load: () => load(true) };
+      }
+    };
+
     // ── Router ────────────────────────────────────────────────
     const router = createRouter({
       history: createWebHashHistory(),
@@ -1630,6 +1746,7 @@
         { path: '/series-detail', component: SeriesDetailView },
         { path: '/prefixes', component: AllPrefixesView },
         { path: '/prefix/:code', component: PrefixDetailView },
+        { path: '/recommend', component: RecommendView },
       ]
     });
 
@@ -1672,6 +1789,7 @@
           <router-link to="/actors"   class="nav-tab">演员</router-link>
           <router-link to="/series"   class="nav-tab">系列</router-link>
           <router-link to="/prefixes" class="nav-tab">番号</router-link>
+          <router-link to="/recommend" class="nav-tab">推荐</router-link>
         </nav>
       </div>
       <!-- Page -->

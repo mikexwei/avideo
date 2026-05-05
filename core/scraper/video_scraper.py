@@ -298,6 +298,18 @@ def parse_detail_page(page: Page, code: str) -> Dict:
         logger.error(f"❌ 解析详情页失败: {e}")
         return data
 
+def check_login_status(page: Page) -> bool:
+    """Navigate to JavDB home and verify if the session is logged in."""
+    try:
+        page.goto(f"{BASE_URL}/?locale=zh", timeout=20000)
+        bypass_javdb_security(page)
+        page.wait_for_selector("nav", timeout=10000)
+        # Logged in = a "My" / profile link exists in the navbar
+        logged_in = page.locator("a.navbar-item[href*='/users/']").count() > 0
+        return logged_in
+    except Exception:
+        return False
+
 def _normalize_search_code(code: str) -> str:
     """剥离本地附加后缀，得到更纯净的搜索词。"""
     return re.sub(r'-[cur]+$', '', code, flags=re.IGNORECASE)
@@ -305,6 +317,24 @@ def _normalize_search_code(code: str) -> str:
 def _is_login_required(page: Page) -> bool:
     """判断页面是否被登录墙拦截。"""
     return "/login" in page.url or page.locator("input[type='password']").count() > 0
+
+def _drop_session_and_reload(page: Page, url: str, wait_selector: str, timeout: int = 25000) -> bool:
+    """Cookie 失效时清除 session，以访客模式重新加载同一 URL。
+    返回 True 表示重载成功且不在登录页。"""
+    logger.warning("🔑 检测到 Cookie 已失效，清除 session 后切换为访客模式...")
+    try:
+        page.context.clear_cookies()
+        page.goto(url, timeout=30000)
+        bypass_javdb_security(page)
+        page.wait_for_selector(wait_selector, timeout=timeout)
+        if _is_login_required(page):
+            logger.warning("🔒 访客模式下该页面仍受限（仅限登录用户），跳过。")
+            return False
+        logger.info("✅ 已切换至访客模式，继续刮削。")
+        return True
+    except Exception as e:
+        logger.error(f"❌ 访客模式重载失败: {e}")
+        return False
 
 def _open_video_search_page(page: Page, search_code: str) -> bool:
     """打开搜索页并完成基础拦截处理。"""
@@ -367,10 +397,14 @@ def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
             logger.error(f"⚠️ {code} 等待页面加载超时 (网络异常或被强力 Cloudflare 拦截)。")
             return None
 
-        # 2. 判断是否被强制要求登录
+        # 2. 判断是否被强制要求登录 → 尝试访客模式降级
+        search_url = f"{BASE_URL}/search?f=all&q={_normalize_search_code(code)}&locale=zh"
         if _is_login_required(page):
-            logger.warning(f"🔒 搜索受限: JavDB 要求登录才能搜索/查看 {code}。跳过此片。")
-            return None
+            if not _drop_session_and_reload(
+                page, search_url,
+                ".movie-list, .empty-message, input[type='password']"
+            ):
+                return None
 
         # 3. 判断搜索结果是否为空
         if _search_results_are_empty(page):
@@ -383,10 +417,17 @@ def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
         # 5. 进入详情页
         if not _open_first_video_detail(page, code):
             return None
-            
+
         if _is_login_required(page):
-            logger.warning(f"🔒 详情受限: JavDB 要求登录才能查看 {code} 的详情页。跳过此片。")
-            return None
+            # 可能是详情页单独受限，再试一次访客降级（cookies 可能在步骤 2 已清）
+            current_url = page.url
+            if not _drop_session_and_reload(
+                page, current_url,
+                ".movie-panel-info, input[type='password']",
+                timeout=15000,
+            ):
+                logger.warning(f"🔒 详情受限: {code} 仅限登录用户，跳过。")
+                return None
 
         # 6. 详情页稳定等待
         simulate_human_behavior(page, 4.5, 18.75)
@@ -426,9 +467,13 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
             logger.error(f"⚠️ {actor_name} 等待页面加载超时。")
             return None, None
 
-        if "/login" in page.url or page.locator("input[type='password']").count() > 0:
-            logger.warning(f"🔒 搜索受限: JavDB 要求登录。跳过。")
-            return None, None
+        actor_search_url = f"{BASE_URL}/search?f=actor&q={actor_name}&locale=zh"
+        if _is_login_required(page):
+            if not _drop_session_and_reload(
+                page, actor_search_url,
+                ".actor-box, .item, .empty-message, input[type='password']"
+            ):
+                return None, None
 
         if page.locator(".empty-message").count() > 0 or page.locator(".actor-box, .item").count() == 0:
             logger.warning(f"❌ 未在 JavDB 找到演员 {actor_name}。")
@@ -477,9 +522,14 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
                 logger.warning(f"⚠️ 第 {i+1} 个结果详情页加载超时，跳过。")
                 continue
                 
-            if "/login" in page.url or page.locator("input[type='password']").count() > 0:
-                logger.warning(f"🔒 详情页受限要求登录，跳过。")
-                continue
+            if _is_login_required(page):
+                detail_url = page.url
+                if not _drop_session_and_reload(
+                    page, detail_url,
+                    ".actor-section-name, .title.is-4, .avatar, input[type='password']",
+                    timeout=15000,
+                ):
+                    continue
 
             simulate_human_behavior(page, 3.0, 37.5)
             
