@@ -1,2 +1,23 @@
 .venv/
+
+# Secrets / local auth
 javdb_cookie.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# macOS / editor noise
+.DS_Store
+
+# Runtime files
+nohup.out
+server.log
+server.pid
+
+
+# Logs and generated reports
+*.log
+data/logs/
+
+

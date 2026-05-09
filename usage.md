@@ -184,7 +184,8 @@ python utils/translate_titles.py   # 翻译未翻译的标题
 或者用每日守护进程一次性跑完上述四步、并每天自动重跑：
 
 ```bash
-nohup .venv/bin/python daily_pipeline.py > /dev/null 2>&1 &
+nohup .venv/bin/python daily_pipeline.py > /dev/null 2>&1 &St@yeah.net@ h0me2024 好
+k'k
 tail -f data/logs/daily_pipeline.log
 ```
 
