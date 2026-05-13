@@ -69,14 +69,14 @@
 [成功] TMAVR-157        (分集: part1) <-- tmavr-157-1.mp4
 [成功] TMAVR-157        (分集: part2) <-- tmavr-157-2.mp4
 [成功] DVDES-730-C      <-- DVDES-730-C.mp4
-[成功] TEAM-079-U       <-- TEAM-079-UC.mp4
-[成功] TEAM-076-U       <-- TEAM-076-UC.mp4
-[成功] TEAM-073-U       <-- TEAM-073-UC.mp4
-[成功] TEAM-070-U       <-- TEAM-070-UC.mp4
-[成功] TEAM-067-U       <-- TEAM-067-UC.mp4
-[成功] TEAM-066-U       <-- TEAM-066-UC.mp4
-[成功] TEAM-065-U       <-- TEAM-065-UC.mp4
-[成功] ADN-046-U        <-- ADN-046-UC.mp4
+[成功] TEAM-079-UC      <-- TEAM-079-UC.mp4
+[成功] TEAM-076-UC      <-- TEAM-076-UC.mp4
+[成功] TEAM-073-UC      <-- TEAM-073-UC.mp4
+[成功] TEAM-070-UC      <-- TEAM-070-UC.mp4
+[成功] TEAM-067-UC      <-- TEAM-067-UC.mp4
+[成功] TEAM-066-UC      <-- TEAM-066-UC.mp4
+[成功] TEAM-065-UC      <-- TEAM-065-UC.mp4
+[成功] ADN-046-UC       <-- ADN-046-UC.mp4
 [成功] STARS-591-C      <-- stars-591-C.mp4
 [成功] STARS-570-C      <-- stars-570-C.mp4
 [成功] SSPD-117-C       <-- SSPD-117-C.mp4
@@ -138,20 +138,20 @@
 [成功] SAVR-237         (分集: part2) <-- savr-237-2.mp4
 [成功] SAVR-225         (分集: part2) <-- savr-225-2.mp4
 [成功] SAVR-225         (分集: part1) <-- savr-225-1.mp4
-[成功] ROE-146-C        <-- roe-146ch.mp4
+[成功] ROE-146          <-- roe-146ch.mp4
 [成功] ROE-121-C        <-- ROE-121-C.mp4
 [成功] ROE-108-C        <-- ROE-108-C.mp4
 [成功] REAL-764-C       <-- REAL-764-C.mp4
 [成功] RBD-995-C        <-- RBD-995-C.mp4
 [成功] RBD-801-C        <-- RBD-801-C.mp4
 [成功] RBD-779-C        <-- RBD-779-C.mp4
-[成功] RBD-662-U        <-- RBD-662-UC.mp4
-[成功] RBD-648-U        <-- RBD-648-UC.mp4
-[成功] RBD-573-U        <-- RBD-573-UC.mp4
+[成功] RBD-662-UC       <-- RBD-662-UC.mp4
+[成功] RBD-648-UC       <-- RBD-648-UC.mp4
+[成功] RBD-573-UC       <-- RBD-573-UC.mp4
 [成功] RBD-558-C        <-- RBD-558-C.mp4
-[成功] RBD-527-U        <-- RBD-527-UC.mp4
-[成功] RBD-468-U        <-- RBD-468-UC.mp4
-[成功] RBD-445-U        <-- RBD-445-UC.mp4
+[成功] RBD-527-UC       <-- RBD-527-UC.mp4
+[成功] RBD-468-UC       <-- RBD-468-UC.mp4
+[成功] RBD-445-UC       <-- RBD-445-UC.mp4
 [成功] RBD-088-C        <-- RBD-088-C.mp4
 [成功] RBD-072-C        <-- RBD-072-C.mp4
 [成功] PRVR-995         (分集: part1) <-- prvr-995-1.mp4
@@ -221,8 +221,8 @@
 [成功] ATVR-058         (分集: part3) <-- atvr-058-3.mp4
 [成功] ATVR-058         (分集: part1) <-- atvr-058-1.mp4
 [成功] IPZZ-003-C       <-- IPZZ-003-C.mp4
-[成功] IPZ-154-U        <-- IPZ-154-UC.mp4
-[成功] IPX-564-U        <-- IPX-564-UC.mp4
+[成功] IPZ-154-UC       <-- IPZ-154-UC.mp4
+[成功] IPX-564-UC       <-- IPX-564-UC.mp4
 [成功] IPVR-242         (分集: part1) <-- ipvr-242-1.mp4
 [成功] IPVR-242         (分集: part2) <-- ipvr-242-2.mp4
 [成功] IPVR-220         (分集: part2) <-- ipvr-220-2.mp4
@@ -266,10 +266,10 @@
 [成功] GMA-041-C        <-- GMA-041-C.mp4
 [成功] GAMS-020         <-- hhd800.com@GAMS-020.mp4
 [成功] FSDSS-609-C      <-- FSDSS-609-C.mp4
-[成功] IPZ-739-U        <-- IPZ-739-UC.mp4
-[成功] RBD-697-U        <-- RBD-697-UC.mp4
-[成功] DV-1489-U        <-- DV-1489-UC.mp4
-[成功] DV-1466-U        <-- DV-1466-UC.mp4
+[成功] IPZ-739-UC       <-- IPZ-739-UC.mp4
+[成功] RBD-697-UC       <-- RBD-697-UC.mp4
+[成功] DV-1489-UC       <-- DV-1489-UC.mp4
+[成功] DV-1466-UC       <-- DV-1466-UC.mp4
 [成功] DSVR-1192        (分集: part3) <-- dsvr-1192-3.mp4
 [成功] DSVR-1192        (分集: part1) <-- dsvr-1192-1.mp4
 [成功] DSVR-1192        (分集: part2) <-- dsvr-1192-2.mp4
@@ -278,7 +278,7 @@
 [成功] CAFR-537         (分集: part1) <-- cafr-537-1.mp4
 [成功] CACA-286         (分集: part2) <-- caca-286-2.mp4
 [成功] CACA-286         (分集: part1) <-- caca-286-1.mp4
-[成功] SOE-175-U        <-- SOE-175-UC.mp4
+[成功] SOE-175-UC       <-- SOE-175-UC.mp4
 [成功] VRKM-276         <-- bbs2048.org@VRKM-276-R3_4K.mp4
 [成功] VRKM-276         <-- bbs2048.org@VRKM-276-R1_4K.mp4
 [成功] VRKM-276         <-- bbs2048.org@VRKM-276-R2_4K.mp4
@@ -296,13 +296,13 @@
 [成功] HNVR-145         (分集: part1) <-- 4k2.com@hnvr00145_1_8k - 01.mp4
 [成功] HNVR-145         (分集: part2) <-- 4k2.com@hnvr00145_2_8k - 01.mp4
 [成功] HNVR-145         (分集: part3) <-- 4k2.com@hnvr00145_3_8k - 01.mp4
-[成功] DV-1649-U        <-- DV-1649-UC.mp4
-[成功] IPZ-050-U        <-- IPZ-050-UC.mp4
-[成功] IPZ-367-U        <-- IPZ-367-UC.mp4
+[成功] DV-1649-UC       <-- DV-1649-UC.mp4
+[成功] IPZ-050-UC       <-- IPZ-050-UC.mp4
+[成功] IPZ-367-UC       <-- IPZ-367-UC.mp4
 [成功] ROE-165-C        <-- ROE-165-C.mp4
-[成功] SSIS-825-U       <-- SSIS-825-UC.mp4
+[成功] SSIS-825-UC      <-- SSIS-825-UC.mp4
 [成功] STARS-924-C      <-- STARS-924-C.mp4
-[成功] SIVR-295         (分集: part3) <-- SIVR-295c-4k60fps.mp4
+[成功] SIVR-295         <-- SIVR-295c-4k60fps.mp4
 [成功] SIVR-295         (分集: part1) <-- SIVR-295a-4k60fps.mp4
 [成功] SIVR-295         (分集: part2) <-- SIVR-295b-4k60fps.mp4
 [成功] JUVR-233         (分集: part1) <-- hhd800.com@juvr00233.part1_8K - 01.mp4

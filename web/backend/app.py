@@ -25,6 +25,7 @@ from dal.db_manager import (
     patch_actor_avatar,
     patch_video,
     patch_video_cover,
+    patch_video_file_path,
     patch_video_relations,
     rename_video_code,
     search_actors,
@@ -34,6 +35,12 @@ from dal.db_manager import (
 
 app = Flask(__name__, static_folder='../static', static_url_path='/static', template_folder='../templates')
 app.json.ensure_ascii = False
+
+
+def _selected_tags():
+    tags = request.args.getlist('tag')
+    tags.extend((request.args.get('tags') or '').split(','))
+    return [t.strip() for t in tags if t and t.strip()]
 
 
 @app.get('/api/videos')
@@ -47,11 +54,12 @@ def api_videos():
     has_cover = request.args.get('has_cover') == '1'
     has_translation = request.args.get('has_translation') == '1'
     scrape_status = request.args.get('scrape_status') or None
+    tags = _selected_tags()
     return jsonify(list_videos(
         page=page, limit=limit, sort=sort,
         year=year, score_min=score_min, score_max=score_max,
         has_cover=has_cover, has_translation=has_translation,
-        scrape_status=scrape_status,
+        scrape_status=scrape_status, tags=tags,
     ))
 
 
@@ -87,6 +95,19 @@ def api_video_patch(code: str):
     if not changed:
         return jsonify({'error': 'no valid fields or not found'}), 400
     return jsonify({'new_code': code, **get_video_by_code(code)})
+
+
+@app.patch('/api/videos/<string:code>/file-path')
+def api_video_file_path_patch(code: str):
+    body = request.get_json(silent=True) or {}
+    new_path = body.get('original_file_path') or body.get('origin_file_path')
+    result = patch_video_file_path(code, new_path, body.get('part'))
+    if not result['ok']:
+        status = 409 if 'UNIQUE' in result.get('error', '') else 400
+        if result.get('error') == 'not found':
+            status = 404
+        return jsonify({'error': result.get('error', 'failed')}), status
+    return jsonify(result)
 
 
 _MIME_MAP = {
@@ -193,7 +214,7 @@ def api_stats():
 
 @app.get('/api/recommendations')
 def api_recommendations():
-    return jsonify(get_recommendations(count=8))
+    return jsonify(get_recommendations(count=8, tags=_selected_tags()))
 
 
 @app.get('/api/tags/all')

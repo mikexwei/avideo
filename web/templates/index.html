@@ -263,7 +263,13 @@
         <span class="text-gray-500 text-sm">{{ total }} 部</span>
         <router-link to="/videos" class="ml-auto text-xs text-indigo-400 hover:text-indigo-300">× 清除筛选</router-link>
       </div>
-      <div class="flex justify-end mb-3">
+      <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <div class="flex items-center gap-2 flex-wrap">
+          <button v-for="tag in filterTags" :key="tag" @click="toggleTag(tag)"
+            :class="['px-2.5 py-1 rounded text-xs transition', selectedTags.includes(tag) ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+            {{ tag }}
+          </button>
+        </div>
         <sort-bar :sort="sort" @change="changeSort" />
       </div>
       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
@@ -861,6 +867,12 @@
         <span>换一批</span>
       </button>
     </div>
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      <button v-for="tag in filterTags" :key="tag" @click="toggleTag(tag)"
+        :class="['px-2.5 py-1 rounded text-xs transition', selectedTags.includes(tag) ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+        {{ tag }}
+      </button>
+    </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else-if="items.length === 0" class="text-center py-20 text-gray-500">暂无符合条件的推荐影片</div>
     <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
@@ -968,6 +980,14 @@
       }
     };
 
+    const FILTER_TAGS = ['无码流出', '无码破解', '原装无码', '中文字幕'];
+
+    function queryTags(query) {
+      const raw = query.tag;
+      if (!raw) return [];
+      return Array.isArray(raw) ? raw : [raw];
+    }
+
     // ── HomeView ──────────────────────────────────────────────
     const HomeView = {
       template: '#tpl-home',
@@ -978,6 +998,7 @@
         const items = ref([]), total = ref(0), limit = 24, loading = ref(true);
         const page = computed(() => parseInt(route.query.page) || 1);
         const sort = computed(() => route.query.sort || 'date');
+        const selectedTags = computed(() => queryTags(route.query));
 
         const filterLabel = computed(() => {
           const q = route.query;
@@ -991,6 +1012,7 @@
           if (q.has_cover === '1') return '有封面';
           if (q.has_translation === '1') return '已翻译标题';
           if (q.scrape_status) return `刮削状态: ${q.scrape_status}`;
+          if (selectedTags.value.length) return selectedTags.value.join(' + ');
           return '';
         });
 
@@ -1006,6 +1028,7 @@
             ...(q.has_translation  ? { has_translation: q.has_translation }   : {}),
             ...(q.scrape_status    ? { scrape_status: q.scrape_status }       : {}),
           });
+          selectedTags.value.forEach(tag => params.append('tag', tag));
           const d = await apiFetch(`/api/videos?${params}`);
           if (d) { items.value = d.items; total.value = d.total; }
           loading.value = false;
@@ -1013,9 +1036,15 @@
         }
         function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
         function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
+        function toggleTag(tag) {
+          const tags = selectedTags.value.includes(tag)
+            ? selectedTags.value.filter(t => t !== tag)
+            : [...selectedTags.value, tag];
+          router.replace({ query: { ...route.query, tag: tags.length ? tags : undefined, page: undefined } });
+        }
         watch(() => route.query, load, { deep: true });
         onMounted(load);
-        return { items, total, page, limit, loading, sort, filterLabel, changePage, changeSort };
+        return { items, total, page, limit, loading, sort, filterLabel, filterTags: FILTER_TAGS, selectedTags, changePage, changeSort, toggleTag };
       }
     };
 
@@ -1684,8 +1713,10 @@
       setup() {
         const items = ref([]);
         const loading = ref(true);
+        const selectedTags = ref([]);
 
         function readCache() {
+          if (selectedTags.value.length) return null;
           try {
             const raw = localStorage.getItem(RECOMMEND_CACHE_KEY);
             if (!raw) return null;
@@ -1696,6 +1727,7 @@
         }
 
         function writeCache(data) {
+          if (selectedTags.value.length) return;
           try {
             localStorage.setItem(RECOMMEND_CACHE_KEY, JSON.stringify({ ts: Date.now(), data }));
           } catch(e) {}
@@ -1708,7 +1740,10 @@
           }
           loading.value = true;
           try {
-            const d = await apiFetch('/api/recommendations');
+            const params = new URLSearchParams();
+            selectedTags.value.forEach(tag => params.append('tag', tag));
+            const qs = params.toString();
+            const d = await apiFetch('/api/recommendations' + (qs ? `?${qs}` : ''));
             items.value = d || [];
             if (d) writeCache(d);
           } catch(e) {
@@ -1718,8 +1753,15 @@
           }
         }
 
+        function toggleTag(tag) {
+          selectedTags.value = selectedTags.value.includes(tag)
+            ? selectedTags.value.filter(t => t !== tag)
+            : [...selectedTags.value, tag];
+          load(true);
+        }
+
         onMounted(() => load(false));
-        return { items, loading, load: () => load(true) };
+        return { items, loading, filterTags: FILTER_TAGS, selectedTags, toggleTag, load: () => load(true) };
       }
     };
 

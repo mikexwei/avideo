@@ -1,11 +1,13 @@
 import re
 import logging
+import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 # ----------------- 配置区 -----------------
 # 视频白名单
@@ -32,7 +34,58 @@ def _normalize_code_for_dup(code: str) -> str:
     return code
 
 
-def extract_video_code(filename: str) -> Tuple[Optional[str], Optional[str]]:
+def _has_suffix_token(filename: str, token: str) -> bool:
+    return bool(re.search(rf'(?i)(?:^|[^a-z0-9]){re.escape(token)}(?:$|[^a-z0-9])', filename))
+
+
+def _looks_like_sibling_part(stem: str, root: str, part: str) -> bool:
+    return bool(re.match(rf'(?i)^{re.escape(root)}[-_]{part}(?:$|[^a-z0-9])', stem))
+
+
+def _c_suffix_is_part(filename: str, sibling_stems: Optional[set[str]]) -> bool:
+    if not sibling_stems or not _has_suffix_token(filename, 'C'):
+        return False
+
+    match = re.match(r'(?i)^(.+?)[-_]c(?:$|[^a-z0-9])', filename)
+    if not match:
+        return False
+
+    root = match.group(1)
+    has_a = any(_looks_like_sibling_part(stem, root, 'a') for stem in sibling_stems)
+    has_b = any(_looks_like_sibling_part(stem, root, 'b') for stem in sibling_stems)
+    return has_a and has_b
+
+
+def _version_suffix_from_filename(filename: str, c_suffix_is_part: bool = False) -> str:
+    has_chinese = bool(re.search(r'(?i)\[中文\]|【中文】|中文|字幕|中字|汉化', filename))
+    has_uncensored = bool(re.search(r'无码', filename))
+
+    has_c_suffix = (not c_suffix_is_part) and _has_suffix_token(filename, 'C')
+    has_u_suffix = _has_suffix_token(filename, 'U')
+    has_uc_suffix = (
+        _has_suffix_token(filename, 'UC')
+        or _has_suffix_token(filename, 'U-C')
+        or _has_suffix_token(filename, 'U_C')
+    )
+
+    wants_chinese = has_chinese or has_c_suffix or has_uc_suffix
+    wants_uncensored = has_uncensored or has_u_suffix or has_uc_suffix
+
+    if wants_chinese and wants_uncensored:
+        return '-UC'
+    if wants_uncensored:
+        return '-U'
+    if wants_chinese:
+        return '-C'
+    return ''
+
+
+def _strip_version_suffix(code: str, strip_release_suffix: bool = False) -> str:
+    suffixes = 'uc|u|c|r' if strip_release_suffix else 'uc|u|c'
+    return re.sub(rf'(?i)-(?:{suffixes})$', '', code)
+
+
+def extract_video_code(filename: str, sibling_stems: Optional[set[str]] = None) -> Tuple[Optional[str], Optional[str]]:
     """架构师防弹版：免疫一切站长私货、论坛前缀与贪婪误杀"""
     
     # 0. 先将一些乱七八糟的论坛前缀清洗掉，避免影响后续判断
@@ -82,19 +135,9 @@ def extract_video_code(filename: str) -> Tuple[Optional[str], Optional[str]]:
                     if letter_part_match:
                         part_info = f"part{letter_part_match.group(1).lower()}"
                         clean_name = clean_name[:letter_part_match.start()] + clean_name[letter_part_match.end():]
-                    else:
-                        # 1.6 结尾的 -C (因为容易和中文字幕混淆，所以如果是 VR 视频就认为是 Part C)
-                        c_part_match = re.search(r'(?i)(?:-|_)(c)' + garbage_suffix, clean_name)
-                        if c_part_match:
-                            if 'vr' in clean_name.lower():
-                                part_info = "partc"
-                                clean_name = clean_name[:c_part_match.start()] + clean_name[c_part_match.end():]
 
-    # 2. 判断是否包含中文字幕标记
-    # 如果已经被判定为 partc，那我们就不应该把 filename 里的 -c 当作中文字幕
-    has_chinese = bool(re.search(r'(?i)\[中文\]|【中文】|字幕|中字|汉化', filename))
-    if part_info != 'partc':
-        has_chinese = has_chinese or bool(re.search(r'(?i)-c\b', filename))
+    c_is_part = _c_suffix_is_part(filename, sibling_stems)
+    version_suffix = _version_suffix_from_filename(filename, c_is_part)
 
     code = None
 
@@ -135,19 +178,15 @@ def extract_video_code(filename: str) -> Tuple[Optional[str], Optional[str]]:
                 if suffix:
                     if suffix in ['A', 'B', 'D', 'E', 'F'] and 'VR' in letters:
                         part_info = f"part{suffix.lower()}"
-                    elif suffix == 'C' and 'VR' in letters:
+                    elif suffix == 'C' and c_is_part:
                         part_info = "partc"
                     elif suffix in ['C', 'U', 'R']: 
                         code += f"-{suffix}"
             
-    # 3. 最终中文字幕标记补全
-    if code and has_chinese and not code.endswith('-C'):
-        code += "-C"
-
-    # 4. 标准化一些容易污染搜索词的尾缀组合
-    # 例如: JUC-707-UC-C / JUC-707-U-C 统一归并为 JUC-707-C
+    # 3. 最终版本标记补全：-UC > -U/-C，且只保留一个规范化后缀。
     if code:
-        code = re.sub(r'(?i)-(?:u|r)-c$', '-C', code)
+        code = _strip_version_suffix(code, strip_release_suffix=bool(version_suffix))
+        code += version_suffix
 
     # ================= 补充最终标准化清洗 =================
     # 1. 字母分集转数字分集 (parta -> part1, partc -> part3)
@@ -157,9 +196,6 @@ def extract_video_code(filename: str) -> Tuple[Optional[str], Optional[str]]:
             char_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5', 'f': '6', 'g': '7', 'h': '8', 'i': '9', 'j': '10', 'k': '11'}
             part_info = f"part{char_map[p_char]}"
 
-    # 2. 去除 VR 视频中由于历史原因或命名混淆附带的 -C 后缀
-    if code and 'VR' in code.upper() and code.upper().endswith('-C'):
-        code = code[:-2]
     # ======================================================
 
     return code, part_info
@@ -223,7 +259,6 @@ def clean_directory(directory_path: Union[str, Path], min_video_mb: int = 100, d
 def _safe_delete(file_path: Path, dry_run: bool, reason: str) -> bool:
     """内部辅助函数：安全执行删除并记录日志"""
     if dry_run:
-        logger.info(f"[试运行-拟删除] {reason} -> {file_path}")
         return True
     
     try:
@@ -258,44 +293,104 @@ def scan_directory(directory_path: Union[str, Path]) -> Tuple[List[Dict], List[P
     results = []
     no_code_files: List[Path] = []
 
-    for file_path in target_dir.rglob('*'):
-        if not file_path.is_file():
-            continue
+    video_files = [
+        file_path for file_path in target_dir.rglob('*')
+        if file_path.is_file()
+        and not file_path.name.startswith('.')
+        and file_path.suffix.lower() in VIDEO_EXTENSIONS
+    ]
+    stems_by_parent: Dict[Path, set[str]] = {}
+    for file_path in video_files:
+        stems_by_parent.setdefault(file_path.parent, set()).add(file_path.stem)
 
-        # 过滤系统隐藏文件 (如 macOS 的 ._ 资源分支文件或 .DS_Store)
-        if file_path.name.startswith('.'):
-            continue
+    for file_path in video_files:
+        code, part = extract_video_code(file_path.stem, stems_by_parent.get(file_path.parent))
 
-        if file_path.suffix.lower() in VIDEO_EXTENSIONS:
-            code, part = extract_video_code(file_path.stem)
+        if code:
+            try:
+                st = file_path.stat()
+                file_meta = {
+                    'file_size': st.st_size,
+                    'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
+                    'file_birthtime': datetime.fromtimestamp(
+                        getattr(st, 'st_birthtime', st.st_mtime)
+                    ).isoformat(),
+                }
+            except OSError:
+                file_meta = {'file_size': None, 'file_mtime': None, 'file_birthtime': None}
 
-            if code:
-                try:
-                    st = file_path.stat()
-                    file_meta = {
-                        'file_size': st.st_size,
-                        'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
-                        'file_birthtime': datetime.fromtimestamp(
-                            getattr(st, 'st_birthtime', st.st_mtime)
-                        ).isoformat(),
-                    }
-                except OSError:
-                    file_meta = {'file_size': None, 'file_mtime': None, 'file_birthtime': None}
-
-                results.append({
-                    'original_path': file_path,
-                    'code': code,
-                    'part': part,
-                    'original_name': file_path.name,
-                    **file_meta,
-                })
-                logger.debug(f"✅ 命中: {file_path.name} -> 番号: {code}, 分集: {part}")
-            else:
-                logger.warning(f"⚠️ 未能提取番号，已跳过: {file_path.name}")
-                no_code_files.append(file_path)
+            results.append({
+                'original_path': file_path,
+                'code': code,
+                'part': part,
+                'original_name': file_path.name,
+                **file_meta,
+            })
+            logger.debug(f"✅ 命中: {file_path.name} -> 番号: {code}, 分集: {part}")
+        else:
+            logger.warning(f"⚠️ 未能提取番号，已跳过: {file_path.name}")
+            no_code_files.append(file_path)
 
     logger.info(f"🏁 扫描完成，共找到 {len(results)} 个有效视频文件，{len(no_code_files)} 个未能提取番号。")
     return results, no_code_files
+
+
+def _format_bytes(num_bytes: int) -> str:
+    value = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if value < 1024 or unit == "PiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} {unit}"
+        value /= 1024
+
+
+def _volume_label(path: Path) -> str:
+    parts = path.resolve().parts
+    if len(parts) >= 3 and parts[1] == "Volumes":
+        return str(Path("/", parts[1], parts[2]))
+    return path.anchor or str(path)
+
+
+def _disk_usage_bytes(path: Path) -> Dict[str, int]:
+    try:
+        result = subprocess.run(
+            ["/bin/df", "-P", "-k", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        lines = result.stdout.strip().splitlines()
+        if len(lines) >= 2:
+            parts = lines[-1].split()
+            if len(parts) >= 4:
+                return {
+                    "total": int(parts[1]) * 1024,
+                    "used": int(parts[2]) * 1024,
+                    "free": int(parts[3]) * 1024,
+                }
+    except Exception:
+        pass
+
+    usage = shutil.disk_usage(path)
+    return {"total": usage.total, "used": usage.used, "free": usage.free}
+
+
+def _collect_volume_space(paths: List[str]) -> List[Dict[str, Union[str, int]]]:
+    volumes = {}
+    for path_str in paths:
+        path = Path(path_str)
+        if not path.exists():
+            continue
+        label = _volume_label(path)
+        if label in volumes:
+            continue
+        usage = _disk_usage_bytes(path)
+        volumes[label] = {
+            "volume": label,
+            "total": usage["total"],
+            "used": usage["used"],
+            "free": usage["free"],
+        }
+    return list(volumes.values())
 
 # ----------- 简单的内部测试模块 -----------
 def run_scan(directories: Optional[List[str]] = None) -> None:
@@ -316,6 +411,7 @@ def run_scan(directories: Optional[List[str]] = None) -> None:
         test_directories = [str(p) for p in MEDIA_LIBRARIES]
     else:
         test_directories = list(directories)
+    volume_space = _collect_volume_space(test_directories)
 
     print("=== 🚀 开始执行 scanner.py 内部连调测试 ===")
     print(f"准备扫描 {len(test_directories)} 个目录...\n")
@@ -365,14 +461,25 @@ def run_scan(directories: Optional[List[str]] = None) -> None:
     print("📋 全局扫描总结")
     print("="*60)
 
-    print(f"\n【一】拟删除的非系统隐藏文件（共 {len(all_to_delete)} 个）")
+    print(f"\n【一】各 Volume 剩余空间")
+    if volume_space:
+        for item in volume_space:
+            print(
+                f"  💽  {item['volume']}  "
+                f"剩余 {_format_bytes(int(item['free']))} / 总计 {_format_bytes(int(item['total']))} "
+                f"（已用 {_format_bytes(int(item['used']))}）"
+            )
+    else:
+        print("  （无可用 Volume 信息）")
+
+    print(f"\n【二】拟删除的非系统隐藏文件（共 {len(all_to_delete)} 个）")
     if all_to_delete:
         for item in all_to_delete:
             print(f"  🗑  [{item['reason']}] {item['path']}")
     else:
         print("  （无）")
 
-    print(f"\n【二】未能提取番号的视频文件（共 {len(all_no_code)} 个）")
+    print(f"\n【三】未能提取番号的视频文件（共 {len(all_no_code)} 个）")
     if all_no_code:
         for p in all_no_code:
             print(f"  ❓  {p}")
@@ -380,7 +487,7 @@ def run_scan(directories: Optional[List[str]] = None) -> None:
         print("  （无）")
 
     # ======== 【三】重复番号检测（按 -C/-U/-UC 后缀合并后再分组）========
-    print(f"\n【三】数据库中重复的番号+分集（已按 -C/-U/-UC 后缀合并）")
+    print(f"\n【四】数据库中重复的番号+分集（已按 -C/-U/-UC 后缀合并）")
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()

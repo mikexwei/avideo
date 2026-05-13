@@ -10,6 +10,26 @@ if str(project_root) not in sys.path:
 from config import DB_PATH
 from core.scanner import extract_video_code
 
+VERSION_SUFFIXES = ('-UC', '-U', '-C')
+
+
+def _split_version_suffix(code: str) -> tuple[str, str]:
+    upper = code.upper()
+    for suffix in VERSION_SUFFIXES:
+        if upper.endswith(suffix):
+            return code[: -len(suffix)], suffix
+    return code, ''
+
+
+def suffix_only_code(old_code: str, parsed_code: str) -> str:
+    old_base, _ = _split_version_suffix(old_code or '')
+    parsed_base, parsed_suffix = _split_version_suffix(parsed_code or '')
+
+    if not old_code or old_base.upper() != parsed_base.upper():
+        return old_code
+    return old_base + parsed_suffix
+
+
 def fix_db_parts():
     if not DB_PATH.exists():
         print(f"❌ 数据库不存在: {DB_PATH}")
@@ -30,6 +50,13 @@ def fix_db_parts():
 
         update_count = 0
         print(f"🔍 正在检查 {len(records)} 条数据库记录...\n")
+        stems_by_parent = {}
+
+        for _, file_path, _, _ in records:
+            if not file_path:
+                continue
+            path = Path(file_path)
+            stems_by_parent.setdefault(path.parent, set()).add(path.stem)
 
         for record_id, file_path, old_code, old_part in records:
             if not file_path:
@@ -39,10 +66,11 @@ def fix_db_parts():
             stem = Path(file_path).stem
             
             # 调用最新版的正则提取逻辑
-            new_code, new_part = extract_video_code(stem)
+            new_code, new_part = extract_video_code(stem, stems_by_parent.get(Path(file_path).parent))
             
             if not new_code:
                 continue
+            new_code = suffix_only_code(old_code, new_code)
 
             # ================= 新增二次清洗逻辑 =================
             # 1. 将字母分集转换为数字分集 (例如: parta -> part1, partc -> part3)
@@ -52,9 +80,6 @@ def fix_db_parts():
                     char_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5', 'f': '6'}
                     new_part = f"part{char_map[p_char]}"
                     
-            # 2. 如果番号中包含 VR，且以 -C 结尾，则强制去除 -C
-            if new_code and 'VR' in new_code.upper() and new_code.upper().endswith('-C'):
-                new_code = new_code[:-2]
             # ====================================================
 
             # 检查是否需要更新 (将 None 统一视为空字符串以便对比)

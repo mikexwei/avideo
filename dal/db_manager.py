@@ -30,6 +30,81 @@ def _order_clause(sort: str) -> str:
         return "COALESCE(score, 0) DESC, COALESCE(release_date, '') DESC, id DESC"
     return "COALESCE(release_date, '') DESC, id DESC"
 
+
+_VERSION_SUFFIXES = ("-UC", "-C", "-U")
+_DERIVED_TAGS = ("无码流出", "无码破解", "原装无码", "中文字幕")
+_DERIVED_TAGS_TO_REMOVE = _DERIVED_TAGS + ("無碼流出", "無碼破解")
+_ORIGINAL_UNCENSORED_MAKERS = {
+    "一本道",
+    "HEYZO",
+    "Gachinco",
+    "カリビアンコム",
+    "Heydouga",
+    "G-Queen",
+    "Hunter",
+    "Tokyo-Hot",
+    "ラフォーレガール",
+    "スーパーモデルメディア",
+}
+
+
+def _strip_version_suffix(code: str) -> str:
+    upper = (code or "").upper()
+    for suffix in _VERSION_SUFFIXES:
+        if upper.endswith(suffix):
+            return code[: -len(suffix)]
+    return code
+
+
+def _resolve_video_code(cursor: sqlite3.Cursor, code: str) -> Optional[str]:
+    """Resolve a user-facing base code to the stored code variant, preserving exact matches."""
+    if not code:
+        return None
+
+    cursor.execute("SELECT code FROM videos WHERE UPPER(code) = UPPER(?) ORDER BY id ASC LIMIT 1", (code,))
+    row = cursor.fetchone()
+    if row:
+        return row["code"]
+
+    base = _strip_version_suffix(code)
+    if base != code:
+        return None
+
+    for candidate in (f"{base}-UC", f"{base}-C", f"{base}-U"):
+        cursor.execute("SELECT code FROM videos WHERE UPPER(code) = UPPER(?) ORDER BY id ASC LIMIT 1", (candidate,))
+        row = cursor.fetchone()
+        if row:
+            return row["code"]
+    return None
+
+
+def _version_suffix(code: str) -> str:
+    upper = (code or "").upper()
+    for suffix in _VERSION_SUFFIXES:
+        if upper.endswith(suffix):
+            return suffix
+    return ""
+
+
+def _tag_filter_conditions(alias: str, tags: Optional[List[str]]) -> tuple[list[str], list[str]]:
+    conditions = []
+    params = []
+    for tag in tags or []:
+        tag = tag.strip()
+        if not tag:
+            continue
+        conditions.append(
+            f"""EXISTS (
+                SELECT 1
+                FROM video_tag_link vtl_filter
+                JOIN tags t_filter ON t_filter.id = vtl_filter.tag_id
+                WHERE vtl_filter.video_id = {alias}.id
+                  AND t_filter.name = ?
+            )"""
+        )
+        params.append(tag)
+    return conditions, params
+
 def batch_insert_scanned_videos(scanned_results: list) -> tuple[int, int]:
     """
     将扫描器提取的结果批量安全地存入数据库。
@@ -196,6 +271,8 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             
         # 所有操作要么一起成功，要么一起失败 (事务保障)
         conn.commit()
+        if status == 'SUCCESS' and data:
+            sync_derived_video_tags_for_code(code)
         logger.debug(f"💾 数据库多表联动更新完毕: 番号 {code} (包含 {len(target_video_ids)} 个分集记录) -> 状态 {status}")
         
     except sqlite3.Error as e:
@@ -204,6 +281,100 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
     finally:
         if conn:
             conn.close()
+
+
+def _derived_tags_for_video(code: str, maker: str, existing_tags: set[str]) -> list[str]:
+    tags = []
+    suffix = _version_suffix(code)
+
+    if "无码流出" in existing_tags or "無碼流出" in existing_tags:
+        tags.append("无码流出")
+    elif "无码破解" in existing_tags or "無碼破解" in existing_tags or suffix in {"-U", "-UC"}:
+        tags.append("无码破解")
+    elif maker in _ORIGINAL_UNCENSORED_MAKERS:
+        tags.append("原装无码")
+
+    if suffix in {"-C", "-UC"}:
+        tags.append("中文字幕")
+    return tags
+
+
+def sync_derived_video_tags_for_code(code: str) -> int:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute("PRAGMA foreign_keys = ON;")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, code, maker FROM videos WHERE code = ?", (code,))
+        video_rows = cursor.fetchall()
+        if not video_rows:
+            return 0
+
+        video_ids = [r["id"] for r in video_rows]
+        id_placeholders = ",".join("?" * len(video_ids))
+        cursor.execute(
+            f"""
+            SELECT DISTINCT t.name
+            FROM tags t
+            JOIN video_tag_link vtl ON vtl.tag_id = t.id
+            WHERE vtl.video_id IN ({id_placeholders})
+            """,
+            video_ids,
+        )
+        existing_tags = {r["name"] for r in cursor.fetchall()}
+
+        cursor.execute(
+            f"""
+            DELETE FROM video_tag_link
+            WHERE video_id IN ({id_placeholders})
+              AND tag_id IN (SELECT id FROM tags WHERE name IN ({",".join("?" * len(_DERIVED_TAGS_TO_REMOVE))}))
+            """,
+            video_ids + list(_DERIVED_TAGS_TO_REMOVE),
+        )
+
+        derived_tags = _derived_tags_for_video(video_rows[0]["code"], video_rows[0]["maker"] or "", existing_tags)
+        if not derived_tags:
+            conn.commit()
+            return 0
+
+        for tag in derived_tags:
+            cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
+            cursor.execute("SELECT id FROM tags WHERE name = ?", (tag,))
+            tag_id = cursor.fetchone()["id"]
+            for video_id in video_ids:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO video_tag_link (video_id, tag_id) VALUES (?, ?)",
+                    (video_id, tag_id),
+                )
+
+        conn.commit()
+        return len(derived_tags) * len(video_ids)
+    except sqlite3.Error as e:
+        logger.error(f"❌ sync_derived_video_tags_for_code 失败 [{code}]: {e}")
+        return 0
+    finally:
+        if conn:
+            conn.close()
+
+
+def sync_all_derived_video_tags() -> int:
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT code FROM videos")
+        codes = [r["code"] for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logger.error(f"❌ sync_all_derived_video_tags 读取失败: {e}")
+        return 0
+    finally:
+        if conn:
+            conn.close()
+
+    changed = 0
+    for code in codes:
+        changed += sync_derived_video_tags_for_code(code)
+    return changed
 
 def get_pending_actors(limit: int = 10) -> List[Tuple[int, str]]:
     """捞取还没有头像且未被忽略的演员 (仅限女优)"""
@@ -286,47 +457,52 @@ def list_videos(
     has_cover: bool = False,
     has_translation: bool = False,
     scrape_status: str = None,
+    tags: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     page = max(1, page)
     limit = max(1, min(limit, 200))
     offset = (page - 1) * limit
 
     # Build dynamic WHERE clauses
-    conditions = ["deleted = 0"]
+    conditions = ["v.deleted = 0"]
     params: list = []
     if year:
-        conditions.append("substr(release_date, 1, 4) = ?")
+        conditions.append("substr(v.release_date, 1, 4) = ?")
         params.append(str(year))
     if score_min is not None:
-        conditions.append("score >= ?")
+        conditions.append("v.score >= ?")
         params.append(score_min)
     if score_max is not None:
-        conditions.append("score < ?")
+        conditions.append("v.score < ?")
         params.append(score_max)
     if has_cover:
-        conditions.append("cover_path IS NOT NULL AND cover_path != ''")
+        conditions.append("v.cover_path IS NOT NULL AND v.cover_path != ''")
     if has_translation:
-        conditions.append("title_zh IS NOT NULL AND title_zh != ''")
+        conditions.append("v.title_zh IS NOT NULL AND v.title_zh != ''")
     if scrape_status:
-        conditions.append("scrape_status = ?")
+        conditions.append("v.scrape_status = ?")
         params.append(scrape_status.upper())
+    tag_conditions, tag_params = _tag_filter_conditions("v", tags)
+    conditions.extend(tag_conditions)
+    params.extend(tag_params)
 
     where = " AND ".join(conditions)
+    representative_where = where.replace("v.", "v2.")
 
     conn = None
     try:
         conn = _get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE {where}",
+            f"SELECT COUNT(DISTINCT v.code) AS total FROM videos v WHERE {where}",
             params,
         )
         total = int(cursor.fetchone()["total"])
         cursor.execute(
             f"""
             SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status, deleted
-            FROM videos
-            WHERE id IN (SELECT MIN(id) FROM videos v2 WHERE {where} GROUP BY v2.code)
+            FROM videos v
+            WHERE v.id IN (SELECT MIN(v2.id) FROM videos v2 WHERE {representative_where} GROUP BY v2.code)
             ORDER BY {_order_clause(sort)}
             LIMIT ? OFFSET ?
             """,
@@ -347,6 +523,10 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
     try:
         conn = _get_conn()
         cursor = conn.cursor()
+        resolved_code = _resolve_video_code(cursor, code)
+        if not resolved_code:
+            return None
+
         cursor.execute(
             """
             SELECT id, code, part, title_jp, title_zh, release_date, duration, maker, publisher,
@@ -356,7 +536,7 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
             WHERE code = ?
             ORDER BY CAST(SUBSTR(COALESCE(part, '0'), 5) AS INTEGER) ASC, id ASC
             """,
-            (code,),
+            (resolved_code,),
         )
         video_rows = cursor.fetchall()
         if not video_rows:
@@ -378,7 +558,7 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
             WHERE v.code = ?
             ORDER BY a.name
             """,
-            (code,),
+            (resolved_code,),
         )
         actors = _rows_to_dicts(cursor.fetchall())
 
@@ -391,7 +571,7 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
             WHERE v.code = ?
             ORDER BY t.name
             """,
-            (code,),
+            (resolved_code,),
         )
         tags = _rows_to_dicts(cursor.fetchall())
 
@@ -802,7 +982,7 @@ def get_stats() -> Dict[str, Any]:
             conn.close()
 
 
-def get_recommendations(count: int = 8) -> List[Dict[str, Any]]:
+def get_recommendations(count: int = 8, tags: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Return `count` diverse high-scored videos (score >= 4.0, no VR tags).
 
     Uses a single SQL pass: assigns each qualifying video its lexicographically
@@ -827,8 +1007,10 @@ def get_recommendations(count: int = 8) -> List[Dict[str, Any]]:
         vr_ids = {r[0] for r in cursor.fetchall()}
 
         # Candidates: one representative row per code, high-score, has cover.
+        tag_conditions, tag_params = _tag_filter_conditions("videos", tags)
+        tag_where = "".join(f"\n              AND {condition}" for condition in tag_conditions)
         cursor.execute(
-            """
+            f"""
             SELECT id, code, title_jp, title_zh, release_date, score, cover_path
             FROM videos
             WHERE deleted = 0
@@ -836,10 +1018,12 @@ def get_recommendations(count: int = 8) -> List[Dict[str, Any]]:
               AND score >= 4.0
               AND cover_path IS NOT NULL
               AND cover_path != ''
+              {tag_where}
               AND id = (SELECT MIN(id) FROM videos v2 WHERE v2.code = videos.code)
             ORDER BY RANDOM()
             LIMIT 500
-            """
+            """,
+            tag_params,
         )
         candidates = [dict(r) for r in cursor.fetchall() if r['id'] not in vr_ids]
         if not candidates:
@@ -1166,21 +1350,69 @@ def get_video_file_path(code: str, part: Optional[str] = None) -> Optional[str]:
     try:
         conn = _get_conn()
         cursor = conn.cursor()
+        resolved_code = _resolve_video_code(cursor, code)
+        if not resolved_code:
+            return None
+
         if part:
             cursor.execute(
                 "SELECT original_file_path FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1",
-                (code, part),
+                (resolved_code, part),
             )
         else:
             cursor.execute(
                 "SELECT original_file_path FROM videos WHERE code = ? ORDER BY id ASC LIMIT 1",
-                (code,),
+                (resolved_code,),
             )
         row = cursor.fetchone()
         return row["original_file_path"] if row else None
     except sqlite3.Error as e:
         logger.error(f"❌ get_video_file_path 失败 [{code}]: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def patch_video_file_path(code: str, original_file_path: str, part: Optional[str] = None) -> Dict[str, Any]:
+    """Update original_file_path for exactly one video row."""
+    if not original_file_path or not str(original_file_path).strip():
+        return {"ok": False, "error": "missing original_file_path"}
+
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        resolved_code = _resolve_video_code(cursor, code)
+        if not resolved_code:
+            return {"ok": False, "error": "not found"}
+
+        if part:
+            cursor.execute(
+                "SELECT id, part FROM videos WHERE code = ? AND part = ? ORDER BY id ASC",
+                (resolved_code, part),
+            )
+        else:
+            cursor.execute("SELECT id, part FROM videos WHERE code = ? ORDER BY id ASC", (resolved_code,))
+
+        rows = cursor.fetchall()
+        if not rows:
+            return {"ok": False, "error": "part not found" if part else "not found"}
+        if len(rows) > 1 and not part:
+            return {"ok": False, "error": "multiple rows match; specify part"}
+
+        video_id = rows[0]["id"]
+        cursor.execute(
+            "UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (str(original_file_path).strip(), video_id),
+        )
+        conn.commit()
+        return {"ok": True, "id": video_id, "code": resolved_code, "part": rows[0]["part"], "original_file_path": str(original_file_path).strip()}
+    except sqlite3.IntegrityError as e:
+        return {"ok": False, "error": str(e)}
+    except sqlite3.Error as e:
+        logger.error(f"❌ patch_video_file_path 失败 [{code}]: {e}")
+        return {"ok": False, "error": str(e)}
     finally:
         if conn:
             conn.close()
