@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Optional
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
@@ -28,6 +29,7 @@ from dal.db_manager import (
     patch_video_file_path,
     patch_video_relations,
     rename_video_code,
+    replace_video_file,
     search_actors,
     search_series,
     search_videos,
@@ -35,12 +37,36 @@ from dal.db_manager import (
 
 app = Flask(__name__, static_folder='../static', static_url_path='/static', template_folder='../templates')
 app.json.ensure_ascii = False
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50 GB
 
 
 def _selected_tags():
     tags = request.args.getlist('tag')
     tags.extend((request.args.get('tags') or '').split(','))
     return [t.strip() for t in tags if t and t.strip()]
+
+
+def _compute_final_filename(
+    dest_name: str,
+    subtitle_zh: bool,
+    uncensored_leaked: bool,
+    uncensored_native: bool,
+    part: Optional[str],
+) -> str:
+    p = Path(dest_name)
+    stem, ext = p.stem, p.suffix
+    has_c = subtitle_zh
+    has_u = uncensored_leaked or uncensored_native
+    if has_c and has_u:
+        suffix = '-UC'
+    elif has_c:
+        suffix = '-C'
+    elif has_u:
+        suffix = '-U'
+    else:
+        suffix = ''
+    part_seg = f'.part{part}' if part else ''
+    return f'{stem}{suffix}{part_seg}{ext}'
 
 
 @app.get('/api/videos')
@@ -108,6 +134,54 @@ def api_video_file_path_patch(code: str):
             status = 404
         return jsonify({'error': result.get('error', 'failed')}), status
     return jsonify(result)
+
+
+@app.post('/api/videos/<string:code>/replace')
+def api_video_replace(code: str):
+    original_part = request.args.get('part') or None
+    f = request.files.get('file')
+    if not f:
+        return jsonify({'error': 'no file'}), 400
+    dest_name = (request.form.get('dest_name') or '').strip()
+    if not dest_name:
+        return jsonify({'error': 'missing dest_name'}), 400
+    try:
+        expected_size = int(request.form.get('file_size') or 0)
+    except ValueError:
+        return jsonify({'error': 'invalid file_size'}), 400
+    if not expected_size:
+        return jsonify({'error': 'missing file_size'}), 400
+
+    subtitle_zh = request.form.get('subtitle_zh') == '1'
+    uncensored_leaked = request.form.get('uncensored_leaked') == '1'
+    uncensored_native = request.form.get('uncensored_native') == '1'
+    dest_part = (request.form.get('part') or '').strip() or None
+
+    original_path = get_video_file_path(code, original_part)
+    if not original_path:
+        return jsonify({'error': 'video not found'}), 404
+
+    final_name = _compute_final_filename(dest_name, subtitle_zh, uncensored_leaked, uncensored_native, dest_part)
+    dest_path = Path(original_path).parent / final_name
+    temp_path = Path(str(dest_path) + '.temp')
+
+    try:
+        f.save(str(temp_path))
+        actual_size = os.path.getsize(str(temp_path))
+        if actual_size != expected_size:
+            temp_path.unlink(missing_ok=True)
+            return jsonify({'error': f'size mismatch: expected {expected_size}, got {actual_size}'}), 400
+        Path(original_path).unlink(missing_ok=True)
+        temp_path.rename(dest_path)
+    except Exception as e:
+        temp_path.unlink(missing_ok=True)
+        return jsonify({'error': str(e)}), 500
+
+    result = replace_video_file(code, original_part, str(dest_path), subtitle_zh, uncensored_leaked, uncensored_native)
+    if not result['ok']:
+        return jsonify({'error': result.get('error', 'db update failed')}), 500
+
+    return jsonify({'ok': True, **get_video_by_code(code)})
 
 
 _MIME_MAP = {
