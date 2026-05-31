@@ -1301,6 +1301,156 @@
           }
         }
 
+        // Replace video modal
+        const showReplaceModal = ref(false);
+        const replaceOriginalPart = ref('');
+        const replaceFile = ref(null);
+        const replaceDestName = ref('');
+        const replaceSubtitleZh = ref(false);
+        const replaceUncensoredLeaked = ref(false);
+        const replaceUncensoredNative = ref(false);
+        const replacePartOn = ref(false);
+        const replacePartNum = ref(1);
+        const replaceUploading = ref(false);
+        const replaceProgress = ref(0);
+        const replaceSpeed = ref('');
+        const replaceElapsed = ref('');
+        const replaceRemaining = ref('');
+        const replaceError = ref('');
+
+        const replaceFinalName = computed(() => {
+          if (!replaceDestName.value) return '';
+          const name = replaceDestName.value;
+          const dot = name.lastIndexOf('.');
+          const stem = dot > 0 ? name.slice(0, dot) : name;
+          const ext  = dot > 0 ? name.slice(dot) : '';
+          const hasC = replaceSubtitleZh.value;
+          const hasU = replaceUncensoredLeaked.value || replaceUncensoredNative.value;
+          const suffix = (hasC && hasU) ? '-UC' : hasC ? '-C' : hasU ? '-U' : '';
+          const partSeg = replacePartOn.value && replacePartNum.value ? `.part${replacePartNum.value}` : '';
+          return `${stem}${suffix}${partSeg}${ext}`;
+        });
+
+        function _fmtTime(secs) {
+          const s = Math.max(0, Math.floor(secs));
+          return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+        }
+
+        function _getOriginalPathForPart(part) {
+          const v = video.value;
+          if (v.parts && v.parts.length > 1) {
+            const found = v.parts.find(p => (p.part || '') === part);
+            return found ? found.original_file_path : v.original_file_path;
+          }
+          return v.original_file_path;
+        }
+
+        function openReplaceModal() {
+          replaceFile.value = null;
+          replaceDestName.value = '';
+          replaceSubtitleZh.value = false;
+          replaceUncensoredLeaked.value = false;
+          replaceUncensoredNative.value = false;
+          replaceUploading.value = false;
+          replaceProgress.value = 0;
+          replaceSpeed.value = '';
+          replaceElapsed.value = '';
+          replaceRemaining.value = '';
+          replaceError.value = '';
+          replaceOriginalPart.value = selectedPart.value || '';
+          const m = replaceOriginalPart.value.match(/(\d+)$/);
+          if (m) { replacePartOn.value = true; replacePartNum.value = parseInt(m[1]); }
+          else    { replacePartOn.value = false; replacePartNum.value = 1; }
+          showReplaceModal.value = true;
+        }
+
+        function closeReplaceModal() {
+          if (replaceUploading.value) return;
+          showReplaceModal.value = false;
+        }
+
+        function onReplaceFileChange(e) {
+          const file = e.target.files[0];
+          if (!file) return;
+          replaceFile.value = file;
+          replaceError.value = '';
+          const origPath = _getOriginalPathForPart(replaceOriginalPart.value);
+          if (origPath) {
+            const origFilename = origPath.split('/').pop();
+            const dot = origFilename.lastIndexOf('.');
+            const origStem = dot > 0 ? origFilename.slice(0, dot) : origFilename;
+            const baseStem = origStem.replace(/-(UC|C|U)$/i, '');
+            const uploadDot = file.name.lastIndexOf('.');
+            const uploadExt = uploadDot > 0 ? file.name.slice(uploadDot) : '';
+            replaceDestName.value = baseStem + uploadExt;
+          } else {
+            replaceDestName.value = file.name;
+          }
+        }
+
+        function startReplaceUpload() {
+          if (!replaceFile.value || replaceUploading.value) return;
+          replaceUploading.value = true;
+          replaceError.value = '';
+          replaceProgress.value = 0;
+          replaceSpeed.value = '–';
+          replaceElapsed.value = '0:00';
+          replaceRemaining.value = '–';
+
+          const fd = new FormData();
+          fd.append('file', replaceFile.value);
+          fd.append('file_size', String(replaceFile.value.size));
+          fd.append('dest_name', replaceDestName.value);
+          fd.append('subtitle_zh', replaceSubtitleZh.value ? '1' : '0');
+          fd.append('uncensored_leaked', replaceUncensoredLeaked.value ? '1' : '0');
+          fd.append('uncensored_native', replaceUncensoredNative.value ? '1' : '0');
+          if (replacePartOn.value && replacePartNum.value) fd.append('part', String(replacePartNum.value));
+
+          const qs = replaceOriginalPart.value ? '?part=' + encodeURIComponent(replaceOriginalPart.value) : '';
+          const xhr = new XMLHttpRequest();
+          const startTime = Date.now();
+          let lastLoaded = 0, lastTime = startTime;
+          const speedSamples = [];
+
+          xhr.upload.addEventListener('progress', e => {
+            if (!e.lengthComputable) return;
+            const now = Date.now();
+            replaceProgress.value = Math.round(e.loaded / e.total * 100);
+            replaceElapsed.value = _fmtTime((now - startTime) / 1000);
+            const dt = (now - lastTime) / 1000;
+            if (dt >= 1) {
+              const bps = (e.loaded - lastLoaded) / dt;
+              speedSamples.push(bps);
+              if (speedSamples.length > 5) speedSamples.shift();
+              const avg = speedSamples.reduce((a, b) => a + b, 0) / speedSamples.length;
+              replaceSpeed.value = avg >= 1e6 ? (avg / 1e6).toFixed(1) + ' MB/s' : (avg / 1e3).toFixed(0) + ' KB/s';
+              replaceRemaining.value = avg > 0 ? _fmtTime((e.total - e.loaded) / avg) : '–';
+              lastLoaded = e.loaded;
+              lastTime = now;
+            }
+          });
+
+          xhr.addEventListener('load', () => {
+            replaceUploading.value = false;
+            if (xhr.status === 200) {
+              try { video.value = JSON.parse(xhr.responseText); } catch (_) {}
+              showReplaceModal.value = false;
+            } else {
+              let msg = '上传失败';
+              try { msg = JSON.parse(xhr.responseText).error || msg; } catch (_) {}
+              replaceError.value = msg;
+            }
+          });
+
+          xhr.addEventListener('error', () => {
+            replaceUploading.value = false;
+            replaceError.value = '网络错误，上传失败';
+          });
+
+          xhr.open('POST', '/api/videos/' + video.value.code + '/replace' + qs);
+          xhr.send(fd);
+        }
+
         // Delete
         async function confirmDelete() {
           if (!confirm(`确认删除「${video.value.code}」？物理文件将被删除，数据库记录保留。`)) return;
@@ -1502,6 +1652,13 @@
           coverFileInput, coverUploading, coverSrc, triggerCoverUpload, uploadCover,
           editingCode, codeDraft, startEditCode, cancelEditCode, saveCode,
           confirmDelete,
+          showReplaceModal, replaceOriginalPart,
+          replaceFile, replaceDestName, replaceFinalName,
+          replaceSubtitleZh, replaceUncensoredLeaked, replaceUncensoredNative,
+          replacePartOn, replacePartNum,
+          replaceUploading, replaceProgress, replaceSpeed, replaceElapsed, replaceRemaining,
+          replaceError,
+          openReplaceModal, closeReplaceModal, onReplaceFileChange, startReplaceUpload,
         };
       }
     };
