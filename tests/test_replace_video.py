@@ -1,7 +1,9 @@
+import io
 import os
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from dal.db_manager import replace_video_file
@@ -83,9 +85,6 @@ class ReplaceVideoFileTests(unittest.TestCase):
         self.assertFalse(result['ok'])
 
 
-import io
-from pathlib import Path
-
 from web.backend.app import app, _compute_final_filename
 
 
@@ -154,6 +153,7 @@ class ReplaceEndpointTests(unittest.TestCase):
                 )
             self.assertEqual(resp.status_code, 400)
             self.assertTrue(orig.exists())
+            self.assertEqual(orig.read_bytes(), b'original')
             self.assertFalse(list(Path(tmpdir).glob('*.temp')))
 
     def test_happy_path_returns_200(self):

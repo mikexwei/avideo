@@ -150,7 +150,7 @@ def api_video_replace(code: str):
     except ValueError:
         return jsonify({'error': 'invalid file_size'}), 400
     if not expected_size:
-        return jsonify({'error': 'missing file_size'}), 400
+        return jsonify({'error': 'file_size must be positive'}), 400
 
     subtitle_zh = request.form.get('subtitle_zh') == '1'
     uncensored_leaked = request.form.get('uncensored_leaked') == '1'
@@ -171,15 +171,19 @@ def api_video_replace(code: str):
         if actual_size != expected_size:
             temp_path.unlink(missing_ok=True)
             return jsonify({'error': f'size mismatch: expected {expected_size}, got {actual_size}'}), 400
-        Path(original_path).unlink(missing_ok=True)
+        # DB update first — filesystem still intact if this fails
+        result = replace_video_file(code, original_part, str(dest_path), subtitle_zh, uncensored_leaked, uncensored_native)
+        if not result['ok']:
+            temp_path.unlink(missing_ok=True)
+            return jsonify({'error': result.get('error', 'db update failed')}), 500
+
+        # Filesystem swap — DB already points to new path
+        if Path(original_path) != dest_path:
+            Path(original_path).unlink(missing_ok=True)
         temp_path.rename(dest_path)
     except Exception as e:
         temp_path.unlink(missing_ok=True)
         return jsonify({'error': str(e)}), 500
-
-    result = replace_video_file(code, original_part, str(dest_path), subtitle_zh, uncensored_leaked, uncensored_native)
-    if not result['ok']:
-        return jsonify({'error': result.get('error', 'db update failed')}), 500
 
     return jsonify({'ok': True, **get_video_by_code(code)})
 
