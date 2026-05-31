@@ -20,7 +20,6 @@ from utils.rename_and_move_videos import (
     VideoRecord,
     build_destination,
     build_filename,
-    code_prefix,
 )
 
 from dal.db_manager import (
