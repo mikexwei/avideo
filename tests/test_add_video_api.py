@@ -346,3 +346,99 @@ class JobStreamEndpointTests(unittest.TestCase):
         # Cleanup
         with _jobs_lock:
             _jobs.pop('test-stream', None)
+
+
+class AutoPipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        fd, self.db_path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        conn = sqlite3.connect(self.db_path)
+        _init_full_schema(conn)
+        conn.close()
+        # Create a fake video file in a tmp job dir
+        self.volume = Path(self.tmpdir)
+        tmp_job_dir = self.volume / '.upload_tmp' / 'test-job'
+        tmp_job_dir.mkdir(parents=True)
+        self.fake_file = tmp_job_dir / 'SSIS-100-C.mp4'
+        self.fake_file.write_bytes(b'fake')
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        os.unlink(self.db_path)
+
+    def _patched_batch_insert(self, scanned):
+        conn = sqlite3.connect(self.db_path)
+        for item in scanned:
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO videos (code, part, original_file_path, scrape_status) "
+                    "VALUES (?,?,?,'PENDING')",
+                    (item['code'], item.get('part'), str(item['original_path']))
+                )
+            except Exception:
+                pass
+        conn.commit()
+        conn.close()
+        return len(scanned), 0
+
+    def _run(self, file_paths=None):
+        from web.backend.app import _Job, _run_auto_pipeline
+        job = _Job(job_id='test-pipeline')
+        fps = file_paths or [self.fake_file]
+
+        fake_scrape_data = {
+            'title_jp': 'テスト作品', 'release_date': '2024-01-01',
+            'duration': '120', 'maker': 'Test Maker', 'publisher': '',
+            'series': '', 'score': 8.5, 'cover_path': '',
+            'actors': '', 'categories': '',
+        }
+
+        with patch('web.backend.app.DB_PATH', self.db_path), \
+             patch('web.backend.app.batch_insert_scanned_videos',
+                   side_effect=self._patched_batch_insert), \
+             patch('web.backend.app.sync_derived_video_tags_for_code'), \
+             patch('web.backend.app.translate_title', return_value='测试作品'), \
+             patch('web.backend.app.shorten_chinese_title_with_candidates',
+                   return_value=('测试', ['测试'])), \
+             patch('web.backend.app.get_video_by_code', return_value={
+                 'title_jp': 'テスト作品', 'title_zh': '测试作品',
+                 'actors': [],
+             }), \
+             patch('web.backend.app.patch_video', return_value=True), \
+             patch('web.backend.app._scrape_with_playwright', return_value=fake_scrape_data):
+            _run_auto_pipeline(job, fps, self.volume)
+
+        events = []
+        while not job.queue.empty():
+            events.append(job.queue.get_nowait())
+        return events
+
+    def test_emits_done_event(self):
+        events = self._run()
+        step_names = [e['step'] for e in events]
+        self.assertIn('done', step_names)
+
+    def test_emits_parse_code_event(self):
+        events = self._run()
+        parse_events = [e for e in events if e['step'] == 'parse_code']
+        self.assertTrue(len(parse_events) > 0)
+        self.assertIn('SSIS-100-C', parse_events[0]['message'])
+
+    def test_emits_db_insert_event(self):
+        events = self._run()
+        step_names = [e['step'] for e in events]
+        self.assertIn('db_insert', step_names)
+
+    def test_adds_chinese_subtitle_tag_for_c_code(self):
+        events = self._run()
+        db_insert_events = [e for e in events if e['step'] == 'db_insert']
+        self.assertTrue(any('中文字幕' in e.get('message', '') for e in db_insert_events))
+
+    def test_error_on_bad_filename(self):
+        bad_file = Path(self.tmpdir) / 'unknown.mp4'
+        bad_file.write_bytes(b'x')
+        events = self._run(file_paths=[bad_file])
+        error_events = [e for e in events if e['step'] == 'error']
+        self.assertTrue(len(error_events) > 0)

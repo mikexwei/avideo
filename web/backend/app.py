@@ -91,10 +91,193 @@ def _cleanup_old_jobs():
 threading.Thread(target=_cleanup_old_jobs, daemon=True).start()
 
 
+def _scrape_with_playwright(base_code: str) -> dict:
+    """Run Playwright scrape in the calling thread. Returns result_data dict or None."""
+    from playwright.sync_api import sync_playwright
+    from playwright_stealth import Stealth
+    from core.scraper import scrape_video_info, load_javdb_cookies
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True, args=['--disable-blink-features=AutomationControlled']
+        )
+        context = browser.new_context(viewport={'width': 1280, 'height': 800})
+        load_javdb_cookies(context)
+        page = context.new_page()
+        Stealth().apply_stealth_sync(page)
+        try:
+            return scrape_video_info(page, base_code)
+        finally:
+            browser.close()
+
+
 def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
-    """Stub — replaced with full implementation in Task 6."""
-    job.queue.put({'step': 'done', 'status': 'done', 'message': '占位符'})
-    job.status = 'done'
+    def emit(step: str, status: str, message: str, **extra):
+        job.queue.put({'step': step, 'status': status, 'message': message, **extra})
+
+    try:
+        # ── Step 1: Parse codes ──────────────────────────────────
+        sorted_paths = sorted(file_paths, key=lambda p: p.name)
+        codes_parts = []
+        for i, fpath in enumerate(sorted_paths):
+            code, part = extract_video_code(fpath.stem)
+            if not code:
+                raise ValueError(f'无法解析番号: {fpath.name}，请改用手动模式')
+            if len(sorted_paths) > 1 and not part:
+                part = f'part{i + 1}'
+            codes_parts.append((code, part, fpath))
+        main_code = codes_parts[0][0]
+        emit('parse_code', 'done', f'番号: {main_code}')
+
+        # ── Steps 2-3: Move to destination ──────────────────────
+        dest_dir = None
+        scanned = []
+        for code, part, tmp_path in codes_parts:
+            record = VideoRecord(
+                id=0, code=code, part=part, original_file_path=tmp_path,
+                title_zh_short=None, title_zh=None, title_jp=None, actors=[],
+            )
+            dest_path = build_destination(record, dest_root=volume_path)
+            dest_dir = dest_path.parent
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            tmp_path.rename(dest_path)
+            st = dest_path.stat()
+            scanned.append({
+                'code': code, 'part': part, 'original_path': dest_path,
+                'file_size': st.st_size,
+                'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
+                'file_birthtime': datetime.fromtimestamp(
+                    getattr(st, 'st_birthtime', st.st_mtime)
+                ).isoformat(),
+            })
+        emit('calc_dir', 'done', f'目标目录: {dest_dir}')
+        emit('upload', 'done', '文件已就位')
+
+        # ── Steps 4-5: Insert DB + sync derived tags ─────────────
+        batch_insert_scanned_videos(scanned)
+        sync_derived_video_tags_for_code(main_code)
+        suffix_upper = main_code.upper()
+        if suffix_upper.endswith('-UC'):
+            tag_msg = '标签: 中文字幕、无码破解'
+        elif suffix_upper.endswith('-C'):
+            tag_msg = '标签: 中文字幕'
+        elif suffix_upper.endswith('-U'):
+            tag_msg = '标签: 无码破解'
+        else:
+            tag_msg = '无特殊标签'
+        emit('db_insert', 'done', f'已写入数据库，{tag_msg}')
+        emit('tags', 'done', '标签同步完成')
+
+        # ── Step 6: Scrape ───────────────────────────────────────
+        emit('scrape', 'running', '刮削影片信息（JavDB）…')
+        base_code = re.sub(r'(?i)-(?:uc|u|c)$', '', main_code)
+        result_data = _scrape_with_playwright(base_code)
+
+        if result_data:
+            conn_tmp = sqlite3.connect(DB_PATH)
+            try:
+                cur = conn_tmp.cursor()
+                cur.execute('SELECT id FROM videos WHERE code = ? LIMIT 1', (main_code,))
+                row = cur.fetchone()
+            finally:
+                conn_tmp.close()
+            if row:
+                from dal.db_manager import update_video_metadata
+                update_video_metadata(row[0], 'SUCCESS', result_data)
+            emit('scrape', 'done', '刮削完成')
+            emit('actors', 'done', '演员信息已更新')
+        else:
+            emit('scrape', 'done', '刮削未找到结果，跳过')
+            emit('actors', 'done', '跳过')
+
+        # ── Step 8: Translate ────────────────────────────────────
+        emit('translate', 'running', '翻译标题…')
+        video_data = get_video_by_code(main_code) or {}
+        title_jp = video_data.get('title_jp') or ''
+        actor_list = video_data.get('actors') or []
+        actor_name_map = {a['name']: (a.get('name_zh') or a['name']) for a in actor_list}
+        actor_names = [a.get('name_zh') or a['name'] for a in actor_list]
+        title_zh = ''
+        if title_jp:
+            try:
+                title_zh = translate_title(title_jp, [main_code], actor_name_map=actor_name_map)
+                patch_video(main_code, {'title_zh': title_zh})
+            except Exception:
+                pass
+        emit('translate', 'done', f'翻译: {title_zh[:30]}' if title_zh else '无日文标题，跳过')
+
+        # ── Step 9: Short title ──────────────────────────────────
+        emit('short_title', 'running', '计算短标题…')
+        title_zh_short = ''
+        if title_zh:
+            try:
+                title_zh_short, _ = shorten_chinese_title_with_candidates(
+                    title_zh, actor_names=actor_names
+                )
+                if title_zh_short:
+                    patch_video(main_code, {'title_zh_short': title_zh_short})
+            except Exception:
+                pass
+        emit('short_title', 'done', f'短标题: {title_zh_short}' if title_zh_short else '跳过')
+
+        # ── Steps 10-12: Rename files ────────────────────────────
+        emit('calc_filename', 'running', '计算文件名…')
+        final_conn = sqlite3.connect(DB_PATH)
+        final_conn.row_factory = sqlite3.Row
+        try:
+            cur = final_conn.cursor()
+            cur.execute(
+                'SELECT id, code, part, original_file_path, title_zh_short, title_zh, title_jp '
+                'FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0',
+                (main_code,),
+            )
+            video_rows = cur.fetchall()
+            for vrow in video_rows:
+                cur.execute(
+                    'SELECT COALESCE(a.name_zh, a.name) AS name FROM actors a '
+                    'JOIN video_actor_link val ON val.actor_id = a.id '
+                    'WHERE val.video_id = ? ORDER BY a.id ASC',
+                    (vrow['id'],),
+                )
+                actors_for_rec = [r['name'] for r in cur.fetchall() if r['name']]
+                rec = VideoRecord(
+                    id=vrow['id'], code=vrow['code'], part=vrow['part'],
+                    original_file_path=Path(vrow['original_file_path']),
+                    title_zh_short=vrow['title_zh_short'],
+                    title_zh=vrow['title_zh'],
+                    title_jp=vrow['title_jp'],
+                    actors=actors_for_rec,
+                )
+                new_name = build_filename(rec)
+                old_path = Path(vrow['original_file_path'])
+                new_path = old_path.parent / new_name
+                if old_path != new_path and old_path.exists():
+                    old_path.rename(new_path)
+                    cur.execute(
+                        'UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP '
+                        'WHERE id = ?',
+                        (str(new_path), vrow['id']),
+                    )
+            final_conn.commit()
+        finally:
+            final_conn.close()
+
+        emit('calc_filename', 'done', '文件名已计算')
+        emit('rename', 'done', '文件已重命名')
+        emit('db_update', 'done', '数据库已更新')
+        emit('done', 'done', '全部完成', code=main_code)
+
+    except Exception as exc:
+        emit('error', 'error', str(exc))
+    finally:
+        job.status = 'done'
+        if file_paths:
+            try:
+                tmp_parent = file_paths[0].parent
+                if '.upload_tmp' in str(tmp_parent):
+                    import shutil as _shutil
+                    _shutil.rmtree(str(tmp_parent), ignore_errors=True)
+            except Exception:
+                pass
 
 
 def _selected_tags():
