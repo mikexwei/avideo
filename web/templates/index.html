@@ -1588,7 +1588,11 @@
               const err = await res1.json();
               throw new Error(err.error || 'PATCH 失败');
             }
-            await fetch(`/api/videos/${code}/finalize-rename`, { method: 'POST' });
+            const res2 = await fetch(`/api/videos/${code}/finalize-rename`, { method: 'POST' });
+            if (!res2.ok) {
+              const err2 = await res2.json().catch(() => ({}));
+              throw new Error(err2.error || '重命名失败');
+            }
             addDoneCode.value = code;
             addStep.value = 'done';
           } catch (e) {
