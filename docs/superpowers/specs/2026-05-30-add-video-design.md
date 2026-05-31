@@ -116,11 +116,22 @@ Modal 保持打开，显示每个步骤的实时状态（✓ 完成 / ⊙ 进行
   4. 移动文件到目标目录
   5. `batch_insert_scanned_videos` 入库
   6. 同步 derived tags（`sync_derived_video_tags_for_code`）
-- 返回：`{"codes": ["WEST-042"], "job_id": "xxx"}`
+- 返回：`{"codes": ["WEST-042"]}`
 
-手动模式的元数据更新和文件重命名复用现有端点：
-- 元数据：`PATCH /api/videos/<code>`（现有）
-- 文件路径更新：`PATCH /api/videos/<code>/file-path`（现有）
+手动模式元数据更新复用现有端点：
+- 元数据（title/actors/tags）：`PATCH /api/videos/<code>`（现有）
+
+手动模式文件重命名新增端点（见下）：
+
+#### `POST /api/videos/<code>/finalize-rename`
+
+- 在手动模式 Step 4M 用户提交元数据后调用
+- 从 DB 读取最新的 title_zh_short/title_zh/title_jp/actors/code/part
+- 调用 `build_filename(record)` 计算新文件名
+- 执行磁盘 rename
+- 调用 `UPDATE videos SET original_file_path=… WHERE code=?` 更新 DB
+- 若多 part，对所有 part 分别执行
+- 返回：`{"ok": True, "new_paths": [...]}`
 
 ### 2.2 Job 管理（内存）
 
@@ -273,10 +284,9 @@ async function startAutoUpload() {
 
 ### 3.5 手动模式文件重命名触发
 
-手动模式 Step 4M 提交后：
-1. `PATCH /api/videos/<code>` 更新 title/actors/tags
-2. 前端调用计算文件名逻辑（或由后端在 `add-manual` 返回时已完成初步命名）
-3. 若有 short_title，可再次调用 `PATCH /api/videos/<code>/file-path` 更新路径
+手动模式 Step 4M 提交后，前端依次调用：
+1. `PATCH /api/videos/<code>` — 更新 title/actors/tags/title_zh/title_zh_short
+2. `POST /api/videos/<code>/finalize-rename` — 后端用最新 DB 状态计算 `build_filename()`，执行磁盘 rename 并更新 DB 路径
 
 ---
 
@@ -319,7 +329,7 @@ async function startAutoUpload() {
 
 | 文件 | 改动 |
 |------|------|
-| `web/backend/app.py` | 新增 5 个端点，job 管理，pipeline thread |
+| `web/backend/app.py` | 新增 6 个端点，job 管理，pipeline thread |
 | `web/templates/index.html` | HomeView 按钮 + AddVideoModal 组件 |
 | `config.py` | 无需改动 |
 | `core/scanner.py` | 无需改动（直接调用） |
