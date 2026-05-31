@@ -120,6 +120,37 @@ def _compute_final_filename(
     return f'{stem}{suffix}{part_seg}{ext}'
 
 
+@app.get('/api/config/media-libraries')
+def api_media_libraries():
+    return jsonify([str(p) for p in MEDIA_LIBRARIES])
+
+
+@app.get('/api/videos/max-code/<string:code_type>')
+def api_max_code(code_type: str):
+    ctype = code_type.upper()
+    if ctype not in ('WEST', 'CN', 'DUMMY'):
+        return jsonify({'error': 'invalid code_type'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT code FROM videos WHERE UPPER(code) LIKE ?",
+            (f'{ctype}-%',),
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+    max_num = 0
+    for (code,) in rows:
+        try:
+            num = int(code.split('-', 1)[1])
+            if num > max_num:
+                max_num = num
+        except (ValueError, IndexError):
+            continue
+    return jsonify({'code_type': ctype, 'max_number': max_num, 'suggested': max_num + 1})
+
+
 @app.get('/api/videos')
 def api_videos():
     page = request.args.get('page', 1, type=int) or 1
