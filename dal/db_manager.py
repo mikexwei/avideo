@@ -806,7 +806,7 @@ def search_series(q: str, limit: int = 10) -> List[Dict[str, Any]]:
             conn.close()
 
 
-PATCHABLE_FIELDS = {'title_jp', 'title_zh', 'release_date', 'duration', 'maker', 'publisher', 'series', 'score'}
+PATCHABLE_FIELDS = {'title_jp', 'title_zh', 'title_zh_short', 'release_date', 'duration', 'maker', 'publisher', 'series', 'score'}
 
 
 def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, tag_names: Optional[List[str]] = None) -> bool:

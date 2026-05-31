@@ -1,8 +1,29 @@
+import json
 import os
+import queue
+import re
+import sqlite3
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
+
+from flask import Response
+
+from config import DB_PATH, MEDIA_LIBRARIES
+from core.scanner import extract_video_code
+from core.translator.service import shorten_chinese_title_with_candidates, translate_title
+from utils.rename_and_move_videos import (
+    VideoRecord,
+    build_destination,
+    build_filename,
+    code_prefix,
+)
 
 from dal.db_manager import (
     get_actor_with_videos,
@@ -33,11 +54,42 @@ from dal.db_manager import (
     search_actors,
     search_series,
     search_videos,
+    batch_insert_scanned_videos,
+    sync_derived_video_tags_for_code,
 )
 
 app = Flask(__name__, static_folder='../static', static_url_path='/static', template_folder='../templates')
 app.json.ensure_ascii = False
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50 GB
+
+# ── Job management ──────────────────────────────────────────────
+
+_Queue = queue.Queue
+
+
+@dataclass
+class _Job:
+    job_id: str
+    queue: _Queue = field(default_factory=_Queue)
+    status: str = 'running'
+    created_at: float = field(default_factory=time.time)
+
+
+_jobs: dict = {}
+_jobs_lock = threading.Lock()
+
+
+def _cleanup_old_jobs():
+    while True:
+        time.sleep(600)
+        cutoff = time.time() - 3600
+        with _jobs_lock:
+            stale = [jid for jid, j in _jobs.items() if j.created_at < cutoff]
+            for jid in stale:
+                del _jobs[jid]
+
+
+threading.Thread(target=_cleanup_old_jobs, daemon=True).start()
 
 
 def _selected_tags():
