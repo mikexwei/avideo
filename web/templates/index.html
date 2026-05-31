@@ -634,97 +634,136 @@
 
       <!-- Replace Video Modal -->
       <teleport to="body">
-        <div v-if="showReplaceModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70" @click.self="closeReplaceModal">
-          <div class="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-md mx-4 p-5">
-            <div class="flex items-center justify-between mb-4">
-              <h2 class="text-base font-semibold text-gray-100">替换视频</h2>
-              <button @click="closeReplaceModal" :disabled="replaceUploading" class="text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
-            </div>
+        <div v-if="showReplaceModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80" @click.self="closeReplaceModal">
+          <div class="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-md mx-4 shadow-2xl overflow-hidden">
 
-            <!-- Original part selector (multi-part videos only) -->
-            <div v-if="fileParts.length > 1" class="mb-3">
-              <label class="block text-xs text-gray-500 mb-1">替换哪个 Part</label>
-              <select v-model="replaceOriginalPart" :disabled="replaceUploading"
-                class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none">
-                <option v-for="f in fileParts" :key="f.part || ''" :value="f.part || ''">{{ f.part || '完整' }}</option>
-              </select>
-            </div>
-
-            <!-- File picker -->
-            <div class="mb-3">
-              <button @click="$refs.replaceFileInput.click()" :disabled="replaceUploading"
-                class="px-3 py-1.5 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-50">选择文件</button>
-              <span class="ml-2 text-sm text-gray-400">{{ replaceFile ? replaceFile.name : '未选择' }}</span>
-              <input ref="replaceFileInput" type="file" class="hidden" @change="onReplaceFileChange" :disabled="replaceUploading" />
-            </div>
-
-            <!-- Toggles -->
-            <div class="grid grid-cols-2 gap-x-4 gap-y-2 items-center mb-3">
-              <span class="text-sm text-gray-400">中文字幕</span>
-              <button @click="replaceSubtitleZh = !replaceSubtitleZh" :disabled="replaceUploading"
-                :class="['px-3 py-1 rounded text-xs font-medium w-16', replaceSubtitleZh ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400']">
-                {{ replaceSubtitleZh ? 'YES' : 'NO' }}
-              </button>
-              <span class="text-sm text-gray-400">无码破解</span>
-              <button @click="replaceUncensoredLeaked = !replaceUncensoredLeaked" :disabled="replaceUploading"
-                :class="['px-3 py-1 rounded text-xs font-medium w-16', replaceUncensoredLeaked ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400']">
-                {{ replaceUncensoredLeaked ? 'YES' : 'NO' }}
-              </button>
-              <span class="text-sm text-gray-400">原装无码</span>
-              <button @click="replaceUncensoredNative = !replaceUncensoredNative" :disabled="replaceUploading"
-                :class="['px-3 py-1 rounded text-xs font-medium w-16', replaceUncensoredNative ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400']">
-                {{ replaceUncensoredNative ? 'YES' : 'NO' }}
-              </button>
-              <span class="text-sm text-gray-400">Part</span>
-              <button @click="replacePartOn = !replacePartOn" :disabled="replaceUploading"
-                :class="['px-3 py-1 rounded text-xs font-medium w-16', replacePartOn ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400']">
-                {{ replacePartOn ? 'ON' : 'OFF' }}
-              </button>
-              <template v-if="replacePartOn">
-                <span class="text-sm text-gray-400">Part 编号</span>
-                <div class="flex gap-1">
-                  <button v-for="n in [1,2,3,4]" :key="n" @click="replacePartNum = n" :disabled="replaceUploading"
-                    :class="['px-2 py-1 rounded text-xs', replacePartNum === n ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600']">{{ n }}</button>
-                </div>
-              </template>
-            </div>
-
-            <!-- Filename preview -->
-            <div v-if="replaceFile" class="mb-3 space-y-2">
+            <!-- Header -->
+            <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
               <div class="flex items-center gap-2">
-                <span class="text-xs text-gray-500 w-20 flex-shrink-0">目标文件名</span>
-                <input v-model="replaceDestName" :disabled="replaceUploading"
-                  class="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 font-mono focus:outline-none focus:border-indigo-500" />
+                <svg class="w-4 h-4 text-indigo-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <h2 class="text-sm font-semibold text-gray-100 tracking-wide">替换视频</h2>
               </div>
-              <div class="flex items-center gap-2">
-                <span class="text-xs text-gray-500 w-20 flex-shrink-0">最终文件名</span>
-                <span class="text-xs text-gray-300 font-mono break-all">{{ replaceFinalName }}</span>
-              </div>
-            </div>
-
-            <!-- Progress -->
-            <div v-if="replaceUploading" class="mb-3">
-              <div class="flex items-center gap-2 mb-1">
-                <div class="flex-1 bg-gray-700 rounded-full h-1.5">
-                  <div class="bg-indigo-500 h-1.5 rounded-full transition-all" :style="{ width: replaceProgress + '%' }"></div>
-                </div>
-                <span class="text-xs text-gray-400 w-8 text-right flex-shrink-0">{{ replaceProgress }}%</span>
-              </div>
-              <p class="text-xs text-gray-500">{{ replaceSpeed }} · 已用 {{ replaceElapsed }} · 剩余 {{ replaceRemaining }}</p>
-            </div>
-
-            <!-- Error -->
-            <p v-if="replaceError" class="text-red-400 text-sm mb-3">⚠ {{ replaceError }}</p>
-
-            <!-- Actions -->
-            <div class="flex justify-end gap-2 mt-4">
               <button @click="closeReplaceModal" :disabled="replaceUploading"
-                class="px-4 py-1.5 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-50">取消</button>
+                class="w-7 h-7 flex items-center justify-center rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-40">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <!-- Body -->
+            <div class="px-5 py-4 space-y-4">
+
+              <!-- Original part selector (multi-part videos only) -->
+              <div v-if="fileParts.length > 1">
+                <label class="block text-xs font-medium text-gray-400 mb-1.5">替换哪个 Part</label>
+                <select v-model="replaceOriginalPart" :disabled="replaceUploading"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer disabled:opacity-50">
+                  <option v-for="f in fileParts" :key="f.part || ''" :value="f.part || ''">{{ f.part || '完整' }}</option>
+                </select>
+              </div>
+
+              <!-- File picker -->
+              <div>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5">选择文件</label>
+                <div class="flex items-center gap-3">
+                  <button @click="$refs.replaceFileInput.click()" :disabled="replaceUploading"
+                    class="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 transition-colors cursor-pointer disabled:opacity-50 flex-shrink-0">
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                    浏览…
+                  </button>
+                  <span class="text-sm text-gray-400 truncate min-w-0">{{ replaceFile ? replaceFile.name : '未选择文件' }}</span>
+                </div>
+                <input ref="replaceFileInput" type="file" class="hidden" @change="onReplaceFileChange" :disabled="replaceUploading" />
+              </div>
+
+              <!-- Toggles -->
+              <div>
+                <label class="block text-xs font-medium text-gray-400 mb-2">属性标记</label>
+                <div class="grid grid-cols-2 gap-2">
+                  <button @click="replaceSubtitleZh = !replaceSubtitleZh" :disabled="replaceUploading"
+                    :class="['flex items-center justify-between px-3 py-2 rounded-lg border text-sm transition-colors cursor-pointer disabled:opacity-50',
+                      replaceSubtitleZh ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-300']">
+                    <span>中文字幕</span>
+                    <span :class="['text-xs font-mono font-bold', replaceSubtitleZh ? 'text-indigo-200' : 'text-gray-600']">{{ replaceSubtitleZh ? 'ON' : 'OFF' }}</span>
+                  </button>
+                  <button @click="replaceUncensoredLeaked = !replaceUncensoredLeaked" :disabled="replaceUploading"
+                    :class="['flex items-center justify-between px-3 py-2 rounded-lg border text-sm transition-colors cursor-pointer disabled:opacity-50',
+                      replaceUncensoredLeaked ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-300']">
+                    <span>无码破解</span>
+                    <span :class="['text-xs font-mono font-bold', replaceUncensoredLeaked ? 'text-indigo-200' : 'text-gray-600']">{{ replaceUncensoredLeaked ? 'ON' : 'OFF' }}</span>
+                  </button>
+                  <button @click="replaceUncensoredNative = !replaceUncensoredNative" :disabled="replaceUploading"
+                    :class="['flex items-center justify-between px-3 py-2 rounded-lg border text-sm transition-colors cursor-pointer disabled:opacity-50',
+                      replaceUncensoredNative ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-300']">
+                    <span>原装无码</span>
+                    <span :class="['text-xs font-mono font-bold', replaceUncensoredNative ? 'text-indigo-200' : 'text-gray-600']">{{ replaceUncensoredNative ? 'ON' : 'OFF' }}</span>
+                  </button>
+                  <button @click="replacePartOn = !replacePartOn" :disabled="replaceUploading"
+                    :class="['flex items-center justify-between px-3 py-2 rounded-lg border text-sm transition-colors cursor-pointer disabled:opacity-50',
+                      replacePartOn ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-300']">
+                    <span>Part</span>
+                    <span :class="['text-xs font-mono font-bold', replacePartOn ? 'text-indigo-200' : 'text-gray-600']">{{ replacePartOn ? 'ON' : 'OFF' }}</span>
+                  </button>
+                </div>
+                <div v-if="replacePartOn" class="flex items-center gap-2 mt-2">
+                  <span class="text-xs text-gray-500 flex-shrink-0">编号</span>
+                  <div class="flex gap-1">
+                    <button v-for="n in [1,2,3,4]" :key="n" @click="replacePartNum = n" :disabled="replaceUploading"
+                      :class="['w-8 h-8 rounded-md text-xs font-medium transition-colors cursor-pointer disabled:opacity-50',
+                        replacePartNum === n ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200']">{{ n }}</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Filename preview -->
+              <div v-if="replaceFile" class="bg-gray-800 rounded-lg px-3 py-3 space-y-2">
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500 w-16 flex-shrink-0">目标文件名</span>
+                  <input v-model="replaceDestName" :disabled="replaceUploading"
+                    class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono focus:outline-none focus:border-indigo-500 transition-colors min-w-0" />
+                </div>
+                <div class="flex items-start gap-2">
+                  <span class="text-xs text-gray-500 w-16 flex-shrink-0 pt-0.5">最终文件名</span>
+                  <span class="text-xs text-indigo-300 font-mono break-all leading-relaxed">{{ replaceFinalName }}</span>
+                </div>
+              </div>
+
+              <!-- Progress -->
+              <div v-if="replaceUploading" class="space-y-1.5">
+                <div class="flex items-center gap-3">
+                  <div class="flex-1 bg-gray-800 rounded-full h-2 overflow-hidden">
+                    <div class="bg-indigo-500 h-2 rounded-full transition-all duration-300" :style="{ width: replaceProgress + '%' }"></div>
+                  </div>
+                  <span class="text-xs text-gray-300 font-mono w-9 text-right flex-shrink-0">{{ replaceProgress }}%</span>
+                </div>
+                <p class="text-xs text-gray-500 font-mono">{{ replaceSpeed }} · 已用 {{ replaceElapsed }} · 剩余 {{ replaceRemaining }}</p>
+              </div>
+
+              <!-- Error -->
+              <div v-if="replaceError" class="flex items-start gap-2 bg-red-900 bg-opacity-30 border border-red-800 rounded-lg px-3 py-2.5">
+                <svg class="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <p class="text-sm text-red-300">{{ replaceError }}</p>
+              </div>
+
+            </div>
+
+            <!-- Footer -->
+            <div class="flex justify-end gap-2 px-5 py-3 border-t border-gray-800">
+              <button @click="closeReplaceModal" :disabled="replaceUploading"
+                class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors cursor-pointer disabled:opacity-40">取消</button>
               <button @click="startReplaceUpload" :disabled="!replaceFile || replaceUploading"
-                class="px-4 py-1.5 text-sm rounded bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50">
+                class="px-5 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
                 {{ replaceUploading ? '上传中…' : '上传' }}
               </button>
             </div>
+
           </div>
         </div>
       </teleport>
