@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from dal.db_manager import replace_video_file
+
 
 def _init_schema(conn):
     conn.executescript("""
@@ -46,7 +48,6 @@ class ReplaceVideoFileTests(unittest.TestCase):
     def _call(self, code='SSIS-001', part=None, dest='/vol/SSIS-001-C.mp4',
               sub_zh=False, leaked=False, native=False):
         with patch('dal.db_manager.DB_PATH', self.db_path):
-            from dal.db_manager import replace_video_file
             return replace_video_file(code, part, dest, sub_zh, leaked, native)
 
     def test_updates_file_path(self):
