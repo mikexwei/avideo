@@ -151,6 +151,74 @@ def api_max_code(code_type: str):
     return jsonify({'code_type': ctype, 'max_number': max_num, 'suggested': max_num + 1})
 
 
+@app.post('/api/videos/add-manual')
+def api_add_manual():
+    volume_path_str = (request.form.get('volume_path') or '').strip()
+    volume_path = Path(volume_path_str)
+    if volume_path not in [Path(p) for p in MEDIA_LIBRARIES]:
+        return jsonify({'error': 'invalid volume_path'}), 400
+
+    code_type = (request.form.get('code_type') or '').strip().upper()
+    if code_type not in ('WEST', 'CN', 'DUMMY'):
+        return jsonify({'error': 'invalid code_type'}), 400
+
+    try:
+        code_number = int(request.form.get('code_number') or 0)
+    except ValueError:
+        return jsonify({'error': 'invalid code_number'}), 400
+    if code_number < 1:
+        return jsonify({'error': 'code_number must be >= 1'}), 400
+
+    is_multipart = request.form.get('is_multipart') == '1'
+    files = request.files.getlist('files[]')
+    if not files:
+        return jsonify({'error': 'no files'}), 400
+
+    code = f'{code_type}-{code_number:03d}'
+    job_id = str(uuid.uuid4())
+    tmp_dir = volume_path / '.upload_tmp' / job_id
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    sorted_files = sorted(files, key=lambda f: secure_filename(f.filename) or '')
+    scanned = []
+    for i, f in enumerate(sorted_files):
+        safe_name = secure_filename(f.filename) or f'file_{i}.bin'
+        tmp_path = tmp_dir / safe_name
+        f.save(str(tmp_path))
+
+        part = f'part{i + 1}' if is_multipart else None
+        record = VideoRecord(
+            id=0, code=code, part=part,
+            original_file_path=tmp_path,
+            title_zh_short=None, title_zh=None, title_jp=None, actors=[],
+        )
+        dest_path = build_destination(record, dest_root=volume_path)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.rename(dest_path)
+
+        st = dest_path.stat()
+        scanned.append({
+            'code': code,
+            'part': part,
+            'original_path': dest_path,
+            'file_size': st.st_size,
+            'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
+            'file_birthtime': datetime.fromtimestamp(
+                getattr(st, 'st_birthtime', st.st_mtime)
+            ).isoformat(),
+        })
+
+    try:
+        tmp_dir.rmdir()
+    except OSError:
+        pass
+
+    batch_insert_scanned_videos(scanned)
+    sync_derived_video_tags_for_code(code)
+
+    return jsonify({'codes': [code]})
+
+
 @app.get('/api/videos')
 def api_videos():
     page = request.args.get('page', 1, type=int) or 1
