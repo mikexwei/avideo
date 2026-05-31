@@ -275,3 +275,74 @@ class FinalizeRenameEndpointTests(unittest.TestCase):
         with patch('web.backend.app.DB_PATH', self.db_path):
             resp = self.client.post('/api/videos/WEST-001/finalize-rename')
         self.assertEqual(resp.status_code, 200)
+
+
+class AddAutoEndpointTests(unittest.TestCase):
+    def setUp(self):
+        app.config['TESTING'] = True
+        self.client = app.test_client()
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_returns_job_id(self):
+        with patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]), \
+             patch('web.backend.app._run_auto_pipeline'):
+            resp = self.client.post(
+                '/api/videos/add-auto',
+                data={
+                    'volume_path': self.tmpdir,
+                    'files[]': (io.BytesIO(b'video'), 'SSIS-001.mp4'),
+                },
+                content_type='multipart/form-data',
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn('job_id', data)
+        self.assertIsInstance(data['job_id'], str)
+
+    def test_invalid_volume_returns_400(self):
+        resp = self.client.post(
+            '/api/videos/add-auto',
+            data={'volume_path': '/no/such/vol', 'files[]': (io.BytesIO(b'v'), 'x.mp4')},
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_no_files_returns_400(self):
+        with patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]):
+            resp = self.client.post(
+                '/api/videos/add-auto',
+                data={'volume_path': self.tmpdir},
+                content_type='multipart/form-data',
+            )
+        self.assertEqual(resp.status_code, 400)
+
+
+class JobStreamEndpointTests(unittest.TestCase):
+    def setUp(self):
+        app.config['TESTING'] = True
+        self.client = app.test_client()
+
+    def test_unknown_job_returns_404(self):
+        resp = self.client.get('/api/jobs/nonexistent-id/stream')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_streams_events_from_job_queue(self):
+        from web.backend.app import _Job, _jobs, _jobs_lock
+        job = _Job(job_id='test-stream')
+        job.queue.put({'step': 'parse_code', 'status': 'done', 'message': 'ok'})
+        job.queue.put({'step': 'done', 'status': 'done', 'message': 'complete', 'code': 'TEST-001'})
+        with _jobs_lock:
+            _jobs['test-stream'] = job
+
+        resp = self.client.get('/api/jobs/test-stream/stream')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content_type, 'text/event-stream')
+        body = resp.data.decode()
+        self.assertIn('"step": "done"', body)
+        # Cleanup
+        with _jobs_lock:
+            _jobs.pop('test-stream', None)

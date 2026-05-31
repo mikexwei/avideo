@@ -91,6 +91,12 @@ def _cleanup_old_jobs():
 threading.Thread(target=_cleanup_old_jobs, daemon=True).start()
 
 
+def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
+    """Stub — replaced with full implementation in Task 6."""
+    job.queue.put({'step': 'done', 'status': 'done', 'message': '占位符'})
+    job.status = 'done'
+
+
 def _selected_tags():
     tags = request.args.getlist('tag')
     tags.extend((request.args.get('tags') or '').split(','))
@@ -273,6 +279,68 @@ def api_finalize_rename(code: str):
         conn.close()
 
     return jsonify({'ok': True, 'new_paths': [r['new'] for r in results]})
+
+
+@app.post('/api/videos/add-auto')
+def api_add_auto():
+    volume_path_str = (request.form.get('volume_path') or '').strip()
+    volume_path = Path(volume_path_str)
+    if volume_path not in [Path(p) for p in MEDIA_LIBRARIES]:
+        return jsonify({'error': 'invalid volume_path'}), 400
+
+    files = request.files.getlist('files[]')
+    if not files:
+        return jsonify({'error': 'no files'}), 400
+
+    job_id = str(uuid.uuid4())
+    tmp_dir = volume_path / '.upload_tmp' / job_id
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_paths = []
+    for f in files:
+        safe_name = secure_filename(f.filename) or f'file_{len(saved_paths)}.bin'
+        dest = tmp_dir / safe_name
+        f.save(str(dest))
+        saved_paths.append(dest)
+
+    with _jobs_lock:
+        job = _Job(job_id=job_id)
+        _jobs[job_id] = job
+
+    t = threading.Thread(
+        target=_run_auto_pipeline,
+        args=(job, saved_paths, volume_path),
+        daemon=True,
+    )
+    t.start()
+    return jsonify({'job_id': job_id})
+
+
+@app.get('/api/jobs/<string:job_id>/stream')
+def api_job_stream(job_id: str):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'not found'}), 404
+
+    def generate():
+        while True:
+            try:
+                event = job.queue.get(timeout=30)
+            except queue.Empty:
+                yield 'data: {"step":"ping","status":"running","message":""}\n\n'
+                continue
+            yield f'data: {json.dumps(event, ensure_ascii=False)}\n\n'
+            if event.get('step') in ('done', 'error'):
+                break
+
+    resp = Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+    resp.headers['Content-Type'] = 'text/event-stream'
+    return resp
 
 
 @app.get('/api/videos')
