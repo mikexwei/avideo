@@ -224,6 +224,57 @@ def api_add_manual():
     return jsonify({'codes': [code]})
 
 
+@app.post('/api/videos/<string:code>/finalize-rename')
+def api_finalize_rename(code: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, code, part, original_file_path, title_zh_short, title_zh, title_jp "
+            "FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0",
+            (code,),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return jsonify({'error': 'not found'}), 404
+
+        results = []
+        for row in rows:
+            cursor.execute(
+                "SELECT COALESCE(a.name_zh, a.name) AS name "
+                "FROM actors a JOIN video_actor_link val ON val.actor_id = a.id "
+                "WHERE val.video_id = ? ORDER BY a.id ASC",
+                (row['id'],),
+            )
+            actors = [r['name'] for r in cursor.fetchall() if r['name']]
+            record = VideoRecord(
+                id=row['id'], code=row['code'], part=row['part'],
+                original_file_path=Path(row['original_file_path']),
+                title_zh_short=row['title_zh_short'],
+                title_zh=row['title_zh'],
+                title_jp=row['title_jp'],
+                actors=actors,
+            )
+            new_name = build_filename(record)
+            old_path = Path(row['original_file_path'])
+            new_path = old_path.parent / new_name
+            if old_path != new_path and old_path.exists():
+                old_path.rename(new_path)
+                cursor.execute(
+                    "UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = ?",
+                    (str(new_path), row['id']),
+                )
+            results.append({'old': str(old_path), 'new': str(new_path)})
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({'ok': True, 'new_paths': [r['new'] for r in results]})
+
+
 @app.get('/api/videos')
 def api_videos():
     page = request.args.get('page', 1, type=int) or 1

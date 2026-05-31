@@ -203,3 +203,75 @@ class AddManualEndpointTests(unittest.TestCase):
                                           'code_number': '1', 'is_multipart': '0'},
                                     content_type='multipart/form-data')
         self.assertEqual(resp.status_code, 400)
+
+
+class FinalizeRenameEndpointTests(unittest.TestCase):
+    def setUp(self):
+        app.config['TESTING'] = True
+        self.client = app.test_client()
+        self.tmpdir = tempfile.mkdtemp()
+        fd, self.db_path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        conn = sqlite3.connect(self.db_path)
+        _init_full_schema(conn)
+        # Create a real file
+        self.video_file = Path(self.tmpdir) / 'WEST-001.mp4'
+        self.video_file.write_bytes(b'fake video')
+        conn.execute(
+            "INSERT INTO videos (code, part, original_file_path, title_zh_short, title_zh, title_jp) "
+            "VALUES ('WEST-001', NULL, ?, '短标题', '中文标题', '日文標題')",
+            (str(self.video_file),)
+        )
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        os.unlink(self.db_path)
+
+    def _call(self, code='WEST-001'):
+        with patch('web.backend.app.DB_PATH', self.db_path):
+            return self.client.post(f'/api/videos/{code}/finalize-rename')
+
+    def test_renames_file_to_build_filename_result(self):
+        resp = self._call()
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data['ok'])
+        new_path = Path(data['new_paths'][0])
+        self.assertTrue(new_path.exists())
+        # build_filename with no actors gives: WEST-001.[短标题].mp4
+        self.assertIn('WEST-001', new_path.name)
+        self.assertIn('短标题', new_path.name)
+
+    def test_updates_db_original_file_path(self):
+        self._call()
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT original_file_path FROM videos WHERE code='WEST-001'").fetchone()
+        conn.close()
+        self.assertNotEqual(row[0], str(self.video_file))
+        self.assertIn('短标题', row[0])
+
+    def test_missing_code_returns_404(self):
+        resp = self._call(code='NOSUCH')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_skips_rename_when_name_unchanged(self):
+        """If build_filename produces the same name, no error."""
+        conn = sqlite3.connect(self.db_path)
+        # Remove short title so build_filename gives bare code name
+        conn.execute("UPDATE videos SET title_zh_short=NULL, title_zh=NULL, title_jp=NULL WHERE code='WEST-001'")
+        conn.commit()
+        conn.close()
+        # Rename the actual file to what build_filename would produce (WEST-001.mp4)
+        target = self.video_file.parent / 'WEST-001.mp4'
+        if not target.exists():
+            self.video_file.rename(target)
+        conn2 = sqlite3.connect(self.db_path)
+        conn2.execute("UPDATE videos SET original_file_path=? WHERE code='WEST-001'", (str(target),))
+        conn2.commit()
+        conn2.close()
+        with patch('web.backend.app.DB_PATH', self.db_path):
+            resp = self.client.post('/api/videos/WEST-001/finalize-rename')
+        self.assertEqual(resp.status_code, 200)
