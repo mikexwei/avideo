@@ -1418,6 +1418,85 @@ def patch_video_file_path(code: str, original_file_path: str, part: Optional[str
             conn.close()
 
 
+def replace_video_file(
+    code: str,
+    original_part: Optional[str],
+    dest_path: str,
+    subtitle_zh: bool,
+    uncensored_leaked: bool,
+    uncensored_native: bool,
+) -> Dict[str, Any]:
+    """Update file path and sync 中文字幕/无码破解/原装无码 tags after a file replacement."""
+    tag_desired = {'中文字幕': subtitle_zh, '无码破解': uncensored_leaked, '原装无码': uncensored_native}
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        resolved_code = _resolve_video_code(cursor, code)
+        if not resolved_code:
+            return {'ok': False, 'error': 'not found'}
+
+        if original_part:
+            cursor.execute(
+                'SELECT id FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1',
+                (resolved_code, original_part),
+            )
+        else:
+            cursor.execute(
+                'SELECT id FROM videos WHERE code = ? AND (part IS NULL OR part = "") ORDER BY id ASC LIMIT 1',
+                (resolved_code,),
+            )
+        row = cursor.fetchone()
+        if not row:
+            return {'ok': False, 'error': 'part not found' if original_part else 'not found'}
+        video_id = row['id']
+
+        cursor.execute(
+            'UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (dest_path, video_id),
+        )
+
+        cursor.execute('SELECT id FROM videos WHERE code = ?', (resolved_code,))
+        all_ids = [r['id'] for r in cursor.fetchall()]
+        ph = ','.join('?' * len(all_ids))
+
+        cursor.execute(
+            f'SELECT t.name FROM tags t JOIN video_tag_link vtl ON vtl.tag_id = t.id WHERE vtl.video_id IN ({ph})',
+            all_ids,
+        )
+        current_tags = {r['name'] for r in cursor.fetchall()}
+
+        for tag_name, should_have in tag_desired.items():
+            if should_have and tag_name not in current_tags:
+                cursor.execute('INSERT OR IGNORE INTO tags (name) VALUES (?)', (tag_name,))
+                cursor.execute('SELECT id FROM tags WHERE name = ?', (tag_name,))
+                tag_row = cursor.fetchone()
+                if tag_row:
+                    for vid in all_ids:
+                        cursor.execute(
+                            'INSERT OR IGNORE INTO video_tag_link (video_id, tag_id) VALUES (?, ?)',
+                            (vid, tag_row['id']),
+                        )
+            elif not should_have and tag_name in current_tags:
+                cursor.execute('SELECT id FROM tags WHERE name = ?', (tag_name,))
+                tag_row = cursor.fetchone()
+                if tag_row:
+                    cursor.execute(
+                        f'DELETE FROM video_tag_link WHERE video_id IN ({ph}) AND tag_id = ?',
+                        all_ids + [tag_row['id']],
+                    )
+
+        conn.commit()
+        logger.info(f'🔄 replace_video_file [{code}]: {dest_path}')
+        return {'ok': True, 'original_file_path': dest_path}
+    except sqlite3.Error as e:
+        logger.error(f'❌ replace_video_file 失败 [{code}]: {e}')
+        return {'ok': False, 'error': str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
 def patch_actor(actor_id: int, fields: Dict[str, Any]) -> bool:
     """Update editable scalar fields for an actor (name, name_zh)."""
     allowed = {k: v for k, v in fields.items() if k in {'name', 'name_zh'}}
