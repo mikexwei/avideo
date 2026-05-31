@@ -1398,10 +1398,228 @@
       return Array.isArray(raw) ? raw : [raw];
     }
 
+    // ── AddVideoModal ─────────────────────────────────────────
+    const AddVideoModal = {
+      template: '#tpl-add-video',
+      emits: ['close'],
+      setup(props, { emit }) {
+        const router = VueRouter.useRouter();
+
+        // ── Shared state ────────────────────────────────────────
+        const addStep    = ref('file-select');
+        const addFiles   = ref([]);
+        const addVolume  = ref('');
+        const addMode    = ref('auto');
+        const addDoneCode = ref('');
+        const addError   = ref('');
+
+        const mediaLibraries = ref([]);
+        const addFileInput = ref(null);
+
+        // ── Auto mode state ─────────────────────────────────────
+        const AUTO_STEPS = [
+          'parse_code','calc_dir','upload','db_insert','tags',
+          'scrape','actors','translate','short_title',
+          'calc_filename','rename','db_update',
+        ];
+        const autoProgressSteps = ref([]);
+        const autoFinished = ref(false);
+
+        const autoProgressPct = computed(() => {
+          const done = autoProgressSteps.value.filter(s => s.status === 'done').length;
+          return Math.round((done / AUTO_STEPS.length) * 100);
+        });
+
+        function autoStepLabel(step) {
+          const map = {
+            parse_code: '解析番号', calc_dir: '计算目标目录', upload: '上传文件',
+            db_insert: '写入数据库', tags: '同步标签', scrape: '刮削影片信息',
+            actors: '获取演员信息', translate: '翻译标题', short_title: '计算短标题',
+            calc_filename: '计算文件名', rename: '重命名文件', db_update: '更新数据库',
+          };
+          return map[step] || step;
+        }
+
+        // ── Manual mode state ────────────────────────────────────
+        const manualCodeType    = ref('WEST');
+        const manualCodeNumber  = ref(1);
+        const manualMaxNumber   = ref(0);
+        const manualIsMultipart = ref(false);
+        const manualUploading   = ref(false);
+        const manualCode        = ref('');
+        const manualTitleJp     = ref('');
+        const manualTitleZh     = ref('');
+        const manualTitleShort  = ref('');
+        const manualActors      = ref('');
+        const manualTags        = ref([]);
+        const manualSaving      = ref(false);
+        const manualMetaError   = ref('');
+
+        const addFileSorted = computed(() =>
+          [...addFiles.value].sort((a, b) => a.name.localeCompare(b.name))
+        );
+
+        // ── Lifecycle ────────────────────────────────────────────
+        onMounted(async () => {
+          const libs = await apiFetch('/api/config/media-libraries');
+          if (libs) mediaLibraries.value = libs;
+        });
+
+        // ── Handlers ─────────────────────────────────────────────
+        function onAddFilesChange(e) {
+          addFiles.value = Array.from(e.target.files || []);
+          if (addFiles.value.length > 1) manualIsMultipart.value = true;
+        }
+
+        async function fetchMaxCode() {
+          const data = await apiFetch(`/api/videos/max-code/${manualCodeType.value}`);
+          if (data) {
+            manualMaxNumber.value = data.max_number;
+            manualCodeNumber.value = data.suggested;
+          }
+        }
+
+        function startAddFlow() {
+          if (addMode.value === 'auto') {
+            startAutoUpload();
+          } else {
+            fetchMaxCode();
+            addStep.value = 'manual-code';
+          }
+        }
+
+        async function startAutoUpload() {
+          addStep.value = 'auto-progress';
+          autoFinished.value = false;
+          addError.value = '';
+          autoProgressSteps.value = AUTO_STEPS.map(s => ({ step: s, status: 'pending', message: '' }));
+
+          const fd = new FormData();
+          addFileSorted.value.forEach(f => fd.append('files[]', f));
+          fd.append('volume_path', addVolume.value);
+
+          let jobId;
+          try {
+            const res = await fetch('/api/videos/add-auto', { method: 'POST', body: fd });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '上传失败');
+            jobId = data.job_id;
+          } catch (e) {
+            addError.value = e.message;
+            autoFinished.value = true;
+            return;
+          }
+
+          const es = new EventSource(`/api/jobs/${jobId}/stream`);
+          es.onmessage = (e) => {
+            const event = JSON.parse(e.data);
+            if (event.step === 'ping') return;
+            const idx = autoProgressSteps.value.findIndex(s => s.step === event.step);
+            if (idx >= 0) {
+              autoProgressSteps.value[idx] = { ...autoProgressSteps.value[idx], ...event };
+            } else {
+              autoProgressSteps.value.push(event);
+            }
+            if (event.step === 'done') {
+              addDoneCode.value = event.code || '';
+              autoFinished.value = true;
+              addStep.value = 'done';
+              es.close();
+            } else if (event.step === 'error') {
+              addError.value = event.message;
+              autoFinished.value = true;
+              es.close();
+            }
+          };
+          es.onerror = () => {
+            addError.value = '连接中断';
+            autoFinished.value = true;
+            es.close();
+          };
+        }
+
+        async function startManualUpload() {
+          manualUploading.value = true;
+          const fd = new FormData();
+          addFileSorted.value.forEach(f => fd.append('files[]', f));
+          fd.append('volume_path', addVolume.value);
+          fd.append('code_type', manualCodeType.value);
+          fd.append('code_number', String(manualCodeNumber.value));
+          fd.append('is_multipart', manualIsMultipart.value ? '1' : '0');
+          try {
+            const res = await fetch('/api/videos/add-manual', { method: 'POST', body: fd });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '上传失败');
+            manualCode.value = data.codes[0];
+            addStep.value = 'manual-meta';
+          } catch (e) {
+            addError.value = e.message;
+          } finally {
+            manualUploading.value = false;
+          }
+        }
+
+        function toggleManualTag(tag) {
+          if (manualTags.value.includes(tag)) {
+            manualTags.value = manualTags.value.filter(t => t !== tag);
+          } else {
+            manualTags.value = [...manualTags.value, tag];
+          }
+        }
+
+        async function saveManualMeta() {
+          manualSaving.value = true;
+          manualMetaError.value = '';
+          const code = manualCode.value;
+          const body = {
+            ...(manualTitleJp.value    ? { title_jp: manualTitleJp.value }           : {}),
+            ...(manualTitleZh.value    ? { title_zh: manualTitleZh.value }           : {}),
+            ...(manualTitleShort.value ? { title_zh_short: manualTitleShort.value }  : {}),
+            actors: manualActors.value.split(',').map(s => s.trim()).filter(Boolean),
+            tags:   manualTags.value,
+          };
+          try {
+            const res1 = await fetch(`/api/videos/${code}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            });
+            if (!res1.ok) {
+              const err = await res1.json();
+              throw new Error(err.error || 'PATCH 失败');
+            }
+            await fetch(`/api/videos/${code}/finalize-rename`, { method: 'POST' });
+            addDoneCode.value = code;
+            addStep.value = 'done';
+          } catch (e) {
+            manualMetaError.value = e.message;
+          } finally {
+            manualSaving.value = false;
+          }
+        }
+
+        function goToVideo(code) {
+          emit('close');
+          router.push(`/videos/${code}`);
+        }
+
+        return {
+          addStep, addFiles, addFileSorted, addVolume, addMode, addDoneCode, addError,
+          mediaLibraries, addFileInput,
+          autoProgressSteps, autoProgressPct, autoFinished, autoStepLabel,
+          manualCodeType, manualCodeNumber, manualMaxNumber, manualIsMultipart,
+          manualUploading, manualCode, manualTitleJp, manualTitleZh, manualTitleShort,
+          manualActors, manualTags, manualSaving, manualMetaError,
+          onAddFilesChange, fetchMaxCode, startAddFlow,
+          startAutoUpload, startManualUpload, toggleManualTag, saveManualMeta, goToVideo,
+        };
+      }
+    };
+
     // ── HomeView ──────────────────────────────────────────────
     const HomeView = {
       template: '#tpl-home',
-      components: { VideoCard, Pagination, SortBar },
+      components: { VideoCard, Pagination, SortBar, AddVideoModal },
       setup() {
         const route = VueRouter.useRoute();
         const router = VueRouter.useRouter();
@@ -1454,7 +1672,16 @@
         }
         watch(() => route.query, load, { deep: true });
         onMounted(load);
-        return { items, total, page, limit, loading, sort, filterLabel, filterTags: FILTER_TAGS, selectedTags, changePage, changeSort, toggleTag };
+
+        const showAddModal = ref(false);
+        function openAddModal() { showAddModal.value = true; }
+        function closeAddModal() { showAddModal.value = false; }
+
+        return {
+          items, total, page, limit, loading, sort, filterLabel,
+          filterTags: FILTER_TAGS, selectedTags, changePage, changeSort, toggleTag,
+          showAddModal, openAddModal, closeAddModal,
+        };
       }
     };
 
