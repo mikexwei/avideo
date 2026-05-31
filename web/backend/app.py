@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import queue
 import re
@@ -201,7 +202,7 @@ def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
                 title_zh = translate_title(title_jp, [main_code], actor_name_map=actor_name_map)
                 patch_video(main_code, {'title_zh': title_zh})
             except Exception:
-                pass
+                logging.exception(f'[{main_code}] 翻译标题失败')
         emit('translate', 'done', f'翻译: {title_zh[:30]}' if title_zh else '无日文标题，跳过')
 
         # ── Step 9: Short title ──────────────────────────────────
@@ -215,7 +216,7 @@ def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
                 if title_zh_short:
                     patch_video(main_code, {'title_zh_short': title_zh_short})
             except Exception:
-                pass
+                logging.exception(f'[{main_code}] 计算短标题失败')
         emit('short_title', 'done', f'短标题: {title_zh_short}' if title_zh_short else '跳过')
 
         # ── Steps 10-12: Rename files ────────────────────────────
