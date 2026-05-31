@@ -10,10 +10,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
-
-from flask import Response
 
 from config import DB_PATH, MEDIA_LIBRARIES
 from core.scanner import extract_video_code
@@ -64,6 +62,7 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50 GB
 
 # ── Job management ──────────────────────────────────────────────
 
+# Alias avoids shadowing the `queue` module inside the _Job dataclass field annotation
 _Queue = queue.Queue
 
 
