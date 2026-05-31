@@ -181,40 +181,45 @@ def api_add_manual():
 
     sorted_files = sorted(files, key=lambda f: secure_filename(f.filename) or '')
     scanned = []
-    for i, f in enumerate(sorted_files):
-        safe_name = secure_filename(f.filename) or f'file_{i}.bin'
-        tmp_path = tmp_dir / safe_name
-        f.save(str(tmp_path))
+    try:
+        for i, f in enumerate(sorted_files):
+            safe_name = secure_filename(f.filename) or f'file_{i}.bin'
+            tmp_path = tmp_dir / safe_name
+            f.save(str(tmp_path))
 
-        part = f'part{i + 1}' if is_multipart else None
-        record = VideoRecord(
-            id=0, code=code, part=part,
-            original_file_path=tmp_path,
-            title_zh_short=None, title_zh=None, title_jp=None, actors=[],
-        )
-        dest_path = build_destination(record, dest_root=volume_path)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.rename(dest_path)
+            part = f'part{i + 1}' if is_multipart else None
+            record = VideoRecord(
+                id=0, code=code, part=part,
+                original_file_path=tmp_path,
+                title_zh_short=None, title_zh=None, title_jp=None, actors=[],
+            )
+            dest_path = build_destination(record, dest_root=volume_path)
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.rename(dest_path)
 
-        st = dest_path.stat()
-        scanned.append({
-            'code': code,
-            'part': part,
-            'original_path': dest_path,
-            'file_size': st.st_size,
-            'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
-            'file_birthtime': datetime.fromtimestamp(
-                getattr(st, 'st_birthtime', st.st_mtime)
-            ).isoformat(),
-        })
+            st = dest_path.stat()
+            scanned.append({
+                'code': code,
+                'part': part,
+                'original_path': dest_path,
+                'file_size': st.st_size,
+                'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
+                'file_birthtime': datetime.fromtimestamp(
+                    getattr(st, 'st_birthtime', st.st_mtime)
+                ).isoformat(),
+            })
+
+        batch_insert_scanned_videos(scanned)
+        sync_derived_video_tags_for_code(code)
+    except Exception as exc:
+        import shutil as _shutil
+        _shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        return jsonify({'error': str(exc)}), 500
 
     try:
         tmp_dir.rmdir()
     except OSError:
         pass
-
-    batch_insert_scanned_videos(scanned)
-    sync_derived_video_tags_for_code(code)
 
     return jsonify({'codes': [code]})
 
