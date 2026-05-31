@@ -1,6 +1,10 @@
+import os
 import queue
+import sqlite3
+import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from web.backend.app import app, _Job, _jobs, _jobs_lock
 
@@ -19,14 +23,6 @@ class JobInfraTests(unittest.TestCase):
     def test_jobs_dict_is_module_level(self):
         self.assertIsInstance(_jobs, dict)
         self.assertIsInstance(_jobs_lock, type(threading.Lock()))
-
-
-import io
-import os
-import sqlite3
-import tempfile
-from pathlib import Path
-from unittest.mock import patch
 
 
 class MediaLibrariesEndpointTests(unittest.TestCase):
