@@ -270,8 +270,15 @@
             {{ tag }}
           </button>
         </div>
-        <sort-bar :sort="sort" @change="changeSort" />
+        <div class="flex items-center gap-2">
+          <sort-bar :sort="sort" @change="changeSort" />
+          <button @click="openAddModal"
+            class="px-3 py-1.5 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium flex-shrink-0">
+            + 添加影片
+          </button>
+        </div>
       </div>
+      <add-video-modal v-if="showAddModal" @close="closeAddModal" />
       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
         <video-card v-for="v in items" :key="v.id" :video="v" />
       </div>
@@ -279,6 +286,248 @@
     </div>
   </div>
 </script>
+
+  <!-- ========== AddVideoModal ========== -->
+  <script type="text/x-template" id="tpl-add-video">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80" @click.self="$emit('close')">
+    <div class="bg-gray-900 rounded-xl w-full max-w-lg mx-4 shadow-2xl" style="max-height:90vh;overflow-y:auto">
+
+      <!-- Header -->
+      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+        <span class="font-semibold text-white">添加影片</span>
+        <span class="text-xs text-gray-500 font-mono">{{ addStep }}</span>
+        <button @click="$emit('close')" :disabled="addStep === 'auto-progress'"
+          class="text-gray-500 hover:text-gray-300 disabled:opacity-30 text-lg leading-none">✕</button>
+      </div>
+
+      <!-- ── Step: file-select ── -->
+      <template v-if="addStep === 'file-select'">
+        <div class="p-5 flex flex-col gap-4">
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">选择影片文件（可多选）</div>
+            <div class="border border-dashed border-indigo-800 rounded-lg p-5 text-center cursor-pointer hover:border-indigo-600 transition"
+              @click="$refs.addFileInput.click()">
+              <div class="text-gray-400 text-sm">拖拽或 <span class="text-indigo-400">点击选择</span></div>
+              <div class="text-gray-600 text-xs mt-1">支持 .mp4 .mkv .avi .wmv .mov 等</div>
+            </div>
+            <input ref="addFileInput" type="file" multiple class="hidden"
+              accept=".mp4,.mkv,.avi,.wmv,.mov,.ts,.flv,.webm,.m4v"
+              @change="onAddFilesChange" />
+          </div>
+          <div v-if="addFiles.length" class="flex flex-col gap-1">
+            <div v-for="(f, i) in addFileSorted" :key="i"
+              class="flex items-center gap-2 px-3 py-1.5 bg-gray-800 rounded text-sm">
+              <span class="text-indigo-400 text-xs">🎬</span>
+              <span class="flex-1 truncate text-gray-300">{{ f.name }}</span>
+              <span class="text-gray-600 text-xs">→ part{{ i + 1 }}</span>
+            </div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">目标 Volume</div>
+            <select v-model="addVolume" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-300">
+              <option value="" disabled>选择存放位置…</option>
+              <option v-for="v in mediaLibraries" :key="v" :value="v">{{ v }}</option>
+            </select>
+          </div>
+        </div>
+        <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-800">
+          <button @click="$emit('close')" class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">取消</button>
+          <button @click="addStep = 'mode-select'" :disabled="!addFiles.length || !addVolume"
+            class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
+            下一步 →
+          </button>
+        </div>
+      </template>
+
+      <!-- ── Step: mode-select ── -->
+      <template v-if="addStep === 'mode-select'">
+        <div class="p-5 flex flex-col gap-4">
+          <div class="flex flex-col gap-1">
+            <div v-for="(f, i) in addFileSorted" :key="i"
+              class="flex items-center gap-2 px-3 py-1.5 bg-gray-800 rounded text-sm">
+              <span class="text-gray-500 text-xs">{{ i + 1 }}.</span>
+              <span class="flex-1 truncate text-gray-400">{{ f.name }}</span>
+              <span v-if="addFileSorted.length > 1" class="text-indigo-400 text-xs">part{{ i + 1 }}</span>
+            </div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">入库模式</div>
+            <div class="flex gap-2">
+              <button @click="addMode = 'auto'"
+                :class="['flex-1 py-2 text-sm rounded-lg font-medium border transition',
+                  addMode === 'auto' ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700']">
+                ⚡ 自动模式
+              </button>
+              <button @click="addMode = 'manual'"
+                :class="['flex-1 py-2 text-sm rounded-lg font-medium border transition',
+                  addMode === 'manual' ? 'bg-amber-600 border-amber-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700']">
+                ✏️ 手动模式
+              </button>
+            </div>
+          </div>
+          <div class="px-3 py-2 bg-gray-800 rounded-lg text-xs text-gray-500 leading-relaxed">
+            <template v-if="addMode === 'auto'">
+              自动模式：从文件名解析番号 → 上传 → 刮削 JavDB → 翻译标题 → 重命名，全程自动，实时显示进度
+            </template>
+            <template v-else>
+              手动模式：手动指定 WEST / CN / DUMMY 番号 → 上传 → 填写元数据
+            </template>
+          </div>
+        </div>
+        <div class="flex justify-between gap-3 px-5 py-4 border-t border-gray-800">
+          <button @click="addStep = 'file-select'" class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">← 上一步</button>
+          <button @click="startAddFlow"
+            class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white">
+            开始 →
+          </button>
+        </div>
+      </template>
+
+      <!-- ── Step: auto-progress ── -->
+      <template v-if="addStep === 'auto-progress'">
+        <div class="p-5 flex flex-col gap-3">
+          <div class="h-1 bg-gray-800 rounded-full overflow-hidden">
+            <div class="h-1 bg-indigo-600 rounded-full transition-all duration-500"
+              :style="{ width: autoProgressPct + '%' }"></div>
+          </div>
+          <div class="flex flex-col gap-2 text-sm">
+            <div v-for="step in autoProgressSteps" :key="step.step"
+              class="flex items-center gap-3 py-1">
+              <span v-if="step.status === 'done'" class="text-emerald-400 text-base">✓</span>
+              <span v-else-if="step.status === 'running'" class="text-indigo-400 text-base animate-pulse">⊙</span>
+              <span v-else-if="step.status === 'error'" class="text-red-400 text-base">✗</span>
+              <span v-else class="text-gray-700 text-base">○</span>
+              <span :class="['flex-1', step.status === 'done' ? 'text-gray-500 line-through' : step.status === 'running' ? 'text-white font-medium' : step.status === 'error' ? 'text-red-400' : 'text-gray-600']">
+                {{ step.message || autoStepLabel(step.step) }}
+              </span>
+            </div>
+          </div>
+          <div v-if="addError" class="mt-2 px-3 py-2 bg-red-900 bg-opacity-40 rounded-lg text-red-300 text-xs">
+            {{ addError }}
+          </div>
+        </div>
+        <div class="flex justify-end px-5 py-4 border-t border-gray-800">
+          <button @click="$emit('close')" :disabled="!autoFinished"
+            class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-30">
+            {{ autoFinished ? '关闭' : '处理中…' }}
+          </button>
+        </div>
+      </template>
+
+      <!-- ── Step: manual-code ── -->
+      <template v-if="addStep === 'manual-code'">
+        <div class="p-5 flex flex-col gap-4">
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">番号类型</div>
+            <div class="flex gap-2">
+              <button v-for="t in ['WEST','CN','DUMMY']" :key="t"
+                @click="manualCodeType = t; fetchMaxCode()"
+                :class="['px-4 py-2 text-sm rounded-lg font-mono font-semibold border transition',
+                  manualCodeType === t ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-indigo-400 hover:bg-gray-700']">
+                {{ t }}
+              </button>
+            </div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">番号</div>
+            <div class="flex items-center gap-2">
+              <span class="px-3 py-2 bg-gray-800 rounded-lg text-indigo-400 font-mono font-semibold text-sm">{{ manualCodeType }}</span>
+              <span class="text-gray-600">-</span>
+              <input v-model.number="manualCodeNumber" type="number" min="1"
+                class="w-24 px-3 py-2 bg-gray-800 border border-indigo-700 rounded-lg text-sm text-white font-mono" />
+            </div>
+            <div class="text-xs text-gray-600 mt-1">
+              DB 最大番号: {{ manualCodeType }}-{{ String(manualMaxNumber).padStart(3,'0') }}，推荐 {{ manualCodeNumber }}
+            </div>
+          </div>
+          <div v-if="addFileSorted.length > 1">
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">是否分 Part</div>
+            <div class="flex gap-2">
+              <button @click="manualIsMultipart = true"
+                :class="['flex-1 py-2 text-sm rounded-lg border transition',
+                  manualIsMultipart ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700']">
+                是 ({{ addFileSorted.length }} 个文件 → part1…part{{ addFileSorted.length }})
+              </button>
+              <button @click="manualIsMultipart = false"
+                :class="['flex-1 py-2 text-sm rounded-lg border transition',
+                  !manualIsMultipart ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700']">
+                否
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="flex justify-between gap-3 px-5 py-4 border-t border-gray-800">
+          <button @click="addStep = 'mode-select'" class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">← 上一步</button>
+          <button @click="startManualUpload" :disabled="manualUploading"
+            class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
+            {{ manualUploading ? '上传中…' : '上传 →' }}
+          </button>
+        </div>
+      </template>
+
+      <!-- ── Step: manual-meta ── -->
+      <template v-if="addStep === 'manual-meta'">
+        <div class="p-5 flex flex-col gap-4">
+          <div class="text-xs text-indigo-400 font-mono">{{ manualCode }}</div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">原始标题（可选）</div>
+            <input v-model="manualTitleJp" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200" placeholder="日文/英文标题…" />
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">中文标题（可选）</div>
+            <input v-model="manualTitleZh" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200" placeholder="中文标题…" />
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">短标题（可选）</div>
+            <input v-model="manualTitleShort" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200" placeholder="简短标题…" />
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">演员（逗号分隔，可选）</div>
+            <input v-model="manualActors" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200" placeholder="演员 A, 演员 B…" />
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Tags</div>
+            <div class="flex flex-wrap gap-2">
+              <button v-for="tag in ['中文字幕','无码破解','无码流出','原装无码']" :key="tag"
+                @click="toggleManualTag(tag)"
+                :class="['px-2.5 py-1 rounded-full text-xs transition',
+                  manualTags.includes(tag) ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+                {{ tag }}
+              </button>
+            </div>
+          </div>
+          <div v-if="manualMetaError" class="text-red-400 text-xs">{{ manualMetaError }}</div>
+        </div>
+        <div class="flex justify-between gap-3 px-5 py-4 border-t border-gray-800">
+          <button @click="addStep = 'done'; addDoneCode = manualCode"
+            class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">
+            跳过
+          </button>
+          <button @click="saveManualMeta" :disabled="manualSaving"
+            class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
+            {{ manualSaving ? '保存中…' : '完成 ✓' }}
+          </button>
+        </div>
+      </template>
+
+      <!-- ── Step: done ── -->
+      <template v-if="addStep === 'done'">
+        <div class="p-8 text-center flex flex-col gap-3">
+          <div class="text-4xl">✅</div>
+          <div class="text-white font-semibold text-lg">入库完成</div>
+          <div class="text-gray-500 text-sm font-mono">{{ addDoneCode }}</div>
+        </div>
+        <div class="flex justify-center gap-4 px-5 py-4 border-t border-gray-800">
+          <button @click="$emit('close')" class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">关闭</button>
+          <button @click="goToVideo(addDoneCode)" class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white">
+            查看影片 →
+          </button>
+        </div>
+      </template>
+
+    </div>
+  </div>
+  </script>
 
   <!-- ========== DashboardView ========== -->
   <script type="text/x-template" id="tpl-dashboard">
@@ -719,10 +968,20 @@
                 <div class="flex items-center justify-between px-4 py-3">
                   <span class="text-sm text-gray-300">Part</span>
                   <div class="flex items-center gap-2">
-                    <select v-if="replacePartOn" v-model="replacePartNum" :disabled="replaceUploading"
-                      class="bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer">
-                      <option v-for="n in [1,2,3,4]" :key="n" :value="n">Part {{ n }}</option>
-                    </select>
+                    <template v-if="replacePartOn">
+                      <template v-if="!replacePartOther">
+                        <button v-for="n in [1,2,3]" :key="n"
+                          @click="replacePartNum = n" :disabled="replaceUploading"
+                          :class="['px-2.5 py-1 rounded text-sm transition-colors cursor-pointer disabled:opacity-50',
+                            replacePartNum === n ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600']">{{ n }}</button>
+                        <button @click="replacePartOther = true; replacePartNum = 4" :disabled="replaceUploading"
+                          class="px-2.5 py-1 rounded text-sm bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors cursor-pointer disabled:opacity-50">other</button>
+                      </template>
+                      <select v-else v-model="replacePartNum" :disabled="replaceUploading"
+                        class="bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer">
+                        <option v-for="n in 30" :key="n" :value="n">Part {{ n }}</option>
+                      </select>
+                    </template>
                     <button @click="replacePartOn = !replacePartOn" :disabled="replaceUploading"
                       :class="['relative flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer disabled:opacity-50',
                         replacePartOn ? 'bg-indigo-600' : 'bg-gray-700']">
@@ -1363,6 +1622,7 @@
         const replaceUncensoredNative = ref(false);
         const replacePartOn = ref(false);
         const replacePartNum = ref(1);
+        const replacePartOther = ref(false);
         const replaceUploading = ref(false);
         const replaceProgress = ref(0);
         const replaceSpeed = ref('');
@@ -1411,8 +1671,11 @@
           replaceError.value = '';
           replaceOriginalPart.value = selectedPart.value || '';
           const m = replaceOriginalPart.value.match(/(\d+)$/);
-          if (m) { replacePartOn.value = true; replacePartNum.value = parseInt(m[1]); }
-          else    { replacePartOn.value = false; replacePartNum.value = 1; }
+          if (m) {
+            const n = parseInt(m[1]);
+            replacePartOn.value = true; replacePartNum.value = n;
+            replacePartOther.value = n > 3;
+          } else { replacePartOn.value = false; replacePartNum.value = 1; replacePartOther.value = false; }
           showReplaceModal.value = true;
         }
 
@@ -1714,7 +1977,7 @@
           showReplaceModal, replaceOriginalPart,
           replaceFile, replaceDestName, replaceFinalName,
           replaceSubtitleZh, replaceUncensoredLeaked, replaceUncensoredNative,
-          replacePartOn, replacePartNum,
+          replacePartOn, replacePartNum, replacePartOther,
           replaceUploading, replaceProgress, replaceSpeed, replaceElapsed, replaceRemaining,
           replaceError,
           openReplaceModal, closeReplaceModal, onReplaceFileChange, startReplaceUpload,
