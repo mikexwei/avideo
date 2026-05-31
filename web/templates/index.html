@@ -1451,6 +1451,13 @@
           xhr.send(fd);
         }
 
+        watch(replaceOriginalPart, () => {
+          if (replaceFile.value) {
+            replaceFile.value = null;
+            replaceDestName.value = '';
+          }
+        });
+
         // Delete
         async function confirmDelete() {
           if (!confirm(`确认删除「${video.value.code}」？物理文件将被删除，数据库记录保留。`)) return;
