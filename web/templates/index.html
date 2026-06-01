@@ -1826,7 +1826,7 @@
         async function processReplaceGroup(group, result) {
           // For each file in the group (usually one, unless replacing multiple parts)
           for (const fi of group.files) {
-            const f = batchFiles.value.find(bf => bf.name === fi.filename);
+            const f = Vue.toRaw(batchFiles.value.find(bf => bf.name === fi.filename));
             if (!f) throw new Error(`文件未找到: ${fi.filename}`);
 
             const originalPart = fi.part;
@@ -2470,7 +2470,7 @@
           xhr.setRequestHeader('X-Uncensored-Leaked', replaceUncensoredLeaked.value ? '1' : '0');
           xhr.setRequestHeader('X-Uncensored-Native', replaceUncensoredNative.value ? '1' : '0');
           if (replacePartOn.value && replacePartNum.value) xhr.setRequestHeader('X-Part', String(replacePartNum.value));
-          xhr.send(replaceFile.value);
+          xhr.send(Vue.toRaw(replaceFile.value));
         }
 
         watch(replaceOriginalPart, () => {
