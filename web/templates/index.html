@@ -477,9 +477,17 @@
                 {{ {pending:'等待中', running:'处理中…', done:'✓ 完成', error:'✕ 失败'}[r.status] }}
               </span>
             </div>
-            <!-- Replace: single message line -->
-            <div v-if="r.type === 'replace' && r.message && r.status !== 'error'"
-              class="text-xs text-gray-400 mt-1">{{ r.message }}</div>
+            <!-- Replace: message + progress bar -->
+            <div v-if="r.type === 'replace' && r.status !== 'error'" class="mt-1.5">
+              <div v-if="r.message" class="text-xs text-gray-400 mb-1">{{ r.message }}</div>
+              <div v-if="r.status === 'running'" class="flex items-center gap-2">
+                <div class="flex-1 bg-gray-700 rounded-full h-2 overflow-hidden">
+                  <div class="bg-indigo-500 h-2 rounded-full transition-all duration-200"
+                    :style="{ width: (r.progress || 0) + '%' }"></div>
+                </div>
+                <span class="text-xs text-gray-400 font-mono w-9 text-right">{{ r.progress || 0 }}%</span>
+              </div>
+            </div>
             <!-- New: SSE step list -->
             <div v-if="r.type === 'new' && (r.status === 'running' || r.status === 'done')"
               class="mt-2 flex flex-col gap-0.5 pl-1">
@@ -504,6 +512,13 @@
             <!-- Error -->
             <div v-if="r.status === 'error' && r.message"
               class="text-xs text-red-400 mt-1">{{ r.message }}</div>
+            <!-- View detail button -->
+            <div v-if="r.status === 'done' && r.viewCode" class="mt-2">
+              <a :href="'#/video/' + encodeURIComponent(r.viewCode)" target="_blank" rel="noopener"
+                class="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-indigo-700 hover:bg-indigo-600 text-white">
+                查看详情 ↗
+              </a>
+            </div>
           </div>
           <div class="text-xs text-gray-600 text-center pt-1">
             {{ batchResults.filter(r => r.status === 'done' || r.status === 'error').length }}
@@ -1799,6 +1814,8 @@
             type: g.exists ? 'replace' : 'new',
             status: 'pending',
             message: '',
+            progress: 0,
+            viewCode: null,
             progressSteps: g.exists ? [] : AUTO_STEPS.map(s => ({ step: s, status: 'pending', message: '' })),
           }));
 
@@ -1845,6 +1862,7 @@
                 result.progressSteps[idx] = { ...result.progressSteps[idx], ...event };
               }
               if (event.step === 'done') {
+                result.viewCode = event.code || group.code;
                 es.close();
                 resolve();
               } else if (event.step === 'error') {
@@ -1856,7 +1874,33 @@
           });
         }
 
+        // POST a raw file body with progress; resolves with parsed JSON, rejects on error.
+        function _xhrUpload(url, headers, file, onProgress) {
+          return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', url);
+            for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+            xhr.upload.addEventListener('progress', e => {
+              if (e.lengthComputable) onProgress(e.loaded);
+            });
+            xhr.addEventListener('load', () => {
+              let data; try { data = JSON.parse(xhr.responseText); } catch { data = {}; }
+              if (xhr.status === 200) resolve(data);
+              else reject(new Error(data.error || '替换失败'));
+            });
+            xhr.addEventListener('error', () => reject(new Error('网络错误，上传失败')));
+            xhr.send(file);
+          });
+        }
+
         async function processReplaceGroup(group, result) {
+          const targetCode = group.db_code || group.code;
+          const totalBytes = group.files.reduce((sum, fi) => {
+            const f = batchFiles.value.find(bf => bf.name === fi.filename);
+            return sum + (f ? f.size : 0);
+          }, 0) || 1;
+          let loadedBefore = 0;
+
           // For each file in the group (usually one, unless replacing multiple parts)
           for (const fi of group.files) {
             const f = batchFiles.value.find(bf => bf.name === fi.filename);
@@ -1866,7 +1910,6 @@
             const qp = originalPart ? `?part=${encodeURIComponent(originalPart)}` : '';
             // Replace must target the actual DB code (variant may differ from the
             // uploaded file's suffix, e.g. DB has ABW-123-U but file is ABW-123-C).
-            const targetCode = group.db_code || group.code;
             const url = `/api/videos/${encodeURIComponent(targetCode)}/replace${qp}`;
 
             // Send the suffix-stripped base name; backend's _compute_final_filename
@@ -1887,11 +1930,13 @@
             if (originalPart) headers['X-Part'] = originalPart;
 
             result.message = group.files.length > 1 ? `上传中… (${fi.filename})` : '上传中…';
-            const res = await fetch(url, { method: 'POST', headers, body: f });
-            let data;
-            try { data = await res.json(); } catch { data = {}; }
-            if (!res.ok) throw new Error(data.error || '替换失败');
+            await _xhrUpload(url, headers, f, loaded => {
+              result.progress = Math.round((loadedBefore + loaded) / totalBytes * 100);
+            });
+            loadedBefore += f.size;
           }
+          result.progress = 100;
+          result.viewCode = targetCode;
           result.message = '替换完成';
         }
 
