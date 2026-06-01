@@ -1840,17 +1840,17 @@
               : f.name).trim();
             if (!destName) throw new Error('无效的原始文件路径');
 
-            const fd = new FormData();
-            fd.append('file', f);
-            fd.append('dest_name', destName);
-            fd.append('file_size', String(f.size));
-            fd.append('subtitle_zh', group.subtitle_zh ? '1' : '0');
-            fd.append('uncensored_leaked', group.uncensored_leaked ? '1' : '0');
-            fd.append('uncensored_native', group.uncensored_native ? '1' : '0');
-            if (originalPart) fd.append('part', originalPart);
+            const headers = {
+              'X-Dest-Name': destName,
+              'X-File-Size': String(f.size),
+              'X-Subtitle-Zh': group.subtitle_zh ? '1' : '0',
+              'X-Uncensored-Leaked': group.uncensored_leaked ? '1' : '0',
+              'X-Uncensored-Native': group.uncensored_native ? '1' : '0',
+            };
+            if (originalPart) headers['X-Part'] = originalPart;
 
             result.message = group.files.length > 1 ? `上传中… (${fi.filename})` : '上传中…';
-            const res = await fetch(url, { method: 'POST', body: fd });
+            const res = await fetch(url, { method: 'POST', headers, body: f });
             let data;
             try { data = await res.json(); } catch { data = {}; }
             if (!res.ok) throw new Error(data.error || '替换失败');
@@ -2422,15 +2422,6 @@
           replaceElapsed.value = '0:00';
           replaceRemaining.value = '–';
 
-          const fd = new FormData();
-          fd.append('file', replaceFile.value);
-          fd.append('file_size', String(replaceFile.value.size));
-          fd.append('dest_name', replaceDestName.value);
-          fd.append('subtitle_zh', replaceSubtitleZh.value ? '1' : '0');
-          fd.append('uncensored_leaked', replaceUncensoredLeaked.value ? '1' : '0');
-          fd.append('uncensored_native', replaceUncensoredNative.value ? '1' : '0');
-          if (replacePartOn.value && replacePartNum.value) fd.append('part', String(replacePartNum.value));
-
           const qs = replaceOriginalPart.value ? '?part=' + encodeURIComponent(replaceOriginalPart.value) : '';
           const xhr = new XMLHttpRequest();
           const startTime = Date.now();
@@ -2473,7 +2464,13 @@
           });
 
           xhr.open('POST', '/api/videos/' + video.value.code + '/replace' + qs);
-          xhr.send(fd);
+          xhr.setRequestHeader('X-Dest-Name', replaceDestName.value);
+          xhr.setRequestHeader('X-File-Size', String(replaceFile.value.size));
+          xhr.setRequestHeader('X-Subtitle-Zh', replaceSubtitleZh.value ? '1' : '0');
+          xhr.setRequestHeader('X-Uncensored-Leaked', replaceUncensoredLeaked.value ? '1' : '0');
+          xhr.setRequestHeader('X-Uncensored-Native', replaceUncensoredNative.value ? '1' : '0');
+          if (replacePartOn.value && replacePartNum.value) xhr.setRequestHeader('X-Part', String(replacePartNum.value));
+          xhr.send(replaceFile.value);
         }
 
         watch(replaceOriginalPart, () => {

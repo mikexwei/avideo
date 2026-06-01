@@ -658,23 +658,42 @@ def api_video_file_path_patch(code: str):
 @app.post('/api/videos/<string:code>/replace')
 def api_video_replace(code: str):
     original_part = request.args.get('part') or None
-    f = request.files.get('file')
-    if not f:
-        return jsonify({'error': 'no file'}), 400
-    dest_name = (request.form.get('dest_name') or '').strip()
+    content_type = request.content_type or ''
+
+    # Streaming path: file as raw body, metadata in X-* headers.
+    # Writes directly to the destination volume while bytes are arriving, eliminating
+    # the double-write penalty (Werkzeug /tmp → dest) that multipart incurs.
+    if 'multipart' not in content_type:
+        dest_name = (request.headers.get('X-Dest-Name') or '').strip()
+        try:
+            expected_size = int(request.headers.get('X-File-Size') or 0)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'invalid X-File-Size'}), 400
+        subtitle_zh = request.headers.get('X-Subtitle-Zh') == '1'
+        uncensored_leaked = request.headers.get('X-Uncensored-Leaked') == '1'
+        uncensored_native = request.headers.get('X-Uncensored-Native') == '1'
+        dest_part = (request.headers.get('X-Part') or '').strip() or None
+        body_stream = request.stream
+    else:
+        # Legacy multipart path (used by existing tests)
+        f = request.files.get('file')
+        if not f:
+            return jsonify({'error': 'no file'}), 400
+        dest_name = (request.form.get('dest_name') or '').strip()
+        try:
+            expected_size = int(request.form.get('file_size') or 0)
+        except ValueError:
+            return jsonify({'error': 'invalid file_size'}), 400
+        subtitle_zh = request.form.get('subtitle_zh') == '1'
+        uncensored_leaked = request.form.get('uncensored_leaked') == '1'
+        uncensored_native = request.form.get('uncensored_native') == '1'
+        dest_part = (request.form.get('part') or '').strip() or None
+        body_stream = f.stream
+
     if not dest_name:
         return jsonify({'error': 'missing dest_name'}), 400
-    try:
-        expected_size = int(request.form.get('file_size') or 0)
-    except ValueError:
-        return jsonify({'error': 'invalid file_size'}), 400
     if not expected_size:
         return jsonify({'error': 'file_size must be positive'}), 400
-
-    subtitle_zh = request.form.get('subtitle_zh') == '1'
-    uncensored_leaked = request.form.get('uncensored_leaked') == '1'
-    uncensored_native = request.form.get('uncensored_native') == '1'
-    dest_part = (request.form.get('part') or '').strip() or None
 
     original_path = get_video_file_path(code, original_part)
     if not original_path:
@@ -685,17 +704,19 @@ def api_video_replace(code: str):
     temp_path = Path(str(dest_path) + '.temp')
 
     try:
-        f.save(str(temp_path))
-        actual_size = os.path.getsize(str(temp_path))
-        if actual_size != expected_size:
+        written = 0
+        with open(str(temp_path), 'wb') as dst:
+            while chunk := body_stream.read(4 * 1024 * 1024):
+                dst.write(chunk)
+                written += len(chunk)
+        if written != expected_size:
             temp_path.unlink(missing_ok=True)
-            return jsonify({'error': f'size mismatch: expected {expected_size}, got {actual_size}'}), 400
+            return jsonify({'error': f'size mismatch: expected {expected_size}, got {written}'}), 400
         # DB update first — filesystem still intact if this fails
         result = replace_video_file(code, original_part, str(dest_path), subtitle_zh, uncensored_leaked, uncensored_native)
         if not result['ok']:
             temp_path.unlink(missing_ok=True)
             return jsonify({'error': result.get('error', 'db update failed')}), 500
-
         # Filesystem swap — DB already points to new path
         if Path(original_path) != dest_path:
             Path(original_path).unlink(missing_ok=True)
