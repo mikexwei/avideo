@@ -330,7 +330,7 @@
                 {{ batchFiles.length ? '+ 添加更多文件' : '点击选择视频文件…' }}
               </button>
               <input ref="batchFileInput" type="file" class="hidden" multiple
-                accept=".mp4,.mkv,.avi,.mov,.wmv,.m4v"
+                accept=".mp4,.mkv,.avi,.mov,.wmv,.m4v,.ts,.flv,.webm"
                 @change="onBatchFilesChange" />
             </div>
           </div>
@@ -696,7 +696,7 @@
           </div>
         </div>
         <div class="flex justify-between gap-3 px-5 py-4 border-t border-gray-800">
-          <button @click="addStep = 'mode-select'" class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">← 上一步</button>
+          <button v-if="initialStep !== 'manual-code'" @click="addStep = 'mode-select'" class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">← 上一步</button>
           <button @click="startManualUpload" :disabled="manualUploading"
             class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
             {{ manualUploading ? '上传中…' : '上传 →' }}
@@ -1914,6 +1914,7 @@
         onMounted(async () => {
           const libs = await apiFetch('/api/config/media-libraries');
           if (libs) mediaLibraries.value = libs;
+          if (props.initialStep === 'manual-code') await fetchMaxCode();
         });
 
         // ── Handlers ─────────────────────────────────────────────
