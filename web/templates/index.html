@@ -1817,9 +1817,36 @@
         }
 
         async function processReplaceGroup(group, result) {
-          result.message = '上传中…';
-          // implemented in Task 6
-          throw new Error('replace not yet implemented');
+          // For each file in the group (usually one, unless replacing multiple parts)
+          for (const fi of group.files) {
+            const f = batchFiles.value.find(bf => bf.name === fi.filename);
+            if (!f) throw new Error(`文件未找到: ${fi.filename}`);
+
+            const originalPart = fi.part;
+            const qp = originalPart ? `?part=${encodeURIComponent(originalPart)}` : '';
+            const url = `/api/videos/${encodeURIComponent(group.code)}/replace${qp}`;
+
+            // Use the original filename on disk as dest_name so the path stays in the same directory.
+            // Backend's _compute_final_filename will add/remove suffix flags based on the toggles.
+            const destName = group.original_path
+              ? group.original_path.split('/').pop()
+              : f.name;
+
+            const fd = new FormData();
+            fd.append('file', f);
+            fd.append('dest_name', destName);
+            fd.append('file_size', String(f.size));
+            fd.append('subtitle_zh', group.subtitle_zh ? '1' : '0');
+            fd.append('uncensored_leaked', group.uncensored_leaked ? '1' : '0');
+            fd.append('uncensored_native', group.uncensored_native ? '1' : '0');
+            if (originalPart) fd.append('part', originalPart);
+
+            result.message = group.files.length > 1 ? `上传中… (${fi.filename})` : '上传中…';
+            const res = await fetch(url, { method: 'POST', body: fd });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '替换失败');
+          }
+          result.message = '替换完成';
         }
 
         return {
