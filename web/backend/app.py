@@ -221,46 +221,7 @@ def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
 
         # ── Steps 10-12: Rename files ────────────────────────────
         emit('calc_filename', 'running', '计算文件名…')
-        final_conn = sqlite3.connect(DB_PATH)
-        final_conn.row_factory = sqlite3.Row
-        try:
-            cur = final_conn.cursor()
-            cur.execute(
-                'SELECT id, code, part, original_file_path, title_zh_short, title_zh, title_jp '
-                'FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0',
-                (main_code,),
-            )
-            video_rows = cur.fetchall()
-            for vrow in video_rows:
-                cur.execute(
-                    'SELECT COALESCE(a.name_zh, a.name) AS name FROM actors a '
-                    'JOIN video_actor_link val ON val.actor_id = a.id '
-                    'WHERE val.video_id = ? ORDER BY a.id ASC',
-                    (vrow['id'],),
-                )
-                actors_for_rec = [r['name'] for r in cur.fetchall() if r['name']]
-                rec = VideoRecord(
-                    id=vrow['id'], code=vrow['code'], part=vrow['part'],
-                    original_file_path=Path(vrow['original_file_path']),
-                    title_zh_short=vrow['title_zh_short'],
-                    title_zh=vrow['title_zh'],
-                    title_jp=vrow['title_jp'],
-                    actors=actors_for_rec,
-                )
-                new_name = build_filename(rec)
-                old_path = Path(vrow['original_file_path'])
-                new_path = old_path.parent / new_name
-                if old_path != new_path and old_path.exists():
-                    old_path.rename(new_path)
-                    cur.execute(
-                        'UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP '
-                        'WHERE id = ?',
-                        (str(new_path), vrow['id']),
-                    )
-            final_conn.commit()
-        finally:
-            final_conn.close()
-
+        _rename_files_for_code(main_code)
         emit('calc_filename', 'done', '文件名已计算')
         emit('rename', 'done', '文件已重命名')
         emit('db_update', 'done', '数据库已更新')
@@ -278,6 +239,121 @@ def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
                     _shutil.rmtree(str(tmp_parent), ignore_errors=True)
             except Exception:
                 pass
+
+
+def _rename_files_for_code(main_code: str) -> None:
+    """Rebuild on-disk filenames from current DB metadata for all parts of a code."""
+    final_conn = sqlite3.connect(DB_PATH)
+    final_conn.row_factory = sqlite3.Row
+    try:
+        cur = final_conn.cursor()
+        cur.execute(
+            'SELECT id, code, part, original_file_path, title_zh_short, title_zh, title_jp '
+            'FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0',
+            (main_code,),
+        )
+        video_rows = cur.fetchall()
+        for vrow in video_rows:
+            cur.execute(
+                'SELECT COALESCE(a.name_zh, a.name) AS name FROM actors a '
+                'JOIN video_actor_link val ON val.actor_id = a.id '
+                'WHERE val.video_id = ? ORDER BY a.id ASC',
+                (vrow['id'],),
+            )
+            actors_for_rec = [r['name'] for r in cur.fetchall() if r['name']]
+            rec = VideoRecord(
+                id=vrow['id'], code=vrow['code'], part=vrow['part'],
+                original_file_path=Path(vrow['original_file_path']),
+                title_zh_short=vrow['title_zh_short'],
+                title_zh=vrow['title_zh'],
+                title_jp=vrow['title_jp'],
+                actors=actors_for_rec,
+            )
+            new_name = build_filename(rec)
+            old_path = Path(vrow['original_file_path'])
+            new_path = old_path.parent / new_name
+            if old_path != new_path and old_path.exists():
+                old_path.rename(new_path)
+                cur.execute(
+                    'UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP '
+                    'WHERE id = ?',
+                    (str(new_path), vrow['id']),
+                )
+        final_conn.commit()
+    finally:
+        final_conn.close()
+
+
+def _rescrape_one_code(main_code: str) -> dict:
+    """Re-scrape one existing code: scrape → update metadata → translate → short title → rename."""
+    base_code = re.sub(r'(?i)-(?:uc|u|c)$', '', main_code)
+    result_data = _scrape_with_playwright(base_code)
+
+    conn_tmp = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn_tmp.cursor()
+        cur.execute('SELECT id FROM videos WHERE code = ? LIMIT 1', (main_code,))
+        row = cur.fetchone()
+    finally:
+        conn_tmp.close()
+    if not row:
+        return {'ok': False, 'message': '未找到记录'}
+
+    from dal.db_manager import update_video_metadata
+    update_video_metadata(row[0], 'SUCCESS' if result_data else 'FAILED', result_data)
+    if not result_data:
+        return {'ok': False, 'message': '刮削未找到结果'}
+
+    video_data = get_video_by_code(main_code) or {}
+    title_jp = video_data.get('title_jp') or ''
+    actor_list = video_data.get('actors') or []
+    actor_name_map = {a['name']: (a.get('name_zh') or a['name']) for a in actor_list}
+    actor_names = [a.get('name_zh') or a['name'] for a in actor_list]
+    title_zh = ''
+    if title_jp:
+        try:
+            title_zh = translate_title(title_jp, [main_code], actor_name_map=actor_name_map)
+            patch_video(main_code, {'title_zh': title_zh})
+        except Exception:
+            logging.exception(f'[{main_code}] 翻译标题失败')
+    if title_zh:
+        try:
+            title_zh_short, _ = shorten_chinese_title_with_candidates(
+                title_zh, actor_names=actor_names
+            )
+            if title_zh_short:
+                patch_video(main_code, {'title_zh_short': title_zh_short})
+        except Exception:
+            logging.exception(f'[{main_code}] 计算短标题失败')
+
+    _rename_files_for_code(main_code)
+    return {'ok': True, 'message': title_zh or '刮削完成'}
+
+
+def _run_rescrape_pipeline(job: '_Job', codes: list) -> None:
+    def emit(step: str, status: str, message: str, **extra):
+        job.queue.put({'step': step, 'status': status, 'message': message, **extra})
+
+    success = 0
+    failed = 0
+    try:
+        for code in codes:
+            emit(code, 'running', '刮削中…')
+            try:
+                res = _rescrape_one_code(code)
+            except Exception as exc:
+                logging.exception(f'[{code}] 重新刮削失败')
+                res = {'ok': False, 'message': str(exc)}
+            if res['ok']:
+                success += 1
+                emit(code, 'done', res['message'])
+            else:
+                failed += 1
+                emit(code, 'error', res['message'])
+        emit('done', 'done', f'完成：{success} 成功 / {failed} 失败',
+             total=len(codes), success=success, failed=failed)
+    finally:
+        job.status = 'done'
 
 
 def _selected_tags():
@@ -568,6 +644,35 @@ def api_add_auto():
     )
     t.start()
     return jsonify({'job_id': job_id})
+
+
+@app.post('/api/videos/rescrape')
+def api_rescrape():
+    data = request.get_json(silent=True) or {}
+    status = (data.get('scrape_status') or '').strip().upper()
+    if status not in ('FAILED', 'PENDING'):
+        return jsonify({'error': 'scrape_status must be FAILED or PENDING'}), 400
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute(
+            'SELECT DISTINCT code FROM videos WHERE scrape_status = ? AND deleted = 0 ORDER BY code',
+            (status,),
+        ).fetchall()
+    finally:
+        conn.close()
+    codes = [r[0] for r in rows]
+    if not codes:
+        return jsonify({'error': '没有符合条件的影片'}), 400
+
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        job = _Job(job_id=job_id)
+        _jobs[job_id] = job
+
+    t = threading.Thread(target=_run_rescrape_pipeline, args=(job, codes), daemon=True)
+    t.start()
+    return jsonify({'job_id': job_id, 'codes': codes})
 
 
 @app.get('/api/jobs/<string:job_id>/stream')

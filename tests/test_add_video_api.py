@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import queue
 import sqlite3
@@ -329,6 +330,58 @@ class AddAutoEndpointTests(unittest.TestCase):
                 data={'volume_path': self.tmpdir},
                 content_type='multipart/form-data',
             )
+        self.assertEqual(resp.status_code, 400)
+
+
+class RescrapeEndpointTests(unittest.TestCase):
+    def setUp(self):
+        app.config['TESTING'] = True
+        self.client = app.test_client()
+        fd, self.db_path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript("""
+            CREATE TABLE videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL, part TEXT,
+                original_file_path TEXT UNIQUE,
+                scrape_status TEXT DEFAULT 'PENDING',
+                deleted INTEGER DEFAULT 0
+            );
+        """)
+        conn.execute("INSERT INTO videos (code, original_file_path, scrape_status) VALUES ('ABW-1', '/a/1.mp4', 'FAILED')")
+        conn.execute("INSERT INTO videos (code, original_file_path, scrape_status) VALUES ('ABW-2', '/a/2.mp4', 'FAILED')")
+        conn.execute("INSERT INTO videos (code, original_file_path, scrape_status) VALUES ('ABW-3', '/a/3.mp4', 'SUCCESS')")
+        conn.execute("INSERT INTO videos (code, original_file_path, scrape_status, deleted) VALUES ('ABW-4', '/a/4.mp4', 'FAILED', 1)")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_invalid_status_returns_400(self):
+        resp = self.client.post('/api/videos/rescrape',
+                                data=json.dumps({'scrape_status': 'SUCCESS'}),
+                                content_type='application/json')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_returns_distinct_matching_codes_and_job_id(self):
+        with patch('web.backend.app.DB_PATH', self.db_path), \
+             patch('web.backend.app._run_rescrape_pipeline'):
+            resp = self.client.post('/api/videos/rescrape',
+                                    data=json.dumps({'scrape_status': 'FAILED'}),
+                                    content_type='application/json')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn('job_id', data)
+        # ABW-1, ABW-2 match; ABW-3 is SUCCESS, ABW-4 is deleted
+        self.assertEqual(sorted(data['codes']), ['ABW-1', 'ABW-2'])
+
+    def test_no_matching_videos_returns_400(self):
+        with patch('web.backend.app.DB_PATH', self.db_path):
+            resp = self.client.post('/api/videos/rescrape',
+                                    data=json.dumps({'scrape_status': 'PENDING'}),
+                                    content_type='application/json')
         self.assertEqual(resp.status_code, 400)
 
 

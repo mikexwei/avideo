@@ -261,7 +261,63 @@
       <div v-if="filterLabel" class="flex items-center gap-3 mb-4">
         <span class="text-gray-300 text-sm font-medium">{{ filterLabel }}</span>
         <span class="text-gray-500 text-sm">{{ total }} 部</span>
+        <button v-if="rescrapeFilterStatus" @click="openRescrape"
+          class="px-2.5 py-1 text-xs rounded-lg bg-amber-700 hover:bg-amber-600 text-white font-medium">
+          ↻ 重新刮削
+        </button>
         <router-link to="/videos" class="ml-auto text-xs text-indigo-400 hover:text-indigo-300">× 清除筛选</router-link>
+      </div>
+
+      <!-- Rescrape progress modal -->
+      <div v-if="showRescrape" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80"
+        @click.self="!rescrapeRunning && closeRescrape">
+        <div class="bg-gray-900 rounded-xl w-full max-w-2xl mx-4 shadow-2xl" style="max-height:90vh;overflow-y:auto">
+          <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+            <span class="font-semibold text-white">↻ 重新刮削 — {{ rescrapeFilterStatus }}</span>
+            <button @click="closeRescrape" :disabled="rescrapeRunning"
+              class="text-gray-500 hover:text-gray-300 disabled:opacity-30 text-lg leading-none">✕</button>
+          </div>
+          <!-- Confirm step -->
+          <div v-if="!rescrapeStarted" class="p-5 flex flex-col gap-4">
+            <div class="text-sm text-gray-300">
+              将对当前筛选的 <span class="text-amber-400 font-semibold">{{ total }}</span> 部影片重新刮削、翻译并重命名。该操作较慢，请耐心等待。
+            </div>
+            <div class="flex justify-end gap-3">
+              <button @click="closeRescrape" class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">取消</button>
+              <button @click="startRescrape" class="px-4 py-2 text-sm rounded-lg bg-amber-600 hover:bg-amber-500 text-white">开始刮削</button>
+            </div>
+          </div>
+          <!-- Progress step -->
+          <div v-else class="p-5 flex flex-col gap-2" style="max-height:65vh;overflow-y:auto">
+            <div v-for="r in rescrapeItems" :key="r.code"
+              class="flex items-center gap-2 px-3 py-2 rounded-lg"
+              :class="r.status === 'running' ? 'bg-indigo-950 bg-opacity-50 border border-indigo-700' : 'bg-gray-800'">
+              <span class="font-mono text-indigo-400 text-xs flex-shrink-0 w-28 truncate">{{ r.code }}</span>
+              <span class="flex-shrink-0 w-4 text-center">
+                <span v-if="r.status === 'done'" class="text-green-500">✓</span>
+                <span v-else-if="r.status === 'running'" class="text-indigo-400">⊙</span>
+                <span v-else-if="r.status === 'error'" class="text-red-400">✕</span>
+                <span v-else class="text-gray-700">○</span>
+              </span>
+              <span class="flex-1 text-xs truncate"
+                :class="{'text-gray-500': r.status === 'pending', 'text-indigo-300': r.status === 'running', 'text-gray-400': r.status === 'done', 'text-red-400': r.status === 'error'}">
+                {{ r.message || {pending:'等待中', running:'刮削中…'}[r.status] }}
+              </span>
+              <a v-if="r.status === 'done'" :href="'#/video/' + encodeURIComponent(r.code)" target="_blank" rel="noopener"
+                class="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300">查看 ↗</a>
+            </div>
+            <div class="text-xs text-gray-600 text-center pt-1">
+              {{ rescrapeItems.filter(r => r.status === 'done' || r.status === 'error').length }} / {{ rescrapeItems.length }} 已处理
+              <span v-if="rescrapeSummary" class="text-gray-400">— {{ rescrapeSummary }}</span>
+            </div>
+            <div class="flex justify-end pt-2">
+              <button @click="closeRescrape" :disabled="rescrapeRunning"
+                class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
+                {{ rescrapeRunning ? '处理中…' : '完成' }}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
         <div class="flex items-center gap-2 flex-wrap">
@@ -2231,12 +2287,70 @@
         function openBatchModal() { showBatchModal.value = true; }
         function closeBatchModal() { showBatchModal.value = false; }
 
+        // ── Re-scrape (FAILED / PENDING filter) ──────────────────
+        const rescrapeFilterStatus = computed(() => {
+          const s = (route.query.scrape_status || '').toUpperCase();
+          return (s === 'FAILED' || s === 'PENDING') ? s : null;
+        });
+        const showRescrape    = ref(false);
+        const rescrapeStarted = ref(false);
+        const rescrapeRunning = ref(false);
+        const rescrapeItems   = ref([]);
+        const rescrapeSummary = ref('');
+        function openRescrape() {
+          rescrapeStarted.value = false;
+          rescrapeRunning.value = false;
+          rescrapeItems.value = [];
+          rescrapeSummary.value = '';
+          showRescrape.value = true;
+        }
+        function closeRescrape() {
+          if (rescrapeRunning.value) return;
+          showRescrape.value = false;
+          if (rescrapeStarted.value) load();  // refresh list after a run
+        }
+        async function startRescrape() {
+          rescrapeStarted.value = true;
+          rescrapeRunning.value = true;
+          try {
+            const res = await fetch('/api/videos/rescrape', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ scrape_status: rescrapeFilterStatus.value }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '启动失败');
+            rescrapeItems.value = data.codes.map(c => ({ code: c, status: 'pending', message: '' }));
+            const es = new EventSource(`/api/jobs/${data.job_id}/stream`);
+            es.onmessage = (e) => {
+              let event; try { event = JSON.parse(e.data); } catch { return; }
+              if (event.step === 'ping') return;
+              if (event.step === 'done') {
+                rescrapeSummary.value = event.message || '';
+                rescrapeRunning.value = false;
+                es.close();
+                return;
+              }
+              const idx = rescrapeItems.value.findIndex(r => r.code === event.step);
+              if (idx >= 0) {
+                rescrapeItems.value[idx] = { code: event.step, status: event.status, message: event.message };
+              }
+            };
+            es.onerror = () => { rescrapeRunning.value = false; es.close(); };
+          } catch (e) {
+            rescrapeSummary.value = e.message;
+            rescrapeRunning.value = false;
+          }
+        }
+
         return {
           items, total, page, limit, loading, sort, filterLabel,
           filterTags: FILTER_TAGS, selectedTags, changePage, changeSort, toggleTag,
           showAddModal, openAddModal, closeAddModal,
           showManualModal, openManualModal, closeManualModal,
           showBatchModal, openBatchModal, closeBatchModal,
+          rescrapeFilterStatus, showRescrape, rescrapeStarted, rescrapeRunning,
+          rescrapeItems, rescrapeSummary, openRescrape, closeRescrape, startRescrape,
         };
       }
     };
