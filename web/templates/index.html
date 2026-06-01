@@ -1741,6 +1741,16 @@
       return map[step] || step;
     }
 
+    // The tag suffix (-C/-U/-UC) belongs on the code, i.e. the first '.'-separated
+    // component of the stem — e.g. ABW-123-C.女优.[标题] — not at the end. Mirrors
+    // the backend's _compute_final_filename.
+    function swapCodeSuffix(stem, hasC, hasU) {
+      const suffix = (hasC && hasU) ? '-UC' : hasC ? '-C' : hasU ? '-U' : '';
+      const parts = stem.split('.');
+      parts[0] = parts[0].replace(/-(?:UC|U|C)$/i, '') + suffix;
+      return parts.join('.');
+    }
+
     // ── BatchModal ────────────────────────────────────────────
     const BatchModal = {
       template: '#tpl-batch-modal',
@@ -1840,15 +1850,14 @@
           }
         }
 
-        // Base filename (suffix-stripped stem) the replace will write to, mirroring the
-        // detail-page replace modal. Backend appends the -C/-U/-UC suffix from the toggles.
+        // Base filename stem the replace writes to (the original on-disk name, sans ext).
+        // The backend swaps the -C/-U/-UC suffix on the code component.
         function _replaceBaseStem(group) {
           const origName = group.original_path
             ? group.original_path.split('/').pop()
             : (group.files[0] && group.files[0].filename) || '';
           const dot = origName.lastIndexOf('.');
-          const stem = dot > 0 ? origName.slice(0, dot) : origName;
-          return stem.replace(/-(UC|C|U)$/i, '');
+          return dot > 0 ? origName.slice(0, dot) : origName;
         }
         function _uploadExt(group) {
           const name = (group.files[0] && group.files[0].filename) || '';
@@ -1858,8 +1867,7 @@
         function expectedFinalName(group) {
           const hasC = group.subtitle_zh;
           const hasU = group.uncensored_leaked || group.uncensored_native;
-          const suffix = (hasC && hasU) ? '-UC' : hasC ? '-C' : hasU ? '-U' : '';
-          return `${_replaceBaseStem(group)}${suffix}${_uploadExt(group)}`;
+          return `${swapCodeSuffix(_replaceBaseStem(group), hasC, hasU)}${_uploadExt(group)}`;
         }
 
         async function startBatchProcess() {
@@ -2541,9 +2549,9 @@
           const ext  = dot > 0 ? name.slice(dot) : '';
           const hasC = replaceSubtitleZh.value;
           const hasU = replaceUncensoredLeaked.value || replaceUncensoredNative.value;
-          const suffix = (hasC && hasU) ? '-UC' : hasC ? '-C' : hasU ? '-U' : '';
+          const newStem = swapCodeSuffix(stem, hasC, hasU);
           const partSeg = replacePartOn.value && replacePartNum.value ? `.part${replacePartNum.value}` : '';
-          return `${stem}${suffix}${partSeg}${ext}`;
+          return `${newStem}${partSeg}${ext}`;
         });
 
         function _fmtTime(secs) {
@@ -2592,15 +2600,19 @@
           if (!file) return;
           replaceFile.value = file;
           replaceError.value = '';
-          const stem = file.name.replace(/\.[^.]+$/, '');
-          replaceSubtitleZh.value = /(?:-UC|-C)$/i.test(stem);
-          replaceUncensoredLeaked.value = /(?:-UC|-U)$/i.test(stem);
+          // Auto-detect tags from the uploaded filename's code component.
+          const upCode = file.name.replace(/\.[^.]+$/, '').split('.')[0];
+          replaceSubtitleZh.value = /(?:-UC|-C)$/i.test(upCode);
+          replaceUncensoredLeaked.value = /(?:-UC|-U)$/i.test(upCode);
           const origPath = _getOriginalPathForPart(replaceOriginalPart.value);
           if (origPath) {
             const origFilename = origPath.split('/').pop();
             const dot = origFilename.lastIndexOf('.');
             const origStem = dot > 0 ? origFilename.slice(0, dot) : origFilename;
-            const baseStem = origStem.replace(/-(UC|C|U)$/i, '');
+            // Strip the existing tag suffix from the code component (first segment).
+            const baseParts = origStem.split('.');
+            baseParts[0] = baseParts[0].replace(/-(?:UC|U|C)$/i, '');
+            const baseStem = baseParts.join('.');
             const uploadDot = file.name.lastIndexOf('.');
             const uploadExt = uploadDot > 0 ? file.name.slice(uploadDot) : '';
             replaceDestName.value = baseStem + uploadExt;

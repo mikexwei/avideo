@@ -381,8 +381,13 @@ def _compute_final_filename(
         suffix = '-U'
     else:
         suffix = ''
+    # The tag suffix belongs on the code (first '.'-separated component), e.g.
+    # ABW-123-C.女优.[标题].mp4 — NOT appended to the end of the whole filename.
+    components = stem.split('.')
+    components[0] = re.sub(r'(?i)-(?:uc|u|c)$', '', components[0]) + suffix
+    stem = '.'.join(components)
     part_seg = f'.part{part}' if part else ''
-    return f'{stem}{suffix}{part_seg}{ext}'
+    return f'{stem}{part_seg}{ext}'
 
 
 @app.get('/api/config/media-libraries')

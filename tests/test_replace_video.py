@@ -110,6 +110,32 @@ class ComputeFinalFilenameTests(unittest.TestCase):
     def test_mkv_extension(self):
         self.assertEqual(_compute_final_filename('SSIS-001.mkv', False, False, True, None), 'SSIS-001-U.mkv')
 
+    def test_suffix_goes_on_code_not_end(self):
+        # Canonical name: code.actor.[title].ext — suffix belongs on the code component.
+        self.assertEqual(
+            _compute_final_filename('ABW-123.女优.[标题].mp4', True, False, False, None),
+            'ABW-123-C.女优.[标题].mp4',
+        )
+
+    def test_existing_suffix_on_code_is_swapped(self):
+        # Toggling from -C to uncensored should replace the code suffix, not stack it.
+        self.assertEqual(
+            _compute_final_filename('ABW-123-C.女优.[标题].mp4', False, True, False, None),
+            'ABW-123-U.女优.[标题].mp4',
+        )
+
+    def test_clearing_tags_strips_code_suffix(self):
+        self.assertEqual(
+            _compute_final_filename('ABW-123-UC.女优.[标题].mp4', False, False, False, None),
+            'ABW-123.女优.[标题].mp4',
+        )
+
+    def test_multipart_filename_keeps_part_component(self):
+        self.assertEqual(
+            _compute_final_filename('ABW-123-C.女优.[标题].part1.mp4', True, False, False, None),
+            'ABW-123-C.女优.[标题].part1.mp4',
+        )
+
 
 class ReplaceEndpointTests(unittest.TestCase):
     def setUp(self):
