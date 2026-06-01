@@ -468,7 +468,8 @@ def api_add_manual():
                 ).isoformat(),
             })
 
-        batch_insert_scanned_videos(scanned)
+        # Manual uploads carry user-provided metadata — no scraping needed.
+        batch_insert_scanned_videos(scanned, scrape_status='SUCCESS')
         sync_derived_video_tags_for_code(code)
     except Exception as exc:
         import shutil as _shutil

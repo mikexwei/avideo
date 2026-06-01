@@ -168,6 +168,14 @@ class AddManualEndpointTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row[0], 'WEST-001')
 
+    def test_scrape_status_is_success(self):
+        # Manual uploads carry user-provided metadata, so they should not be PENDING.
+        self._post()
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT scrape_status FROM videos WHERE code='WEST-001'").fetchone()
+        conn.close()
+        self.assertEqual(row[0], 'SUCCESS')
+
     def test_file_placed_in_code_prefix_subdir(self):
         self._post()
         dest_dir = Path(self.tmpdir) / 'WEST'

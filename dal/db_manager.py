@@ -105,7 +105,7 @@ def _tag_filter_conditions(alias: str, tags: Optional[List[str]]) -> tuple[list[
         params.append(tag)
     return conditions, params
 
-def batch_insert_scanned_videos(scanned_results: list) -> tuple[int, int]:
+def batch_insert_scanned_videos(scanned_results: list, scrape_status: str = 'PENDING') -> tuple[int, int]:
     """
     将扫描器提取的结果批量安全地存入数据库。
     返回: (新增插入的数量, 因为已存在而跳过的数量)
@@ -134,7 +134,7 @@ def batch_insert_scanned_videos(scanned_results: list) -> tuple[int, int]:
         insert_sql = """
             INSERT OR IGNORE INTO videos
             (code, part, original_file_path, scrape_status, file_size, file_mtime, file_birthtime)
-            VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """
 
         for item in valid_items:
@@ -145,7 +145,7 @@ def batch_insert_scanned_videos(scanned_results: list) -> tuple[int, int]:
             file_path_str = str(item['original_path'])
 
             cursor.execute(insert_sql, (
-                code, part, file_path_str,
+                code, part, file_path_str, scrape_status,
                 item.get('file_size'), item.get('file_mtime'), item.get('file_birthtime'),
             ))
             
