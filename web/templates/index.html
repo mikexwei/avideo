@@ -1797,7 +1797,8 @@
           await new Promise((resolve, reject) => {
             const es = new EventSource(`/api/jobs/${jobId}/stream`);
             es.onmessage = (e) => {
-              const event = JSON.parse(e.data);
+              let event;
+              try { event = JSON.parse(e.data); } catch { return; }
               if (event.step === 'ping') return;
               const idx = result.progressSteps.findIndex(s => s.step === event.step);
               if (idx >= 0) {
@@ -1808,7 +1809,7 @@
                 resolve();
               } else if (event.step === 'error') {
                 es.close();
-                reject(new Error(event.message));
+                reject(new Error(event.message || '处理失败'));
               }
             };
             es.onerror = () => { es.close(); reject(new Error('连接中断')); };
