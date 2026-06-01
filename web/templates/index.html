@@ -314,12 +314,136 @@
 
       <!-- Step 1: batch-select -->
       <template v-if="batchStep === 'batch-select'">
-        <!-- content added in Task 4 -->
+        <div class="p-5 flex flex-col gap-4">
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">选择视频文件</div>
+            <div class="flex flex-col gap-2">
+              <div v-if="batchFiles.length" class="flex flex-col gap-1">
+                <div v-for="(f, i) in batchFiles" :key="i"
+                  class="flex items-center gap-2 px-3 py-1.5 bg-gray-800 rounded text-sm">
+                  <span class="text-indigo-400 text-xs">🎬</span>
+                  <span class="flex-1 truncate text-gray-300 font-mono text-xs">{{ f.name }}</span>
+                </div>
+              </div>
+              <button @click="$refs.batchFileInput.click()"
+                class="px-4 py-2.5 border border-dashed border-gray-700 rounded-lg text-sm text-gray-400 hover:border-gray-500 hover:text-gray-300 text-center transition-colors">
+                {{ batchFiles.length ? '+ 添加更多文件' : '点击选择视频文件…' }}
+              </button>
+              <input ref="batchFileInput" type="file" class="hidden" multiple
+                accept=".mp4,.mkv,.avi,.mov,.wmv,.m4v"
+                @change="onBatchFilesChange" />
+            </div>
+          </div>
+          <div v-if="batchCheckError" class="text-sm text-red-400 px-3 py-2 bg-red-900 bg-opacity-20 rounded-lg">
+            {{ batchCheckError }}
+          </div>
+        </div>
+        <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-800">
+          <button @click="$emit('close')"
+            class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">取消</button>
+          <button @click="runBatchCheck" :disabled="!batchFiles.length || batchChecking"
+            class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
+            <span v-if="batchChecking">检测中…</span>
+            <span v-else>下一步 →</span>
+          </button>
+        </div>
       </template>
 
       <!-- Step 2: batch-review -->
       <template v-if="batchStep === 'batch-review'">
-        <!-- content added in Task 4 -->
+        <div class="p-5 flex flex-col gap-4">
+          <div class="text-sm text-gray-400">
+            检测到 {{ batchGroups.length }} 个番号 —
+            <span class="text-green-400">{{ batchGroups.filter(g => !g.exists && !g.warning).length }} 新增</span>，
+            <span class="text-yellow-400">{{ batchGroups.filter(g => g.exists && !g.warning).length }} 替换</span>
+            <span v-if="batchGroups.filter(g => g.warning).length" class="text-orange-400">
+              ，{{ batchGroups.filter(g => g.warning).length }} 需要处理
+            </span>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm border-collapse">
+              <thead>
+                <tr class="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
+                  <th class="text-left py-2 px-2">番号</th>
+                  <th class="text-left py-2 px-2">文件</th>
+                  <th class="text-left py-2 px-2">操作</th>
+                  <th class="text-left py-2 px-2">标签确认</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="g in batchGroups" :key="g.code || g.files[0].filename"
+                  :class="['border-b border-gray-800', g.warning ? 'bg-orange-900 bg-opacity-10' : g.exists ? 'bg-yellow-900 bg-opacity-5' : '']">
+                  <td class="py-2 px-2 font-mono text-indigo-400 text-xs whitespace-nowrap">{{ g.code || '?' }}</td>
+                  <td class="py-2 px-2 max-w-xs">
+                    <div v-for="f in g.files" :key="f.filename"
+                      class="text-xs text-gray-400 truncate font-mono">{{ f.filename }}</div>
+                    <div v-if="g.exists && g.original_path"
+                      class="text-xs text-gray-600 truncate mt-0.5">→ {{ g.original_path }}</div>
+                  </td>
+                  <td class="py-2 px-2 whitespace-nowrap">
+                    <span v-if="g.warning"
+                      class="px-1.5 py-0.5 rounded text-xs font-bold bg-orange-900 bg-opacity-40 text-orange-400">⚠ 警告</span>
+                    <template v-else-if="g.exists">
+                      <span class="px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-900 bg-opacity-40 text-yellow-400">替换</span>
+                    </template>
+                    <template v-else>
+                      <span class="px-1.5 py-0.5 rounded text-xs font-bold bg-green-900 bg-opacity-40 text-green-400">新增</span>
+                      <span v-if="g.files.length > 1"
+                        class="ml-1 px-1.5 py-0.5 rounded text-xs font-bold bg-indigo-900 bg-opacity-40 text-indigo-400">
+                        {{ g.files.length }} parts
+                      </span>
+                    </template>
+                  </td>
+                  <td class="py-2 px-2">
+                    <div v-if="g.warning" class="text-xs text-orange-400 max-w-xs leading-snug">{{ g.warning }}</div>
+                    <div v-else-if="!g.exists" class="text-xs text-gray-500">自动刮削</div>
+                    <div v-else class="flex flex-col gap-1.5">
+                      <label v-for="[key, label] in [['subtitle_zh','中文字幕'],['uncensored_leaked','无码破解'],['uncensored_native','原装无码']]"
+                        :key="key" class="flex items-center gap-1.5 cursor-pointer">
+                        <button @click="g[key] = !g[key]"
+                          class="w-7 h-4 rounded-full transition-colors flex-shrink-0 relative"
+                          :class="g[key] ? 'bg-indigo-600' : 'bg-gray-700'">
+                          <span class="absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all"
+                            :class="g[key] ? 'left-3.5' : 'left-0.5'"></span>
+                        </button>
+                        <span class="text-xs text-gray-400">{{ label }}</span>
+                      </label>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Volume picker — only for new files -->
+          <div v-if="hasNewGroups" class="border-t border-gray-800 pt-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">新增文件存放位置</div>
+            <div class="flex flex-col gap-2">
+              <label v-for="v in mediaLibraries" :key="v.path"
+                class="flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors"
+                :class="batchVolume === v.path ? 'border-indigo-500 bg-indigo-950' : 'border-gray-700 bg-gray-800 hover:border-gray-600'">
+                <input type="radio" :value="v.path" v-model="batchVolume" class="accent-indigo-500" />
+                <span class="flex-1 text-sm text-gray-200 truncate">{{ v.path }}</span>
+                <span v-if="v.free_gb !== null" class="text-xs flex-shrink-0"
+                  :class="v.free_gb < 10 ? 'text-red-400' : 'text-gray-400'">
+                  {{ v.free_gb }} GB 可用
+                </span>
+              </label>
+            </div>
+          </div>
+          <div v-else class="text-xs text-gray-500 text-center py-1">
+            替换文件将上传至原视频所在目录，无需选择 Volume
+          </div>
+        </div>
+        <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-800">
+          <button @click="batchStep = 'batch-select'"
+            class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">← 返回</button>
+          <button @click="startBatchProcess" :disabled="!canStartUpload"
+            class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
+            开始上传
+          </button>
+        </div>
       </template>
 
       <!-- Step 3: batch-progress -->
@@ -1502,12 +1626,74 @@
           if (libs) mediaLibraries.value = libs;
         });
 
+        function onBatchFilesChange(e) {
+          const newFiles = Array.from(e.target.files || []);
+          const existingNames = new Set(batchFiles.value.map(f => f.name));
+          batchFiles.value = [...batchFiles.value, ...newFiles.filter(f => !existingNames.has(f.name))];
+        }
+
+        async function runBatchCheck() {
+          batchChecking.value = true;
+          batchCheckError.value = '';
+          try {
+            const resp = await fetch('/api/videos/batch-check', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filenames: batchFiles.value.map(f => f.name) }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || '检测失败');
+            batchGroups.value = buildGroups(data);
+            batchStep.value = 'batch-review';
+          } catch (e) {
+            batchCheckError.value = e.message;
+          } finally {
+            batchChecking.value = false;
+          }
+        }
+
+        function buildGroups(items) {
+          const map = {};
+          for (const item of items) {
+            const key = item.code || ('__err__' + item.filename);
+            if (!map[key]) {
+              map[key] = {
+                code: item.code,
+                files: [],
+                exists: item.exists,
+                original_path: item.original_path,
+                db_parts: item.db_parts || [],
+                subtitle_zh: /(?:-UC|-C)$/i.test(item.code || ''),
+                uncensored_leaked: /(?:-UC|-U)$/i.test(item.code || ''),
+                uncensored_native: false,
+                warning: item.error || null,
+              };
+            }
+            map[key].files.push(item);
+            // mixed new+replace in same code → warn
+            if (map[key].exists !== null && item.exists !== null && map[key].exists !== item.exists) {
+              map[key].warning = '同一番号下新增与替换混合，请检查文件';
+            }
+          }
+          // ambiguous part: replace row but can't tell which part to replace
+          for (const g of Object.values(map)) {
+            if (!g.warning && g.exists && g.db_parts.length > 1) {
+              const allHavePart = g.files.every(f => f.part);
+              if (!allHavePart) {
+                g.warning = '无法确定 Part，请在文件名中加上 -partN（如 SSIS-456-part1.mp4）';
+              }
+            }
+          }
+          return Object.values(map);
+        }
+
         return {
           batchStep, batchFiles, batchChecking, batchCheckError,
           batchGroups, batchVolume, mediaLibraries,
           batchProcessing, batchResults,
           batchStepNum, hasNewGroups, hasWarnings, canStartUpload,
           autoStepLabel,
+          onBatchFilesChange, runBatchCheck, buildGroups,
         };
       }
     };
