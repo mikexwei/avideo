@@ -664,7 +664,10 @@ def api_video_replace(code: str):
     # Writes directly to the destination volume while bytes are arriving, eliminating
     # the double-write penalty (Werkzeug /tmp → dest) that multipart incurs.
     if 'multipart' not in content_type:
-        dest_name = (request.headers.get('X-Dest-Name') or '').strip()
+        # X-Dest-Name is percent-encoded by the client (HTTP headers can't carry
+        # non-Latin-1 chars; filenames are often Chinese).
+        from urllib.parse import unquote
+        dest_name = unquote(request.headers.get('X-Dest-Name') or '').strip()
         try:
             expected_size = int(request.headers.get('X-File-Size') or 0)
         except (ValueError, TypeError):

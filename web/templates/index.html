@@ -1826,7 +1826,7 @@
         async function processReplaceGroup(group, result) {
           // For each file in the group (usually one, unless replacing multiple parts)
           for (const fi of group.files) {
-            const f = Vue.toRaw(batchFiles.value.find(bf => bf.name === fi.filename));
+            const f = batchFiles.value.find(bf => bf.name === fi.filename);
             if (!f) throw new Error(`文件未找到: ${fi.filename}`);
 
             const originalPart = fi.part;
@@ -1841,7 +1841,7 @@
             if (!destName) throw new Error('无效的原始文件路径');
 
             const headers = {
-              'X-Dest-Name': destName,
+              'X-Dest-Name': encodeURIComponent(destName),
               'X-File-Size': String(f.size),
               'X-Subtitle-Zh': group.subtitle_zh ? '1' : '0',
               'X-Uncensored-Leaked': group.uncensored_leaked ? '1' : '0',
@@ -2464,13 +2464,13 @@
           });
 
           xhr.open('POST', '/api/videos/' + video.value.code + '/replace' + qs);
-          xhr.setRequestHeader('X-Dest-Name', replaceDestName.value);
+          xhr.setRequestHeader('X-Dest-Name', encodeURIComponent(replaceDestName.value));
           xhr.setRequestHeader('X-File-Size', String(replaceFile.value.size));
           xhr.setRequestHeader('X-Subtitle-Zh', replaceSubtitleZh.value ? '1' : '0');
           xhr.setRequestHeader('X-Uncensored-Leaked', replaceUncensoredLeaked.value ? '1' : '0');
           xhr.setRequestHeader('X-Uncensored-Native', replaceUncensoredNative.value ? '1' : '0');
           if (replacePartOn.value && replacePartNum.value) xhr.setRequestHeader('X-Part', String(replacePartNum.value));
-          xhr.send(Vue.toRaw(replaceFile.value));
+          xhr.send(replaceFile.value);
         }
 
         watch(replaceOriginalPart, () => {
