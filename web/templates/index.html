@@ -2396,6 +2396,9 @@
           if (!file) return;
           replaceFile.value = file;
           replaceError.value = '';
+          const stem = file.name.replace(/\.[^.]+$/, '');
+          replaceSubtitleZh.value = /(?:-UC|-C)$/i.test(stem);
+          replaceUncensoredLeaked.value = /(?:-UC|-U)$/i.test(stem);
           const origPath = _getOriginalPathForPart(replaceOriginalPart.value);
           if (origPath) {
             const origFilename = origPath.split('/').pop();
