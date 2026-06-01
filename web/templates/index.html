@@ -300,7 +300,7 @@
   <!-- ========== BatchModal ========== -->
   <script type="text/x-template" id="tpl-batch-modal">
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80" @click.self="!batchProcessing && $emit('close')">
-    <div class="bg-gray-900 rounded-xl w-full max-w-xl mx-4 shadow-2xl" style="max-height:90vh;overflow-y:auto">
+    <div class="bg-gray-900 rounded-xl w-full max-w-4xl mx-4 shadow-2xl" style="max-height:90vh;overflow-y:auto">
       <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
         <span class="font-semibold text-white">⚡ 批量添加/替换</span>
         <div class="flex items-center gap-3">
@@ -369,6 +369,7 @@
                   <th class="text-left py-2 px-2">文件</th>
                   <th class="text-left py-2 px-2">操作</th>
                   <th class="text-left py-2 px-2">标签确认</th>
+                  <th class="text-left py-2 px-2">目标文件名</th>
                 </tr>
               </thead>
               <tbody>
@@ -412,6 +413,13 @@
                         <span class="text-xs text-gray-400 whitespace-nowrap">{{ label }}</span>
                       </label>
                     </div>
+                  </td>
+                  <td class="py-2 px-2 align-top">
+                    <div v-if="g.exists && !g.warning" style="max-width:16rem"
+                      class="text-xs text-indigo-300 font-mono break-all leading-relaxed">
+                      {{ expectedFinalName(g) }}
+                    </div>
+                    <div v-else class="text-xs text-gray-600">—</div>
                   </td>
                 </tr>
               </tbody>
@@ -1761,6 +1769,28 @@
           }
         }
 
+        // Base filename (suffix-stripped stem) the replace will write to, mirroring the
+        // detail-page replace modal. Backend appends the -C/-U/-UC suffix from the toggles.
+        function _replaceBaseStem(group) {
+          const origName = group.original_path
+            ? group.original_path.split('/').pop()
+            : (group.files[0] && group.files[0].filename) || '';
+          const dot = origName.lastIndexOf('.');
+          const stem = dot > 0 ? origName.slice(0, dot) : origName;
+          return stem.replace(/-(UC|C|U)$/i, '');
+        }
+        function _uploadExt(group) {
+          const name = (group.files[0] && group.files[0].filename) || '';
+          const dot = name.lastIndexOf('.');
+          return dot > 0 ? name.slice(dot) : '';
+        }
+        function expectedFinalName(group) {
+          const hasC = group.subtitle_zh;
+          const hasU = group.uncensored_leaked || group.uncensored_native;
+          const suffix = (hasC && hasU) ? '-UC' : hasC ? '-C' : hasU ? '-U' : '';
+          return `${_replaceBaseStem(group)}${suffix}${_uploadExt(group)}`;
+        }
+
         async function startBatchProcess() {
           batchStep.value = 'batch-progress';
           batchProcessing.value = true;
@@ -1839,11 +1869,12 @@
             const targetCode = group.db_code || group.code;
             const url = `/api/videos/${encodeURIComponent(targetCode)}/replace${qp}`;
 
-            // Use the original filename on disk as dest_name so the path stays in the same directory.
-            // Backend's _compute_final_filename will add/remove suffix flags based on the toggles.
-            const destName = (group.original_path
-              ? group.original_path.split('/').pop()
-              : f.name).trim();
+            // Send the suffix-stripped base name; backend's _compute_final_filename
+            // appends the -C/-U/-UC suffix from the toggles (avoids doubling, e.g.
+            // ABW-123-U → ABW-123-U-C). Ext comes from the uploaded file.
+            const fDot = f.name.lastIndexOf('.');
+            const fExt = fDot > 0 ? f.name.slice(fDot) : '';
+            const destName = (_replaceBaseStem(group) + fExt).trim();
             if (!destName) throw new Error('无效的原始文件路径');
 
             const headers = {
@@ -1870,7 +1901,7 @@
           batchProcessing, batchResults,
           batchStepNum, hasNewGroups, hasWarnings, canStartUpload,
           autoStepLabel,
-          onBatchFilesChange, runBatchCheck, buildGroups, toggleGroupTag,
+          onBatchFilesChange, runBatchCheck, buildGroups, toggleGroupTag, expectedFinalName,
           startBatchProcess, processNewGroup, processReplaceGroup,
         };
       }
