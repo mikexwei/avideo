@@ -311,7 +311,61 @@ def _compute_final_filename(
 
 @app.get('/api/config/media-libraries')
 def api_media_libraries():
-    return jsonify([str(p) for p in MEDIA_LIBRARIES])
+    import shutil as _shutil
+    result = []
+    for p in MEDIA_LIBRARIES:
+        entry = {'path': str(p)}
+        try:
+            usage = _shutil.disk_usage(str(p))
+            entry['free_gb'] = round(usage.free / (1024 ** 3), 1)
+            entry['total_gb'] = round(usage.total / (1024 ** 3), 1)
+        except Exception:
+            entry['free_gb'] = None
+            entry['total_gb'] = None
+        result.append(entry)
+    return jsonify(result)
+
+
+@app.post('/api/videos/batch-check')
+def api_batch_check():
+    data = request.get_json(silent=True) or {}
+    filenames = data.get('filenames', [])
+    if not isinstance(filenames, list):
+        return jsonify({'error': 'filenames must be a list'}), 400
+
+    results = []
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        for filename in filenames:
+            stem = Path(filename).stem
+            code, part = extract_video_code(stem)
+            if not code:
+                results.append({
+                    'filename': filename, 'code': None, 'part': part,
+                    'exists': None, 'original_path': None, 'db_parts': [],
+                    'error': '无法解析番号',
+                })
+                continue
+            rows = conn.execute(
+                'SELECT original_file_path, part FROM videos WHERE code = ?', (code,)
+            ).fetchall()
+            if rows:
+                results.append({
+                    'filename': filename, 'code': code, 'part': part,
+                    'exists': True,
+                    'original_path': rows[0]['original_file_path'],
+                    'db_parts': [r['part'] for r in rows],
+                })
+            else:
+                results.append({
+                    'filename': filename, 'code': code, 'part': part,
+                    'exists': False, 'original_path': None, 'db_parts': [],
+                })
+    finally:
+        conn.close()
+
+    return jsonify(results)
 
 
 @app.get('/api/videos/max-code/<string:code_type>')
