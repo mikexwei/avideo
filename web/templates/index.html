@@ -771,6 +771,13 @@
   <!-- ========== DashboardView ========== -->
   <script type="text/x-template" id="tpl-dashboard">
   <div>
+    <div class="flex justify-end gap-2 mb-4">
+      <button @click="openBatchModal"
+        class="px-3 py-1.5 text-sm rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white font-medium">
+        ⚡ 批量添加/替换
+      </button>
+    </div>
+    <batch-modal v-if="showBatchModal" @close="closeBatchModal" />
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else>
       <!-- Stat cards -->
@@ -2155,6 +2162,7 @@
     // ── DashboardView ─────────────────────────────────────────
     const DashboardView = {
       template: '#tpl-dashboard',
+      components: { BatchModal },
       setup() {
         const stats = ref(null), loading = ref(true);
         const imgErr = e => { e.target.style.display = 'none'; };
@@ -2199,7 +2207,12 @@
           restoreScroll();
         });
 
-        return { stats, loading, maxByYear, maxScoreDist, maxMaker, statCards, coverage, scoreRangeQuery, imgErr };
+        const showBatchModal = ref(false);
+        function openBatchModal() { showBatchModal.value = true; }
+        function closeBatchModal() { showBatchModal.value = false; }
+
+        return { stats, loading, maxByYear, maxScoreDist, maxMaker, statCards, coverage, scoreRangeQuery, imgErr,
+          showBatchModal, openBatchModal, closeBatchModal };
       }
     };
 
