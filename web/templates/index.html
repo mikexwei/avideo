@@ -276,6 +276,10 @@
             class="px-3 py-1.5 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium flex-shrink-0">
             手动添加
           </button>
+          <button @click="openBatchModal"
+            class="px-3 py-1.5 text-sm rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white font-medium flex-shrink-0">
+            ⚡ 批量添加/替换
+          </button>
           <button @click="openAddModal"
             class="px-3 py-1.5 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium flex-shrink-0">
             + 添加影片
@@ -284,6 +288,7 @@
       </div>
       <add-video-modal v-if="showAddModal" @close="closeAddModal" />
       <add-video-modal v-if="showManualModal" :initial-step="'manual-code'" @close="closeManualModal" />
+      <batch-modal v-if="showBatchModal" @close="closeBatchModal" />
       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
         <video-card v-for="v in items" :key="v.id" :video="v" />
       </div>
@@ -291,6 +296,40 @@
     </div>
   </div>
 </script>
+
+  <!-- ========== BatchModal ========== -->
+  <script type="text/x-template" id="tpl-batch-modal">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80" @click.self="!batchProcessing && $emit('close')">
+    <div class="bg-gray-900 rounded-xl w-full max-w-xl mx-4 shadow-2xl" style="max-height:90vh;overflow-y:auto">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+        <span class="font-semibold text-white">⚡ 批量添加/替换</span>
+        <div class="flex items-center gap-3">
+          <span class="text-xs text-gray-500" v-if="batchStep !== 'batch-progress' || batchProcessing">
+            步骤 {{ batchStepNum }} / 3
+          </span>
+          <button @click="$emit('close')" :disabled="batchProcessing"
+            class="text-gray-500 hover:text-gray-300 disabled:opacity-30 text-lg leading-none">✕</button>
+        </div>
+      </div>
+
+      <!-- Step 1: batch-select -->
+      <template v-if="batchStep === 'batch-select'">
+        <!-- content added in Task 4 -->
+      </template>
+
+      <!-- Step 2: batch-review -->
+      <template v-if="batchStep === 'batch-review'">
+        <!-- content added in Task 4 -->
+      </template>
+
+      <!-- Step 3: batch-progress -->
+      <template v-if="batchStep === 'batch-progress'">
+        <!-- content added in Tasks 5 & 6 -->
+      </template>
+
+    </div>
+  </div>
+  </script>
 
   <!-- ========== AddVideoModal ========== -->
   <script type="text/x-template" id="tpl-add-video">
@@ -1417,6 +1456,62 @@
       return Array.isArray(raw) ? raw : [raw];
     }
 
+    // ── Shared auto-pipeline constants ───────────────────────
+    const AUTO_STEPS = [
+      'parse_code','calc_dir','upload','db_insert','tags',
+      'scrape','actors','translate','short_title',
+      'calc_filename','rename','db_update',
+    ];
+    function autoStepLabel(step) {
+      const map = {
+        parse_code: '解析番号', calc_dir: '计算目标目录', upload: '上传文件',
+        db_insert: '写入数据库', tags: '同步标签', scrape: '刮削影片信息',
+        actors: '获取演员信息', translate: '翻译标题', short_title: '计算短标题',
+        calc_filename: '计算文件名', rename: '重命名文件', db_update: '更新数据库',
+      };
+      return map[step] || step;
+    }
+
+    // ── BatchModal ────────────────────────────────────────────
+    const BatchModal = {
+      template: '#tpl-batch-modal',
+      emits: ['close'],
+      setup(props, { emit }) {
+        const batchStep       = ref('batch-select');
+        const batchFiles      = ref([]);
+        const batchChecking   = ref(false);
+        const batchCheckError = ref('');
+        const batchGroups     = ref([]);
+        const batchVolume     = ref('');
+        const mediaLibraries  = ref([]);
+        const batchProcessing = ref(false);
+        const batchResults    = ref([]);
+
+        const batchStepNum = computed(() =>
+          ({ 'batch-select': 1, 'batch-review': 2, 'batch-progress': 3 }[batchStep.value] || 1)
+        );
+        const hasNewGroups  = computed(() => batchGroups.value.some(g => !g.exists && !g.warning));
+        const hasWarnings   = computed(() => batchGroups.value.some(g => g.warning));
+        const canStartUpload = computed(() =>
+          !hasWarnings.value && batchGroups.value.length > 0 &&
+          (!hasNewGroups.value || batchVolume.value)
+        );
+
+        onMounted(async () => {
+          const libs = await apiFetch('/api/config/media-libraries');
+          if (libs) mediaLibraries.value = libs;
+        });
+
+        return {
+          batchStep, batchFiles, batchChecking, batchCheckError,
+          batchGroups, batchVolume, mediaLibraries,
+          batchProcessing, batchResults,
+          batchStepNum, hasNewGroups, hasWarnings, canStartUpload,
+          autoStepLabel,
+        };
+      }
+    };
+
     // ── AddVideoModal ─────────────────────────────────────────
     const AddVideoModal = {
       template: '#tpl-add-video',
@@ -1437,11 +1532,6 @@
         const addFileInput = ref(null);
 
         // ── Auto mode state ─────────────────────────────────────
-        const AUTO_STEPS = [
-          'parse_code','calc_dir','upload','db_insert','tags',
-          'scrape','actors','translate','short_title',
-          'calc_filename','rename','db_update',
-        ];
         const autoProgressSteps = ref([]);
         const autoFinished = ref(false);
 
@@ -1449,16 +1539,6 @@
           const done = autoProgressSteps.value.filter(s => s.status === 'done').length;
           return Math.round((done / AUTO_STEPS.length) * 100);
         });
-
-        function autoStepLabel(step) {
-          const map = {
-            parse_code: '解析番号', calc_dir: '计算目标目录', upload: '上传文件',
-            db_insert: '写入数据库', tags: '同步标签', scrape: '刮削影片信息',
-            actors: '获取演员信息', translate: '翻译标题', short_title: '计算短标题',
-            calc_filename: '计算文件名', rename: '重命名文件', db_update: '更新数据库',
-          };
-          return map[step] || step;
-        }
 
         // ── Manual mode state ────────────────────────────────────
         const manualCodeType    = ref('WEST');
@@ -1630,7 +1710,8 @@
         return {
           addStep, addFiles, addFileSorted, addVolume, addMode, addDoneCode, addError,
           mediaLibraries, addFileInput,
-          autoProgressSteps, autoProgressPct, autoFinished, autoStepLabel,
+          autoProgressSteps, autoProgressPct, autoFinished,
+          autoStepLabel,
           manualCodeType, manualCodeNumber, manualMaxNumber, manualIsMultipart,
           manualUploading, manualCode, manualTitleJp, manualTitleZh, manualTitleShort,
           manualActors, manualTags, manualSaving, manualMetaError,
@@ -1643,7 +1724,7 @@
     // ── HomeView ──────────────────────────────────────────────
     const HomeView = {
       template: '#tpl-home',
-      components: { VideoCard, Pagination, SortBar, AddVideoModal },
+      components: { VideoCard, Pagination, SortBar, AddVideoModal, BatchModal },
       setup() {
         const route = VueRouter.useRoute();
         const router = VueRouter.useRouter();
@@ -1705,11 +1786,16 @@
         function openManualModal() { showManualModal.value = true; }
         function closeManualModal() { showManualModal.value = false; }
 
+        const showBatchModal = ref(false);
+        function openBatchModal() { showBatchModal.value = true; }
+        function closeBatchModal() { showBatchModal.value = false; }
+
         return {
           items, total, page, limit, loading, sort, filterLabel,
           filterTags: FILTER_TAGS, selectedTags, changePage, changeSort, toggleTag,
           showAddModal, openAddModal, closeAddModal,
           showManualModal, openManualModal, closeManualModal,
+          showBatchModal, openBatchModal, closeBatchModal,
         };
       }
     };
