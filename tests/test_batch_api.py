@@ -66,6 +66,25 @@ class BatchCheckEndpointTests(unittest.TestCase):
         self.assertIsNone(data[0]['original_path'])
         self.assertEqual(data[0]['db_parts'], [])
 
+    def test_suffix_variant_matches_existing_video(self):
+        # DB has ABW-123-U; uploading ABW-123-C (or ABW-123, ABW-123-UC) is the same video.
+        db = _make_db([('ABW-123-U', None, '/vol/ABW-123-U/ABW-123-U.mp4')])
+        for fname in ['ABW-123-C.mp4', 'ABW-123.mp4', 'ABW-123-UC.mp4', 'ABW-123-U.mp4']:
+            resp = self._post([fname], db)
+            data = resp.get_json()
+            self.assertTrue(data[0]['exists'], f'{fname} should match ABW-123-U')
+            self.assertEqual(data[0]['db_code'], 'ABW-123-U', f'{fname} db_code')
+            self.assertEqual(data[0]['original_path'], '/vol/ABW-123-U/ABW-123-U.mp4')
+        os.unlink(db)
+
+    def test_base_code_not_matched_by_unrelated_longer_code(self):
+        # ABW-1230 must NOT match when checking ABW-123
+        db = _make_db([('ABW-1230', None, '/vol/ABW-1230/x.mp4')])
+        resp = self._post(['ABW-123.mp4'], db)
+        os.unlink(db)
+        data = resp.get_json()
+        self.assertFalse(data[0]['exists'])
+
     def test_part_extracted_from_filename(self):
         db = _make_db()
         resp = self._post(['WEST-042-part1.mp4'], db)

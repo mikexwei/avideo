@@ -354,13 +354,20 @@ def api_batch_check():
                     'error': '无法解析番号',
                 })
                 continue
+            # Suffix-agnostic match: ABW-123, ABW-123-C, ABW-123-U, ABW-123-UC are the
+            # same video. Compare on the base code (suffix stripped).
+            base = re.sub(r'(?i)-(?:uc|u|c)$', '', code)
+            candidates = [base, f'{base}-C', f'{base}-U', f'{base}-UC']
+            placeholders = ','.join('?' * len(candidates))
             rows = conn.execute(
-                'SELECT original_file_path, part FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0',
-                (code,)
+                f'SELECT code, original_file_path, part FROM videos '
+                f'WHERE UPPER(code) IN ({placeholders}) AND deleted = 0',
+                [c.upper() for c in candidates],
             ).fetchall()
             if rows:
                 results.append({
                     'filename': filename, 'code': code, 'part': part,
+                    'db_code': rows[0]['code'],
                     'exists': True,
                     'original_path': rows[0]['original_file_path'],
                     'db_parts': [r['part'] for r in rows],
@@ -368,6 +375,7 @@ def api_batch_check():
             else:
                 results.append({
                     'filename': filename, 'code': code, 'part': part,
+                    'db_code': None,
                     'exists': False, 'original_path': None, 'db_parts': [],
                 })
     finally:
