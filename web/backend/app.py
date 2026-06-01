@@ -338,6 +338,13 @@ def api_batch_check():
     conn.row_factory = sqlite3.Row
     try:
         for filename in filenames:
+            if not isinstance(filename, str):
+                results.append({
+                    'filename': str(filename), 'code': None, 'part': None,
+                    'exists': None, 'original_path': None, 'db_parts': [],
+                    'error': 'filename must be a string',
+                })
+                continue
             stem = Path(filename).stem
             code, part = extract_video_code(stem)
             if not code:
@@ -348,7 +355,8 @@ def api_batch_check():
                 })
                 continue
             rows = conn.execute(
-                'SELECT original_file_path, part FROM videos WHERE code = ?', (code,)
+                'SELECT original_file_path, part FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0',
+                (code,)
             ).fetchall()
             if rows:
                 results.append({

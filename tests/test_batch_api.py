@@ -17,7 +17,8 @@ def _make_db(rows=None):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             code TEXT NOT NULL,
             part TEXT,
-            original_file_path TEXT UNIQUE
+            original_file_path TEXT UNIQUE,
+            deleted INTEGER DEFAULT 0
         );
     """)
     for row in (rows or []):

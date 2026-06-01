@@ -32,12 +32,15 @@ class MediaLibrariesEndpointTests(unittest.TestCase):
         app.config['TESTING'] = True
         self.client = app.test_client()
 
-    def test_returns_list_of_strings(self):
+    def test_returns_list_of_objects_with_path_and_free_gb(self):
         resp = self.client.get('/api/config/media-libraries')
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertIsInstance(data, list)
-        self.assertTrue(all(isinstance(p, str) for p in data))
+        for item in data:
+            self.assertIn('path', item)
+            self.assertIsInstance(item['path'], str)
+            self.assertIn('free_gb', item)
 
 
 class MaxCodeEndpointTests(unittest.TestCase):
