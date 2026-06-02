@@ -16,8 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    # WAL reuses a single -wal file instead of creating a per-transaction journal,
+    # which is far more robust when the disk is low on space or under concurrency.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
