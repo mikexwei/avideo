@@ -544,8 +544,19 @@
                 <span class="text-xs text-gray-400 font-mono w-9 text-right">{{ r.progress || 0 }}%</span>
               </div>
             </div>
-            <!-- New: SSE step list -->
-            <div v-if="r.type === 'new' && (r.status === 'running' || r.status === 'done')"
+            <!-- New: upload progress bar (before pipeline starts) -->
+            <div v-if="r.type === 'new' && r.status === 'running' && !r.uploaded" class="mt-1.5">
+              <div class="text-xs text-gray-400 mb-1">上传中…</div>
+              <div class="flex items-center gap-2">
+                <div class="flex-1 bg-gray-700 rounded-full h-2 overflow-hidden">
+                  <div class="bg-indigo-500 h-2 rounded-full transition-all duration-200"
+                    :style="{ width: (r.progress || 0) + '%' }"></div>
+                </div>
+                <span class="text-xs text-gray-400 font-mono w-9 text-right">{{ r.progress || 0 }}%</span>
+              </div>
+            </div>
+            <!-- New: SSE step list (after upload completes) -->
+            <div v-if="r.type === 'new' && ((r.status === 'running' && r.uploaded) || r.status === 'done')"
               class="mt-2 flex flex-col gap-0.5 pl-1">
               <div v-for="step in r.progressSteps" :key="step.step"
                 class="flex items-start gap-2 text-xs">
@@ -1879,6 +1890,7 @@
             status: 'pending',
             message: '',
             progress: 0,
+            uploaded: false,
             viewCode: null,
             progressSteps: g.exists ? [] : AUTO_STEPS.map(s => ({ step: s, status: 'pending', message: '' })),
           }));
@@ -1910,11 +1922,29 @@
           }
           fd.append('volume_path', batchVolume.value);
 
-          const res = await fetch('/api/videos/add-auto', { method: 'POST', body: fd });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || '上传失败');
+          // Phase 1: upload with progress.
+          const totalBytes = group.files.reduce((sum, fi) => {
+            const f = batchFiles.value.find(bf => bf.name === fi.filename);
+            return sum + (f ? f.size : 0);
+          }, 0) || 1;
+          const data = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/videos/add-auto');
+            xhr.upload.addEventListener('progress', e => {
+              if (e.lengthComputable) result.progress = Math.round(e.loaded / totalBytes * 100);
+            });
+            xhr.addEventListener('load', () => {
+              let d; try { d = JSON.parse(xhr.responseText); } catch { d = {}; }
+              if (xhr.status === 200) resolve(d);
+              else reject(new Error(d.error || '上传失败'));
+            });
+            xhr.addEventListener('error', () => reject(new Error('网络错误，上传失败')));
+            xhr.send(fd);
+          });
           const jobId = data.job_id;
+          result.uploaded = true;  // switch UI from progress bar to step list
 
+          // Phase 2: stream pipeline steps.
           await new Promise((resolve, reject) => {
             const es = new EventSource(`/api/jobs/${jobId}/stream`);
             es.onmessage = (e) => {
