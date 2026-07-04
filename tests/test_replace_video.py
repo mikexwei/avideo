@@ -288,3 +288,52 @@ class RenameVideoFileTests(unittest.TestCase):
         with patch('dal.db_manager.DB_PATH', self.db_path):
             result = rename_video_file('NOSUCH', None, '/vol/x.mp4', 'NOSUCH')
         self.assertFalse(result['ok'])
+
+
+import tempfile as _tf
+from unittest.mock import patch as _patch
+from web.backend.app import app as flask_app
+
+
+class RenameFileEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.client = flask_app.test_client()
+        self.dir = _tf.mkdtemp()
+        self.old = Path(self.dir) / 'ABP-119-C.old.mp4'
+        self.old.write_bytes(b'x')
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _post(self, body):
+        return self.client.post('/api/videos/ABP-119-C/rename-file', json=body)
+
+    def test_renames_file_and_updates_db(self):
+        with _patch('web.backend.app.get_video_file_path', return_value=str(self.old)), \
+             _patch('web.backend.app.rename_video_file', return_value={'ok': True}) as m_ren, \
+             _patch('web.backend.app.get_video_by_code', return_value={'code': 'ABP-119-UC'}):
+            resp = self._post({'part': None, 'code': 'ABP-119-UC', 'actors': ['桃谷绘里香'], 'title': '标题'})
+        self.assertEqual(resp.status_code, 200)
+        new = Path(self.dir) / 'ABP-119-UC.桃谷绘里香.[标题].mp4'
+        self.assertTrue(new.exists())
+        self.assertFalse(self.old.exists())
+        m_ren.assert_called_once()
+
+    def test_target_exists_returns_409(self):
+        (Path(self.dir) / 'ABP-119-UC.[标题].mp4').write_bytes(b'y')
+        with _patch('web.backend.app.get_video_file_path', return_value=str(self.old)):
+            resp = self._post({'part': None, 'code': 'ABP-119-UC', 'actors': [], 'title': '标题'})
+        self.assertEqual(resp.status_code, 409)
+        self.assertTrue(self.old.exists())
+
+    def test_empty_code_returns_400(self):
+        with _patch('web.backend.app.get_video_file_path', return_value=str(self.old)):
+            resp = self._post({'part': None, 'code': '   ', 'actors': [], 'title': 't'})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_source_missing_returns_400(self):
+        self.old.unlink()
+        with _patch('web.backend.app.get_video_file_path', return_value=str(self.old)):
+            resp = self._post({'part': None, 'code': 'ABP-119-UC', 'actors': [], 'title': 't'})
+        self.assertEqual(resp.status_code, 400)

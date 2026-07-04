@@ -21,6 +21,7 @@ from utils.rename_and_move_videos import (
     VideoRecord,
     build_destination,
     build_filename,
+    sanitize_component,
 )
 
 from dal.db_manager import (
@@ -48,6 +49,7 @@ from dal.db_manager import (
     patch_video_file_path,
     patch_video_relations,
     rename_video_code,
+    rename_video_file,
     replace_video_file,
     search_actors,
     search_series,
@@ -491,42 +493,112 @@ def api_max_code(code_type: str):
     return jsonify({'code_type': ctype, 'max_number': max_num, 'suggested': max_num + 1})
 
 
+# ── Streaming part upload (large multi-part batches) ──────────────
+# Clients upload each file as a separate raw-body request straight to the
+# destination volume, then call add-auto / add-manual with the upload_id.
+# This avoids the 50GB single-request cap and Werkzeug's /tmp spooling that
+# multipart form uploads incur.
+_UPLOAD_ID_RE = re.compile(r'^[0-9a-fA-F-]{36}$')
+
+
+def _resolve_upload_dir(volume_path: Path, upload_id: str) -> Optional[Path]:
+    """Tmp dir for a pre-uploaded part batch, or None if volume/id is invalid."""
+    if not _UPLOAD_ID_RE.match(upload_id or ''):
+        return None
+    if volume_path not in [Path(p) for p in MEDIA_LIBRARIES]:
+        return None
+    return volume_path / '.upload_tmp' / upload_id
+
+
+def _list_uploaded_files(tmp_dir: Optional[Path]) -> list:
+    """Real uploaded files in an upload tmp dir, sorted by name.
+
+    Excludes macOS metadata sidecars (._* AppleDouble, .DS_Store) — exFAT
+    volumes create a 4KB ._<name> file next to every write, and those must
+    never be picked up as video parts.
+    """
+    if not tmp_dir or not tmp_dir.is_dir():
+        return []
+    return sorted(
+        [p for p in tmp_dir.iterdir() if p.is_file() and not p.name.startswith('.')],
+        key=lambda p: p.name,
+    )
+
+
+@app.post('/api/videos/upload-part')
+def api_upload_part():
+    from urllib.parse import unquote
+    volume_path = Path(unquote(request.headers.get('X-Volume-Path') or '').strip())
+    upload_id = (request.headers.get('X-Upload-Id') or '').strip()
+    tmp_dir = _resolve_upload_dir(volume_path, upload_id)
+    if tmp_dir is None:
+        return jsonify({'error': 'invalid volume_path or upload_id'}), 400
+
+    safe_name = secure_filename(unquote(request.headers.get('X-Dest-Name') or '').strip())
+    if not safe_name:
+        return jsonify({'error': 'invalid filename'}), 400
+    try:
+        expected_size = int(request.headers.get('X-File-Size') or 0)
+    except (ValueError, TypeError):
+        return jsonify({'error': 'invalid X-File-Size'}), 400
+
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    dest = tmp_dir / safe_name
+    written = 0
+    with open(str(dest), 'wb') as dst:
+        while chunk := request.stream.read(4 * 1024 * 1024):
+            dst.write(chunk)
+            written += len(chunk)
+    if expected_size and written != expected_size:
+        dest.unlink(missing_ok=True)
+        return jsonify({'error': f'size mismatch: expected {expected_size}, got {written}'}), 400
+    return jsonify({'ok': True, 'name': safe_name})
+
+
 @app.post('/api/videos/add-manual')
 def api_add_manual():
-    volume_path_str = (request.form.get('volume_path') or '').strip()
-    volume_path = Path(volume_path_str)
+    payload = request.get_json(silent=True) if request.is_json else None
+    use_upload = bool(payload and payload.get('upload_id'))
+    src = payload if use_upload else request.form
+
+    volume_path = Path((src.get('volume_path') or '').strip())
     if volume_path not in [Path(p) for p in MEDIA_LIBRARIES]:
         return jsonify({'error': 'invalid volume_path'}), 400
 
-    code_type = (request.form.get('code_type') or '').strip().upper()
+    code_type = (src.get('code_type') or '').strip().upper()
     if code_type not in ('WEST', 'CN', 'DUMMY'):
         return jsonify({'error': 'invalid code_type'}), 400
 
     try:
-        code_number = int(request.form.get('code_number') or 0)
-    except ValueError:
+        code_number = int(src.get('code_number') or 0)
+    except (ValueError, TypeError):
         return jsonify({'error': 'invalid code_number'}), 400
     if code_number < 1:
         return jsonify({'error': 'code_number must be >= 1'}), 400
 
-    is_multipart = request.form.get('is_multipart') == '1'
-    files = request.files.getlist('files[]')
-    if not files:
+    is_multipart = src.get('is_multipart') in ('1', 1, True)
+
+    # Gather the part files: pre-streamed (upload_id) or legacy multipart form.
+    if use_upload:
+        tmp_dir = _resolve_upload_dir(volume_path, payload['upload_id'])
+        part_paths = _list_uploaded_files(tmp_dir)
+    else:
+        files = request.files.getlist('files[]')
+        tmp_dir = volume_path / '.upload_tmp' / str(uuid.uuid4())
+        part_paths = []
+        if files:
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            for i, f in enumerate(sorted(files, key=lambda f: secure_filename(f.filename) or '')):
+                p = tmp_dir / (secure_filename(f.filename) or f'file_{i}.bin')
+                f.save(str(p))
+                part_paths.append(p)
+    if not part_paths:
         return jsonify({'error': 'no files'}), 400
 
     code = f'{code_type}-{code_number:03d}'
-    job_id = str(uuid.uuid4())
-    tmp_dir = volume_path / '.upload_tmp' / job_id
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    sorted_files = sorted(files, key=lambda f: secure_filename(f.filename) or '')
     scanned = []
     try:
-        for i, f in enumerate(sorted_files):
-            safe_name = secure_filename(f.filename) or f'file_{i}.bin'
-            tmp_path = tmp_dir / safe_name
-            f.save(str(tmp_path))
-
+        for i, tmp_path in enumerate(part_paths):
             part = f'part{i + 1}' if is_multipart else None
             record = VideoRecord(
                 id=0, code=code, part=part,
@@ -618,25 +690,36 @@ def api_finalize_rename(code: str):
 
 @app.post('/api/videos/add-auto')
 def api_add_auto():
-    volume_path_str = (request.form.get('volume_path') or '').strip()
-    volume_path = Path(volume_path_str)
-    if volume_path not in [Path(p) for p in MEDIA_LIBRARIES]:
-        return jsonify({'error': 'invalid volume_path'}), 400
+    payload = request.get_json(silent=True) if request.is_json else None
+    if payload and payload.get('upload_id'):
+        volume_path = Path((payload.get('volume_path') or '').strip())
+        tmp_dir = _resolve_upload_dir(volume_path, payload['upload_id'])
+        if tmp_dir is None:
+            return jsonify({'error': 'invalid volume_path'}), 400
+        saved_paths = _list_uploaded_files(tmp_dir)
+        if not saved_paths:
+            return jsonify({'error': 'no files'}), 400
+        job_id = payload['upload_id']
+    else:
+        volume_path_str = (request.form.get('volume_path') or '').strip()
+        volume_path = Path(volume_path_str)
+        if volume_path not in [Path(p) for p in MEDIA_LIBRARIES]:
+            return jsonify({'error': 'invalid volume_path'}), 400
 
-    files = request.files.getlist('files[]')
-    if not files:
-        return jsonify({'error': 'no files'}), 400
+        files = request.files.getlist('files[]')
+        if not files:
+            return jsonify({'error': 'no files'}), 400
 
-    job_id = str(uuid.uuid4())
-    tmp_dir = volume_path / '.upload_tmp' / job_id
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+        job_id = str(uuid.uuid4())
+        tmp_dir = volume_path / '.upload_tmp' / job_id
+        tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    saved_paths = []
-    for f in files:
-        safe_name = secure_filename(f.filename) or f'file_{len(saved_paths)}.bin'
-        dest = tmp_dir / safe_name
-        f.save(str(dest))
-        saved_paths.append(dest)
+        saved_paths = []
+        for f in files:
+            safe_name = secure_filename(f.filename) or f'file_{len(saved_paths)}.bin'
+            dest = tmp_dir / safe_name
+            f.save(str(dest))
+            saved_paths.append(dest)
 
     with _jobs_lock:
         job = _Job(job_id=job_id)
@@ -834,8 +917,18 @@ def api_video_replace(code: str):
         if written != expected_size:
             temp_path.unlink(missing_ok=True)
             return jsonify({'error': f'size mismatch: expected {expected_size}, got {written}'}), 400
+        # Stat the just-written file so the DB tracks the replacement's actual
+        # size/mtime/birthtime (rename preserves the inode, so these stay valid).
+        st = temp_path.stat()
+        file_meta = {
+            'file_size': st.st_size,
+            'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
+            'file_birthtime': datetime.fromtimestamp(
+                getattr(st, 'st_birthtime', st.st_mtime)
+            ).isoformat(),
+        }
         # DB update first — filesystem still intact if this fails
-        result = replace_video_file(code, original_part, str(dest_path), subtitle_zh, uncensored_leaked, uncensored_native)
+        result = replace_video_file(code, original_part, str(dest_path), subtitle_zh, uncensored_leaked, uncensored_native, file_meta=file_meta)
         if not result['ok']:
             temp_path.unlink(missing_ok=True)
             return jsonify({'error': result.get('error', 'db update failed')}), 500
@@ -848,6 +941,53 @@ def api_video_replace(code: str):
         return jsonify({'error': str(e)}), 500
 
     return jsonify({'ok': True, **get_video_by_code(code)})
+
+
+@app.post('/api/videos/<string:code>/rename-file')
+def api_video_rename_file(code: str):
+    body = request.get_json(silent=True) or {}
+    part = (body.get('part') or '').strip() or None
+    new_code = sanitize_component(body.get('code') or '')
+    if not new_code:
+        return jsonify({'error': 'invalid code'}), 400
+    actors = [a for a in (sanitize_component(x) for x in (body.get('actors') or [])) if a]
+    title = sanitize_component(body.get('title') or '')
+
+    orig = get_video_file_path(code, part)
+    if not orig:
+        return jsonify({'error': 'not found'}), 404
+    old_path = Path(orig)
+    ext = old_path.suffix
+
+    components = [new_code, *actors]
+    if title:
+        components.append(f'[{title}]')
+    if part:
+        components.append(part)
+    new_name = '.'.join(c for c in components if c) + ext
+    new_path = old_path.parent / new_name
+
+    if new_path == old_path:
+        return jsonify({'ok': True, **get_video_by_code(code)})
+    if not old_path.exists():
+        return jsonify({'error': 'source file missing'}), 400
+    if new_path.exists():
+        return jsonify({'error': 'target exists'}), 409
+
+    try:
+        old_path.rename(new_path)
+    except OSError as e:
+        return jsonify({'error': str(e)}), 500
+
+    result = rename_video_file(code, part, str(new_path), new_code)
+    if not result['ok']:
+        try:
+            new_path.rename(old_path)
+        except OSError:
+            pass
+        return jsonify({'error': result.get('error', 'db update failed')}), 500
+
+    return jsonify({'ok': True, **get_video_by_code(new_code)})
 
 
 _MIME_MAP = {
