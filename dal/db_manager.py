@@ -672,7 +672,7 @@ def get_actor_with_videos(actor_id: int) -> Optional[Dict[str, Any]]:
 
         cursor.execute(
             """
-            SELECT v.id, v.code, v.title_jp, v.title_zh, v.release_date, v.cover_path, v.score, v.deleted
+            SELECT v.id, v.code, v.title_jp, v.title_zh, v.release_date, v.cover_path, v.score, v.deleted, v.file_mtime
             FROM videos v
             WHERE v.id IN (
                 SELECT MIN(v2.id)
@@ -719,7 +719,7 @@ def get_tag_with_videos(tag_id: int) -> Optional[Dict[str, Any]]:
 
         cursor.execute(
             """
-            SELECT v.id, v.code, v.title_jp, v.title_zh, v.release_date, v.cover_path, v.score, v.deleted
+            SELECT v.id, v.code, v.title_jp, v.title_zh, v.release_date, v.cover_path, v.score, v.deleted, v.file_mtime
             FROM videos v
             WHERE v.id IN (
                 SELECT MIN(v2.id)
