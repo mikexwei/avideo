@@ -1262,13 +1262,43 @@
               class="bg-gray-800 rounded px-3 py-2 mb-1">
               <div class="flex items-center justify-between gap-2 mb-0.5">
                 <span v-if="f.part" class="text-xs text-indigo-400 font-mono flex-shrink-0">{{ f.part }}</span>
-                <button @click="copyPath(f.path)"
-                  class="text-xs flex-shrink-0 px-2 py-0.5 rounded transition"
-                  :class="copiedPaths[f.path] ? 'bg-green-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'">
-                  {{ copiedPaths[f.path] ? '已复制 ✓' : '复制' }}
-                </button>
+                <div class="flex items-center gap-1 ml-auto">
+                  <button @click="startRename(f)"
+                    class="text-xs flex-shrink-0 px-2 py-0.5 rounded transition bg-gray-700 hover:bg-gray-600 text-gray-300">
+                    改名
+                  </button>
+                  <button @click="copyPath(f.path)"
+                    class="text-xs flex-shrink-0 px-2 py-0.5 rounded transition"
+                    :class="copiedPaths[f.path] ? 'bg-green-700 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'">
+                    {{ copiedPaths[f.path] ? '已复制 ✓' : '复制' }}
+                  </button>
+                </div>
               </div>
               <span class="text-xs text-gray-400 font-mono break-all leading-relaxed">{{ f.path }}</span>
+
+              <div v-if="renamingPath === f.path" class="mt-2 space-y-1.5 border-t border-gray-700 pt-2">
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500 w-10 flex-shrink-0">番号</span>
+                  <input v-model="renameFields.code" placeholder="ABP-119-UC"
+                    class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500 w-10 flex-shrink-0">女优</span>
+                  <input v-model="renameFields.actors" placeholder="多个用 . 分隔"
+                    class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500 w-10 flex-shrink-0">标题</span>
+                  <input v-model="renameFields.title" placeholder="标题（不含方括号）"
+                    class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div class="flex justify-end gap-2 pt-1">
+                  <button @click="cancelRename"
+                    class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300">取消</button>
+                  <button @click="submitRename(f)"
+                    class="text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white">重命名</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -3049,10 +3079,55 @@
           }
         }
 
+        const renamingPath = ref(null);
+        const renameFields = ref({ code: '', actors: '', title: '' });
+
+        function parseFilename(path) {
+          const name = path.split('/').pop();
+          const dot = name.lastIndexOf('.');
+          const ext = dot > 0 ? name.slice(dot) : '';
+          const segs = (dot > 0 ? name.slice(0, dot) : name).split('.');
+          let part = '';
+          if (segs.length && /^part\w+$/i.test(segs[segs.length - 1])) part = segs.pop();
+          const code = segs.shift() || '';
+          let title = '';
+          if (segs.length && /^\[.*\]$/.test(segs[segs.length - 1])) {
+            title = segs.pop().replace(/^\[|\]$/g, '');
+          }
+          return { code, actors: segs.join('.'), title, part, ext };
+        }
+
+        function startRename(f) {
+          renamingPath.value = f.path;
+          const parsed = parseFilename(f.path);
+          renameFields.value = { code: parsed.code, actors: parsed.actors, title: parsed.title };
+        }
+
+        function cancelRename() { renamingPath.value = null; }
+
+        async function submitRename(f) {
+          const fields = renameFields.value;
+          const actors = (fields.actors || '').split('.').map(s => s.trim()).filter(Boolean);
+          const body = { part: f.part || null, code: fields.code, actors, title: fields.title };
+          const res = await apiFetch('/api/videos/' + video.value.code + '/rename-file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          renamingPath.value = null;
+          const newCode = res.code || video.value.code;
+          if (newCode !== route.params.code) {
+            router.replace('/video/' + encodeURIComponent(newCode));
+          } else {
+            video.value = res;
+          }
+        }
+
         watch(() => route.params.code, load);
         onMounted(load);
         return {
           video, loading, meta, fileParts,
+          renamingPath, renameFields, startRename, cancelRename, submitRename,
           editing, saving, saveError, form,
           editFields: EDIT_FIELDS,
           actorSuggestions, seriesSuggestions,
