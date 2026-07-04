@@ -204,3 +204,20 @@ class ReplaceEndpointTests(unittest.TestCase):
             self.assertFalse(orig.exists())
             self.assertTrue((Path(tmpdir) / 'SSIS-001-C.mp4').exists())
             self.assertEqual((Path(tmpdir) / 'SSIS-001-C.mp4').read_bytes(), video_bytes)
+
+
+from dal.db_manager import _order_clause
+
+
+class OrderClauseTests(unittest.TestCase):
+    def test_mtime_sorts_by_file_mtime_desc(self):
+        self.assertEqual(_order_clause('mtime'), "COALESCE(file_mtime, '') DESC, id DESC")
+
+    def test_score_unchanged(self):
+        self.assertEqual(
+            _order_clause('score'),
+            "COALESCE(score, 0) DESC, COALESCE(release_date, '') DESC, id DESC",
+        )
+
+    def test_default_is_release_date(self):
+        self.assertEqual(_order_clause('date'), "COALESCE(release_date, '') DESC, id DESC")

@@ -32,6 +32,8 @@ def _order_clause(sort: str) -> str:
     """Return the ORDER BY body for video queries."""
     if sort == 'score':
         return "COALESCE(score, 0) DESC, COALESCE(release_date, '') DESC, id DESC"
+    if sort == 'mtime':
+        return "COALESCE(file_mtime, '') DESC, id DESC"
     return "COALESCE(release_date, '') DESC, id DESC"
 
 
