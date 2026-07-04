@@ -1526,6 +1526,54 @@ def replace_video_file(
             conn.close()
 
 
+def rename_video_file(
+    code: str,
+    part: Optional[str],
+    new_path: str,
+    new_code: str,
+) -> Dict[str, Any]:
+    """Point a video record at a renamed file: update original_file_path and code.
+
+    Physical file rename and filename assembly happen in the app layer; this only
+    touches the DB row identified by (code, part).
+    """
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        resolved_code = _resolve_video_code(cursor, code)
+        if not resolved_code:
+            return {'ok': False, 'error': 'not found'}
+
+        if part:
+            cursor.execute(
+                'SELECT id FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1',
+                (resolved_code, part),
+            )
+        else:
+            cursor.execute(
+                'SELECT id FROM videos WHERE code = ? AND (part IS NULL OR part = "") ORDER BY id ASC LIMIT 1',
+                (resolved_code,),
+            )
+        row = cursor.fetchone()
+        if not row:
+            return {'ok': False, 'error': 'part not found' if part else 'not found'}
+
+        cursor.execute(
+            'UPDATE videos SET original_file_path = ?, code = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (new_path, new_code, row['id']),
+        )
+        conn.commit()
+        logger.info(f'✏️  rename_video_file [{code} -> {new_code}]: {new_path}')
+        return {'ok': True}
+    except sqlite3.Error as e:
+        logger.error(f'❌ rename_video_file 失败 [{code}]: {e}')
+        return {'ok': False, 'error': str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
 def patch_actor(actor_id: int, fields: Dict[str, Any]) -> bool:
     """Update editable scalar fields for an actor (name, name_zh)."""
     allowed = {k: v for k, v in fields.items() if k in {'name', 'name_zh'}}

@@ -244,3 +244,47 @@ class OrderClauseTests(unittest.TestCase):
 
     def test_default_is_release_date(self):
         self.assertEqual(_order_clause('date'), "COALESCE(release_date, '') DESC, id DESC")
+
+
+from dal.db_manager import rename_video_file
+
+
+class RenameVideoFileTests(unittest.TestCase):
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL,
+                part TEXT,
+                original_file_path TEXT,
+                updated_at TIMESTAMP
+            );
+        """)
+        conn.execute(
+            "INSERT INTO videos (code, part, original_file_path) "
+            "VALUES ('ABP-119-C', NULL, '/vol/ABP-119-C.old.mp4')"
+        )
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_updates_path_and_code(self):
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            result = rename_video_file('ABP-119-C', None, '/vol/ABP-119-UC.桃谷绘里香.[标题].mp4', 'ABP-119-UC')
+        self.assertTrue(result['ok'])
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT code, original_file_path FROM videos WHERE id=1").fetchone()
+        conn.close()
+        self.assertEqual(row[0], 'ABP-119-UC')
+        self.assertEqual(row[1], '/vol/ABP-119-UC.桃谷绘里香.[标题].mp4')
+
+    def test_unknown_code_returns_error(self):
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            result = rename_video_file('NOSUCH', None, '/vol/x.mp4', 'NOSUCH')
+        self.assertFalse(result['ok'])
