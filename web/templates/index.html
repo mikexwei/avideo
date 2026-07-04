@@ -713,6 +713,16 @@
       <!-- ── Step: auto-progress ── -->
       <template v-if="addStep === 'auto-progress'">
         <div class="p-5 flex flex-col gap-3">
+          <div v-if="addUploading">
+            <div class="flex items-center justify-between text-xs text-gray-400 mb-1">
+              <span>上传中… {{ addUploadPct }}%</span>
+              <span v-if="addUploadSpeed" class="text-indigo-300">{{ addUploadSpeed }}</span>
+            </div>
+            <div class="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+              <div class="h-1.5 bg-indigo-600 rounded-full transition-all duration-200"
+                :style="{ width: addUploadPct + '%' }"></div>
+            </div>
+          </div>
           <div class="h-1 bg-gray-800 rounded-full overflow-hidden">
             <div class="h-1 bg-indigo-600 rounded-full transition-all duration-500"
               :style="{ width: autoProgressPct + '%' }"></div>
@@ -750,6 +760,43 @@
       <!-- ── Step: manual-code ── -->
       <template v-if="addStep === 'manual-code'">
         <div class="p-5 flex flex-col gap-4">
+          <!-- 独立"手动添加"入口：直达此步，需在此选文件 + 存储卷 -->
+          <template v-if="initialStep === 'manual-code'">
+            <div>
+              <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">选择影片文件（可多选）</div>
+              <div class="border border-dashed border-indigo-800 rounded-lg p-5 text-center cursor-pointer hover:border-indigo-600 transition"
+                @click="$refs.addFileInput.click()">
+                <div class="text-gray-400 text-sm">拖拽或 <span class="text-indigo-400">点击选择</span></div>
+                <div class="text-gray-600 text-xs mt-1">支持 .mp4 .mkv .avi .wmv .mov 等</div>
+              </div>
+              <input ref="addFileInput" type="file" multiple class="hidden"
+                accept=".mp4,.mkv,.avi,.wmv,.mov,.ts,.flv,.webm,.m4v"
+                @change="onAddFilesChange" />
+            </div>
+            <div v-if="addFiles.length" class="flex flex-col gap-1">
+              <div v-for="(f, i) in addFileSorted" :key="i"
+                class="flex items-center gap-2 px-3 py-1.5 bg-gray-800 rounded text-sm">
+                <span class="text-indigo-400 text-xs">🎬</span>
+                <span class="flex-1 truncate text-gray-300">{{ f.name }}</span>
+                <span class="text-gray-600 text-xs">→ part{{ i + 1 }}</span>
+              </div>
+            </div>
+            <div>
+              <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">存放位置</div>
+              <div class="flex flex-col gap-2">
+                <label v-for="v in mediaLibraries" :key="v.path"
+                  class="flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors"
+                  :class="addVolume === v.path ? 'border-indigo-500 bg-indigo-950' : 'border-gray-700 bg-gray-800 hover:border-gray-600'">
+                  <input type="radio" :value="v.path" v-model="addVolume" class="accent-indigo-500" />
+                  <span class="flex-1 text-sm text-gray-200 truncate">{{ v.path }}</span>
+                  <span v-if="v.free_gb !== null" class="text-xs flex-shrink-0"
+                    :class="v.free_gb < 10 ? 'text-red-400' : 'text-gray-400'">
+                    {{ v.free_gb }} GB 可用
+                  </span>
+                </label>
+              </div>
+            </div>
+          </template>
           <div>
             <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">番号类型</div>
             <div class="flex gap-2">
@@ -789,9 +836,22 @@
             </div>
           </div>
         </div>
+        <div v-if="addUploading" class="px-5 pb-1">
+          <div class="flex items-center justify-between text-xs text-gray-400 mb-1">
+            <span>上传中… {{ addUploadPct }}%</span>
+            <span v-if="addUploadSpeed" class="text-indigo-300">{{ addUploadSpeed }}</span>
+          </div>
+          <div class="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+            <div class="h-1.5 bg-indigo-600 rounded-full transition-all duration-200"
+              :style="{ width: addUploadPct + '%' }"></div>
+          </div>
+        </div>
+        <div v-if="addError" class="mx-5 mb-1 px-3 py-2 bg-red-900 bg-opacity-40 rounded-lg text-red-300 text-xs">
+          {{ addError }}
+        </div>
         <div class="flex justify-between gap-3 px-5 py-4 border-t border-gray-800">
           <button v-if="initialStep !== 'manual-code'" @click="addStep = 'mode-select'" class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">← 上一步</button>
-          <button @click="startManualUpload" :disabled="manualUploading"
+          <button @click="startManualUpload" :disabled="manualUploading || !addFiles.length || !addVolume"
             class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
             {{ manualUploading ? '上传中…' : '上传 →' }}
           </button>
@@ -1643,6 +1703,10 @@
       :class="['px-2.5 py-1 rounded text-xs transition', sort === 'score' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
       评分
     </button>
+    <button @click="$emit('change', 'mtime')"
+      :class="['px-2.5 py-1 rounded text-xs transition', sort === 'mtime' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+      文件时间
+    </button>
   </div>
 </script>
 
@@ -1781,6 +1845,58 @@
         lastTime = now;
         return avg >= 1e6 ? (avg / 1e6).toFixed(1) + ' MB/s' : Math.max(0, avg / 1e3).toFixed(0) + ' KB/s';
       };
+    }
+
+    function genUploadId() {
+      if (crypto.randomUUID) return crypto.randomUUID();
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
+    }
+
+    // Upload an array of File objects one at a time as raw streamed requests
+    // (each < the 50GB cap, written straight to the target volume — no /tmp).
+    // onProgress receives cumulative bytes across all parts. Returns the
+    // upload_id that groups them; pass it to add-auto / add-manual.
+    async function streamUploadParts(files, volumePath, onProgress) {
+      const uploadId = genUploadId();
+      let priorBytes = 0;
+      for (const f of files) {
+        await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/videos/upload-part');
+          xhr.setRequestHeader('X-Upload-Id', uploadId);
+          xhr.setRequestHeader('X-Volume-Path', encodeURIComponent(volumePath));
+          xhr.setRequestHeader('X-Dest-Name', encodeURIComponent(f.name));
+          xhr.setRequestHeader('X-File-Size', String(f.size));
+          xhr.upload.addEventListener('progress', e => {
+            if (e.lengthComputable && onProgress) onProgress(priorBytes + e.loaded);
+          });
+          xhr.addEventListener('load', () => {
+            let d; try { d = JSON.parse(xhr.responseText); } catch { d = {}; }
+            if (xhr.status === 200) resolve(d);
+            else reject(new Error(d.error || `上传失败: ${f.name}`));
+          });
+          xhr.addEventListener('error', () => reject(new Error(`网络错误，上传失败: ${f.name}`)));
+          xhr.send(f);
+        });
+        priorBytes += f.size;
+      }
+      return uploadId;
+    }
+
+    // POST JSON; parses the response safely and surfaces the real error
+    // instead of choking on an HTML error page ("Unexpected token '<'").
+    async function postJson(url, body) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      let data; try { data = await res.json(); } catch { data = {}; }
+      if (!res.ok) throw new Error(data.error || '请求失败');
+      return data;
     }
 
     // ── BatchModal ────────────────────────────────────────────
@@ -1937,36 +2053,20 @@
         }
 
         async function processNewGroup(group, result) {
-          const fd = new FormData();
-          for (const fi of group.files) {
-            const f = batchFiles.value.find(bf => bf.name === fi.filename);
-            if (f) fd.append('files[]', f);
-          }
-          fd.append('volume_path', batchVolume.value);
-
-          // Phase 1: upload with progress.
-          const totalBytes = group.files.reduce((sum, fi) => {
-            const f = batchFiles.value.find(bf => bf.name === fi.filename);
-            return sum + (f ? f.size : 0);
-          }, 0) || 1;
+          // Phase 1: stream each part to the target volume, with progress.
+          const files = group.files
+            .map(fi => batchFiles.value.find(bf => bf.name === fi.filename))
+            .filter(Boolean);
+          const totalBytes = files.reduce((sum, f) => sum + f.size, 0) || 1;
           const speed = makeUploadSpeed();
-          const data = await new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/videos/add-auto');
-            xhr.upload.addEventListener('progress', e => {
-              if (e.lengthComputable) {
-                result.progress = Math.round(e.loaded / totalBytes * 100);
-                const s = speed(e.loaded);
-                if (s) result.speed = s;
-              }
-            });
-            xhr.addEventListener('load', () => {
-              let d; try { d = JSON.parse(xhr.responseText); } catch { d = {}; }
-              if (xhr.status === 200) resolve(d);
-              else reject(new Error(d.error || '上传失败'));
-            });
-            xhr.addEventListener('error', () => reject(new Error('网络错误，上传失败')));
-            xhr.send(fd);
+          const uploadId = await streamUploadParts(files, batchVolume.value, loaded => {
+            result.progress = Math.round(loaded / totalBytes * 100);
+            const s = speed(loaded);
+            if (s) result.speed = s;
+          });
+          const data = await postJson('/api/videos/add-auto', {
+            upload_id: uploadId,
+            volume_path: batchVolume.value,
           });
           const jobId = data.job_id;
           result.uploaded = true;  // switch UI from progress bar to step list
@@ -2099,6 +2199,11 @@
         const autoProgressSteps = ref([]);
         const autoFinished = ref(false);
 
+        // Shared upload progress (single auto/manual add).
+        const addUploading  = ref(false);
+        const addUploadPct  = ref(0);
+        const addUploadSpeed = ref('');
+
         const autoProgressPct = computed(() => {
           const done = autoProgressSteps.value.filter(s => s.status === 'done').length;
           return Math.round((done / AUTO_STEPS.length) * 100);
@@ -2159,17 +2264,26 @@
           addError.value = '';
           autoProgressSteps.value = AUTO_STEPS.map(s => ({ step: s, status: 'pending', message: '' }));
 
-          const fd = new FormData();
-          addFileSorted.value.forEach(f => fd.append('files[]', f));
-          fd.append('volume_path', addVolume.value);
-
           let jobId;
           try {
-            const res = await fetch('/api/videos/add-auto', { method: 'POST', body: fd });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || '上传失败');
+            const totalBytes = addFileSorted.value.reduce((s, f) => s + f.size, 0) || 1;
+            const speed = makeUploadSpeed();
+            addUploading.value = true;
+            addUploadPct.value = 0;
+            addUploadSpeed.value = '';
+            const uploadId = await streamUploadParts(addFileSorted.value, addVolume.value, loaded => {
+              addUploadPct.value = Math.round(loaded / totalBytes * 100);
+              const s = speed(loaded);
+              if (s) addUploadSpeed.value = s;
+            });
+            addUploading.value = false;
+            const data = await postJson('/api/videos/add-auto', {
+              upload_id: uploadId,
+              volume_path: addVolume.value,
+            });
             jobId = data.job_id;
           } catch (e) {
+            addUploading.value = false;
             addError.value = e.message;
             autoFinished.value = true;
             return;
@@ -2205,21 +2319,32 @@
 
         async function startManualUpload() {
           manualUploading.value = true;
-          const fd = new FormData();
-          addFileSorted.value.forEach(f => fd.append('files[]', f));
-          fd.append('volume_path', addVolume.value);
-          fd.append('code_type', manualCodeType.value);
-          fd.append('code_number', String(manualCodeNumber.value));
-          fd.append('is_multipart', manualIsMultipart.value ? '1' : '0');
+          addError.value = '';
           try {
-            const res = await fetch('/api/videos/add-manual', { method: 'POST', body: fd });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || '上传失败');
+            const totalBytes = addFileSorted.value.reduce((s, f) => s + f.size, 0) || 1;
+            const speed = makeUploadSpeed();
+            addUploading.value = true;
+            addUploadPct.value = 0;
+            addUploadSpeed.value = '';
+            const uploadId = await streamUploadParts(addFileSorted.value, addVolume.value, loaded => {
+              addUploadPct.value = Math.round(loaded / totalBytes * 100);
+              const s = speed(loaded);
+              if (s) addUploadSpeed.value = s;
+            });
+            addUploading.value = false;
+            const data = await postJson('/api/videos/add-manual', {
+              upload_id: uploadId,
+              volume_path: addVolume.value,
+              code_type: manualCodeType.value,
+              code_number: manualCodeNumber.value,
+              is_multipart: manualIsMultipart.value,
+            });
             manualCode.value = data.codes[0];
             addStep.value = 'manual-meta';
           } catch (e) {
             addError.value = e.message;
           } finally {
+            addUploading.value = false;
             manualUploading.value = false;
           }
         }
@@ -2276,6 +2401,7 @@
           addStep, addFiles, addFileSorted, addVolume, addMode, addDoneCode, addError,
           mediaLibraries, addFileInput,
           autoProgressSteps, autoProgressPct, autoFinished,
+          addUploading, addUploadPct, addUploadSpeed,
           autoStepLabel,
           manualCodeType, manualCodeNumber, manualMaxNumber, manualIsMultipart,
           manualUploading, manualCode, manualTitleJp, manualTitleZh, manualTitleShort,
@@ -3002,6 +3128,7 @@
             });
           }
           if (sort.value === 'score') return arr.sort((a, b) => (b.score || 0) - (a.score || 0));
+          if (sort.value === 'mtime') return arr.sort((a, b) => (b.file_mtime || '').localeCompare(a.file_mtime || ''));
           return arr.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
         });
         async function load() {
@@ -3085,6 +3212,7 @@
           if (!data.value) return [];
           const arr = [...data.value.videos];
           if (sort.value === 'score') return arr.sort((a, b) => (b.score || 0) - (a.score || 0));
+          if (sort.value === 'mtime') return arr.sort((a, b) => (b.file_mtime || '').localeCompare(a.file_mtime || ''));
           return arr.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
         });
         async function load() {
