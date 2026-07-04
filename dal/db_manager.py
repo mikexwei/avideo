@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 import logging
 from pathlib import Path
@@ -1431,8 +1432,13 @@ def replace_video_file(
     subtitle_zh: bool,
     uncensored_leaked: bool,
     uncensored_native: bool,
+    file_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Update file path and sync 中文字幕/无码破解/原装无码 tags after a file replacement."""
+    """Update file path and sync 中文字幕/无码破解/原装无码 tags after a file replacement.
+
+    file_meta, when provided, carries the new file's stat (file_size/file_mtime/
+    file_birthtime) so those columns stay in sync with the replaced file.
+    """
     tag_desired = {'中文字幕': subtitle_zh, '无码破解': uncensored_leaked, '原装无码': uncensored_native}
     conn = None
     try:
@@ -1444,12 +1450,12 @@ def replace_video_file(
 
         if original_part:
             cursor.execute(
-                'SELECT id FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1',
+                'SELECT id, code FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1',
                 (resolved_code, original_part),
             )
         else:
             cursor.execute(
-                'SELECT id FROM videos WHERE code = ? AND (part IS NULL OR part = "") ORDER BY id ASC LIMIT 1',
+                'SELECT id, code FROM videos WHERE code = ? AND (part IS NULL OR part = "") ORDER BY id ASC LIMIT 1',
                 (resolved_code,),
             )
         row = cursor.fetchone()
@@ -1457,10 +1463,12 @@ def replace_video_file(
             return {'ok': False, 'error': 'part not found' if original_part else 'not found'}
         video_id = row['id']
 
-        cursor.execute(
-            'UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            (dest_path, video_id),
-        )
+        # Keep the code column's version suffix (-C/-U/-UC) in sync with the new
+        # file. Otherwise a -C record replaced by a -UC file keeps a stale -C code.
+        has_c = subtitle_zh
+        has_u = uncensored_leaked or uncensored_native
+        suffix = '-UC' if (has_c and has_u) else '-C' if has_c else '-U' if has_u else ''
+        new_code = re.sub(r'(?i)-(?:uc|u|c)$', '', row['code']) + suffix
 
         cursor.execute('SELECT id FROM videos WHERE code = ?', (resolved_code,))
         all_ids = [r['id'] for r in cursor.fetchall()]
@@ -1491,6 +1499,21 @@ def replace_video_file(
                         f'DELETE FROM video_tag_link WHERE video_id IN ({ph}) AND tag_id = ?',
                         all_ids + [tag_row['id']],
                     )
+
+        # Path/code/stats update last, so the code change above doesn't disturb the
+        # resolved_code-based sibling lookup used for tag syncing.
+        if file_meta:
+            cursor.execute(
+                'UPDATE videos SET original_file_path = ?, code = ?, file_size = ?, file_mtime = ?, '
+                'file_birthtime = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                (dest_path, new_code, file_meta.get('file_size'), file_meta.get('file_mtime'),
+                 file_meta.get('file_birthtime'), video_id),
+            )
+        else:
+            cursor.execute(
+                'UPDATE videos SET original_file_path = ?, code = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                (dest_path, new_code, video_id),
+            )
 
         conn.commit()
         logger.info(f'🔄 replace_video_file [{code}]: {dest_path}')

@@ -16,6 +16,9 @@ def _init_schema(conn):
             code TEXT NOT NULL,
             part TEXT,
             original_file_path TEXT,
+            file_size INTEGER,
+            file_mtime TEXT,
+            file_birthtime TEXT,
             updated_at TIMESTAMP
         );
         CREATE TABLE tags (
@@ -48,17 +51,26 @@ class ReplaceVideoFileTests(unittest.TestCase):
         os.unlink(self.db_path)
 
     def _call(self, code='SSIS-001', part=None, dest='/vol/SSIS-001-C.mp4',
-              sub_zh=False, leaked=False, native=False):
+              sub_zh=False, leaked=False, native=False, file_meta=None):
         with patch('dal.db_manager.DB_PATH', self.db_path):
-            return replace_video_file(code, part, dest, sub_zh, leaked, native)
+            return replace_video_file(code, part, dest, sub_zh, leaked, native, file_meta=file_meta)
 
     def test_updates_file_path(self):
         result = self._call(dest='/vol/SSIS-001-C.mp4', sub_zh=True)
         self.assertTrue(result['ok'])
         conn = sqlite3.connect(self.db_path)
-        row = conn.execute("SELECT original_file_path FROM videos WHERE code='SSIS-001'").fetchone()
+        row = conn.execute("SELECT original_file_path FROM videos WHERE id=1").fetchone()
         conn.close()
         self.assertEqual(row[0], '/vol/SSIS-001-C.mp4')
+
+    def test_syncs_code_suffix(self):
+        # -C record replaced by a -UC file: code must follow the new suffix.
+        result = self._call(dest='/vol/SSIS-001-UC.mp4', sub_zh=True, leaked=True)
+        self.assertTrue(result['ok'])
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT code FROM videos WHERE id=1").fetchone()
+        conn.close()
+        self.assertEqual(row[0], 'SSIS-001-UC')
 
     def test_adds_missing_tag(self):
         result = self._call(native=True)
@@ -83,6 +95,17 @@ class ReplaceVideoFileTests(unittest.TestCase):
     def test_unknown_code_returns_error(self):
         result = self._call(code='NOSUCH')
         self.assertFalse(result['ok'])
+
+    def test_updates_file_stats(self):
+        meta = {'file_size': 12345, 'file_mtime': '2026-07-03T10:00:00', 'file_birthtime': '2026-07-03T09:00:00'}
+        result = self._call(sub_zh=True, file_meta=meta)
+        self.assertTrue(result['ok'])
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT file_size, file_mtime, file_birthtime FROM videos WHERE id=1"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(tuple(row), (12345, '2026-07-03T10:00:00', '2026-07-03T09:00:00'))
 
 
 from web.backend.app import app, _compute_final_filename
