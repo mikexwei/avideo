@@ -1517,7 +1517,7 @@ def replace_video_file(
 
         conn.commit()
         logger.info(f'🔄 replace_video_file [{code}]: {dest_path}')
-        return {'ok': True, 'original_file_path': dest_path}
+        return {'ok': True, 'original_file_path': dest_path, 'new_code': new_code}
     except sqlite3.Error as e:
         logger.error(f'❌ replace_video_file 失败 [{code}]: {e}')
         return {'ok': False, 'error': str(e)}

@@ -940,7 +940,10 @@ def api_video_replace(code: str):
         temp_path.unlink(missing_ok=True)
         return jsonify({'error': str(e)}), 500
 
-    return jsonify({'ok': True, **get_video_by_code(code)})
+    # replace_video_file may re-suffix the code (e.g. -C → -UC), so fetch the
+    # detail by the new code, not the original request code.
+    final_code = result.get('new_code') or code
+    return jsonify({'ok': True, **(get_video_by_code(final_code) or {})})
 
 
 @app.post('/api/videos/<string:code>/rename-file')

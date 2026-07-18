@@ -228,6 +228,35 @@ class ReplaceEndpointTests(unittest.TestCase):
             self.assertTrue((Path(tmpdir) / 'SSIS-001-C.mp4').exists())
             self.assertEqual((Path(tmpdir) / 'SSIS-001-C.mp4').read_bytes(), video_bytes)
 
+    def test_suffix_change_uses_new_code_returns_200(self):
+        # Regression: replace_video_file re-suffixes the code (C→UC). The response
+        # must look up the NEW code — the original request code no longer exists in
+        # the DB, so get_video_by_code(old) → None → **None previously crashed (500).
+        video_bytes = b'x'
+
+        def fake_detail(c):
+            return {'code': 'SSIS-001-UC'} if c == 'SSIS-001-UC' else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = Path(tmpdir) / 'SSIS-001-C.mp4'
+            orig.write_bytes(b'old')
+            with patch('web.backend.app.replace_video_file',
+                       return_value={'ok': True, 'new_code': 'SSIS-001-UC'}), \
+                 patch('web.backend.app.get_video_by_code', side_effect=fake_detail), \
+                 patch('web.backend.app.get_video_file_path', return_value=str(orig)):
+                resp = self.client.post(
+                    '/api/videos/SSIS-001-C/replace',
+                    data={
+                        'file': (io.BytesIO(video_bytes), 'u.mp4'),
+                        'file_size': str(len(video_bytes)),
+                        'dest_name': 'SSIS-001.mp4',
+                        'subtitle_zh': '1', 'uncensored_leaked': '1',
+                    },
+                    content_type='multipart/form-data',
+                )
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.get_json()['code'], 'SSIS-001-UC')
+
 
 from dal.db_manager import _order_clause
 
