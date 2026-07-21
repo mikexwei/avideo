@@ -18,6 +18,11 @@ from config import COVERS_DIR, AVATARS_DIR, JAVDB_COOKIES_FILE
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned by scrape_video_info when the search returned results but none
+# of them matched the requested code exactly — caller freezes the record for manual
+# handling instead of scraping a wrong match.
+FREEZE = 'FREEZE'
+
 _SAMESITE_MAP = {
     "no_restriction": "None",
     "lax": "Lax",
@@ -361,16 +366,34 @@ def _apply_search_cooldown(page: Page, current_count: int):
     else:
         simulate_human_behavior(page, 5.5, 22.5)
 
-def _open_first_video_detail(page: Page, code: str) -> bool:
-    """从搜索结果打开第一条详情页。"""
-    items = page.locator(".item")
-    if items.count() == 0:
-        logger.warning(f"❌ 未在 JavDB 搜索列表中提取到有效的影片项目 ({code})。跳过此片。")
-        return False
+def _pick_matching_index(item_codes, search_code: str) -> Optional[int]:
+    """返回番号与 search_code 精确匹配（忽略大小写）的结果下标，无匹配则 None。"""
+    target = (search_code or '').strip().upper()
+    if not target:
+        return None
+    for i, c in enumerate(item_codes):
+        if (c or '').strip().upper() == target:
+            return i
+    return None
 
-    first_item_link = items.first.locator("a")
-    logger.info("找到搜索结果，准备进入详情页...")
-    first_item_link.click()
+
+def _read_result_codes(page: Page) -> list:
+    """读取每个搜索结果项显示的番号 (.video-title strong)。"""
+    items = page.locator(".item")
+    codes = []
+    for i in range(items.count()):
+        try:
+            codes.append(items.nth(i).locator(".video-title strong").first.inner_text().strip())
+        except Exception:
+            codes.append('')
+    return codes
+
+
+def _open_result_detail(page: Page, code: str, index: int) -> bool:
+    """点击指定下标的搜索结果并等待详情页加载。"""
+    link = page.locator(".item").nth(index).locator("a").first
+    logger.info(f"进入精确匹配的搜索结果 (第 {index + 1} 条)...")
+    link.click()
 
     try:
         page.wait_for_selector(".movie-panel-info, input[type='password']", timeout=15000)
@@ -414,8 +437,20 @@ def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
         # 4. 搜索页防封冷却
         _apply_search_cooldown(page, current_count)
 
-        # 5. 进入详情页
-        if not _open_first_video_detail(page, code):
+        # 5. 找到与番号精确匹配的搜索结果（第一位不一定是正确的片）
+        result_codes = _read_result_codes(page)
+        if not result_codes:
+            logger.warning(f"❌ 未在 JavDB 搜索列表中提取到有效的影片项目 ({code})。跳过此片。")
+            return None
+        match_index = _pick_matching_index(result_codes, search_code)
+        if match_index is None:
+            logger.warning(
+                f"🧊 搜索结果中无精确匹配 [{search_code}] 的番号（候选: {result_codes[:5]}），冻结待人工处理。"
+            )
+            return FREEZE
+
+        # 6. 进入匹配的详情页
+        if not _open_result_detail(page, code, match_index):
             return None
 
         if _is_login_required(page):

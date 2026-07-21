@@ -173,15 +173,23 @@ def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
         emit('scrape', 'running', '刮削影片信息（JavDB）…')
         base_code = re.sub(r'(?i)-(?:uc|u|c)$', '', main_code)
         result_data = _scrape_with_playwright(base_code)
+        from core.scraper import FREEZE
 
-        if result_data:
-            conn_tmp = sqlite3.connect(DB_PATH)
-            try:
-                cur = conn_tmp.cursor()
-                cur.execute('SELECT id FROM videos WHERE code = ? LIMIT 1', (main_code,))
-                row = cur.fetchone()
-            finally:
-                conn_tmp.close()
+        conn_tmp = sqlite3.connect(DB_PATH)
+        try:
+            cur = conn_tmp.cursor()
+            cur.execute('SELECT id FROM videos WHERE code = ? LIMIT 1', (main_code,))
+            row = cur.fetchone()
+        finally:
+            conn_tmp.close()
+
+        if result_data == FREEZE:
+            if row:
+                from dal.db_manager import update_video_metadata
+                update_video_metadata(row[0], 'FREEZE')
+            emit('scrape', 'done', '未找到精确匹配，已冻结待人工')
+            emit('actors', 'done', '跳过')
+        elif result_data:
             if row:
                 from dal.db_manager import update_video_metadata
                 update_video_metadata(row[0], 'SUCCESS', result_data)
@@ -302,6 +310,10 @@ def _rescrape_one_code(main_code: str) -> dict:
         return {'ok': False, 'message': '未找到记录'}
 
     from dal.db_manager import update_video_metadata
+    from core.scraper import FREEZE
+    if result_data == FREEZE:
+        update_video_metadata(row[0], 'FREEZE')
+        return {'ok': False, 'message': '搜索结果无精确匹配，已冻结待人工'}
     update_video_metadata(row[0], 'SUCCESS' if result_data else 'FAILED', result_data)
     if not result_data:
         return {'ok': False, 'message': '刮削未找到结果'}

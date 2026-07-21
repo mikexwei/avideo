@@ -272,9 +272,10 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
                             cursor.execute("INSERT OR IGNORE INTO video_tag_link (video_id, tag_id) VALUES (?, ?)", (t_v_id, tag_id))
             
         else:
-            # 刮削失败，批量更新所有相同 code 的状态
-            sql_fail = "UPDATE videos SET scrape_status = 'FAILED', updated_at = CURRENT_TIMESTAMP WHERE code = ?"
-            cursor.execute(sql_fail, (code,))
+            # 非成功状态（FAILED / FREEZE 等），批量更新所有相同 code 的状态
+            new_status = status if status in ('FAILED', 'FREEZE', 'PENDING') else 'FAILED'
+            sql_fail = "UPDATE videos SET scrape_status = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?"
+            cursor.execute(sql_fail, (new_status, code))
             
         # 所有操作要么一起成功，要么一起失败 (事务保障)
         conn.commit()
