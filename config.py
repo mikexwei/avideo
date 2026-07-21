@@ -30,7 +30,7 @@ AVATARS_DIR.mkdir(parents=True, exist_ok=True)
 JAVDB_COOKIES_FILE = BASE_DIR / "javdb_cookie.json"
 
 MEDIA_LIBRARIES = [
-    Path("/Volumes/12TB"),
+    Path("/Volumes/12TB/avideo"),
     Path("/Volumes/8TB/avideo"),
     Path("/Volumes/T71/avideo"),
     Path("/Volumes/T72/avideo"),
