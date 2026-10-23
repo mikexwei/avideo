@@ -14,10 +14,10 @@ __pycache__/
 nohup.out
 server.log
 server.pid
+data/javdb_chrome_profile/
+data/javdb_chrome_profile.lock
 
 
 # Logs and generated reports
 *.log
 data/logs/
-
-

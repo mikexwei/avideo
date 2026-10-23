@@ -43,6 +43,43 @@ class MediaLibrariesEndpointTests(unittest.TestCase):
             self.assertIsInstance(item['path'], str)
             self.assertIn('free_gb', item)
 
+    def test_returns_disk_usage_fields_for_available_library(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            with patch('web.backend.app.MEDIA_LIBRARIES', [Path(tmpdir)]):
+                resp = self.client.get('/api/config/media-libraries')
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(len(data), 1)
+        self.assertTrue(data[0]['available'])
+        self.assertEqual(data[0]['path'], tmpdir)
+        self.assertIn('name', data[0])
+        self.assertIn('used_gb', data[0])
+        self.assertIn('total_gb', data[0])
+        self.assertIn('used_percent', data[0])
+        self.assertIn('free_percent', data[0])
+
+    def test_disk_usage_uses_df_values(self):
+        df_output = (
+            'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+            '/dev/disk2s2 11718482176 11554084864 164397312 99% /Volumes/12TB\n'
+        )
+        with patch('web.backend.app.MEDIA_LIBRARIES', [Path('/Volumes/12TB/avideo')]), \
+             patch('subprocess.check_output', return_value=df_output):
+            resp = self.client.get('/api/config/media-libraries')
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data[0]['total_gb'], 11175.6)
+        self.assertEqual(data[0]['used_gb'], 11018.8)
+        self.assertEqual(data[0]['free_gb'], 156.8)
+        self.assertEqual(data[0]['used_percent'], 98.6)
+        self.assertEqual(data[0]['free_percent'], 1.4)
+
 
 class MaxCodeEndpointTests(unittest.TestCase):
     def setUp(self):
@@ -217,6 +254,131 @@ class AddManualEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
 
+class StreamingUploadTests(unittest.TestCase):
+    """Per-part streaming upload (upload-part) + upload_id finalize path.
+
+    This is the path that fixes large multi-part batches: each file is streamed
+    in its own request (under the 50GB cap), then add-manual/add-auto reads them
+    from the tmp dir via upload_id instead of one giant multipart request.
+    """
+
+    def setUp(self):
+        app.config['TESTING'] = True
+        self.client = app.test_client()
+        self.tmpdir = tempfile.mkdtemp()
+        fd, self.db_path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        conn = sqlite3.connect(self.db_path)
+        _init_full_schema(conn)
+        conn.close()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        os.unlink(self.db_path)
+
+    def _upload_part(self, upload_id, name, body):
+        with patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]):
+            return self.client.post(
+                '/api/videos/upload-part',
+                data=body,
+                headers={
+                    'X-Upload-Id': upload_id,
+                    'X-Volume-Path': self.tmpdir,
+                    'X-Dest-Name': name,
+                    'X-File-Size': str(len(body)),
+                },
+                content_type='application/octet-stream',
+            )
+
+    def test_upload_part_writes_file_to_tmp_dir(self):
+        uid = '11111111-1111-4111-8111-111111111111'
+        resp = self._upload_part(uid, 'WEST-001-part1.mp4', b'aaaa')
+        self.assertEqual(resp.status_code, 200)
+        written = Path(self.tmpdir) / '.upload_tmp' / uid / 'WEST-001-part1.mp4'
+        self.assertTrue(written.exists())
+        self.assertEqual(written.read_bytes(), b'aaaa')
+
+    def test_upload_part_rejects_bad_upload_id(self):
+        resp = self._upload_part('../escape', 'x.mp4', b'a')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_upload_part_size_mismatch_returns_400(self):
+        uid = '22222222-2222-4222-8222-222222222222'
+        with patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]):
+            resp = self.client.post(
+                '/api/videos/upload-part', data=b'aaaa',
+                headers={'X-Upload-Id': uid, 'X-Volume-Path': self.tmpdir,
+                         'X-Dest-Name': 'x.mp4', 'X-File-Size': '999'},
+                content_type='application/octet-stream',
+            )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_add_manual_via_upload_id_creates_multipart_record(self):
+        uid = '33333333-3333-4333-8333-333333333333'
+        self.assertEqual(self._upload_part(uid, 'movie_a.mp4', b'v1').status_code, 200)
+        self.assertEqual(self._upload_part(uid, 'movie_b.mp4', b'v2').status_code, 200)
+        with patch('web.backend.app.DB_PATH', self.db_path), \
+             patch('dal.db_manager.DB_PATH', self.db_path), \
+             patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]):
+            resp = self.client.post('/api/videos/add-manual', json={
+                'upload_id': uid, 'volume_path': self.tmpdir,
+                'code_type': 'WEST', 'code_number': 1, 'is_multipart': True,
+            })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['codes'], ['WEST-001'])
+        conn = sqlite3.connect(self.db_path)
+        parts = [r[0] for r in conn.execute(
+            "SELECT part FROM videos WHERE code='WEST-001' ORDER BY part").fetchall()]
+        conn.close()
+        self.assertIn('part1', parts)
+        self.assertIn('part2', parts)
+
+    def test_add_auto_via_upload_id_returns_job_id(self):
+        uid = '44444444-4444-4444-8444-444444444444'
+        self.assertEqual(self._upload_part(uid, 'SSIS-001.mp4', b'v').status_code, 200)
+        with patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]), \
+             patch('web.backend.app._run_auto_pipeline'):
+            resp = self.client.post('/api/videos/add-auto', json={
+                'upload_id': uid, 'volume_path': self.tmpdir,
+            })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['job_id'], uid)
+
+    def test_add_auto_via_upload_id_no_files_returns_400(self):
+        uid = '55555555-5555-4555-8555-555555555555'
+        with patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]):
+            resp = self.client.post('/api/videos/add-auto', json={
+                'upload_id': uid, 'volume_path': self.tmpdir,
+            })
+        self.assertEqual(resp.status_code, 400)
+
+    def test_macos_appledouble_sidecars_are_ignored(self):
+        """exFAT volumes drop a 4KB ._<name> sidecar next to every write; it
+        must never be treated as a video part (regression: bogus 4KB part1)."""
+        uid = '66666666-6666-4666-8666-666666666666'
+        tmp_dir = Path(self.tmpdir) / '.upload_tmp' / uid
+        tmp_dir.mkdir(parents=True)
+        (tmp_dir / 'WEST-001.mp4').write_bytes(b'real video bytes')
+        (tmp_dir / '._WEST-001.mp4').write_bytes(b'\x00' * 4096)  # AppleDouble
+        (tmp_dir / '.DS_Store').write_bytes(b'\x00' * 4096)
+        with patch('web.backend.app.DB_PATH', self.db_path), \
+             patch('dal.db_manager.DB_PATH', self.db_path), \
+             patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]):
+            resp = self.client.post('/api/videos/add-manual', json={
+                'upload_id': uid, 'volume_path': self.tmpdir,
+                'code_type': 'WEST', 'code_number': 1, 'is_multipart': True,
+            })
+        self.assertEqual(resp.status_code, 200)
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT part, file_size FROM videos WHERE code='WEST-001'").fetchall()
+        conn.close()
+        # Exactly one record (the real file), no bogus 4KB sidecar part.
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], len(b'real video bytes'))
+
+
 class FinalizeRenameEndpointTests(unittest.TestCase):
     def setUp(self):
         app.config['TESTING'] = True
@@ -264,6 +426,27 @@ class FinalizeRenameEndpointTests(unittest.TestCase):
         conn.close()
         self.assertNotEqual(row[0], str(self.video_file))
         self.assertIn('短标题', row[0])
+
+    def test_moves_file_to_code_prefix_directory_under_avideo_root(self):
+        root = Path(self.tmpdir) / 'avideo'
+        wrong_dir = root / 'WRONG'
+        wrong_dir.mkdir(parents=True)
+        old_path = wrong_dir / 'WEST-001.mp4'
+        old_path.write_bytes(b'fake video')
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "UPDATE videos SET original_file_path = ? WHERE code = 'WEST-001'",
+            (str(old_path),),
+        )
+        conn.commit()
+        conn.close()
+
+        resp = self._call()
+        self.assertEqual(resp.status_code, 200)
+        new_path = Path(resp.get_json()['new_paths'][0])
+        self.assertEqual(new_path.parent, root / 'WEST')
+        self.assertTrue(new_path.exists())
+        self.assertFalse(old_path.exists())
 
     def test_missing_code_returns_404(self):
         resp = self._call(code='NOSUCH')
@@ -383,6 +566,25 @@ class RescrapeEndpointTests(unittest.TestCase):
                                     data=json.dumps({'scrape_status': 'PENDING'}),
                                     content_type='application/json')
         self.assertEqual(resp.status_code, 400)
+
+    def test_single_video_rescrape_returns_job_id(self):
+        with patch('web.backend.app.DB_PATH', self.db_path), \
+             patch('web.backend.app._run_single_rescrape_job'):
+            resp = self.client.post('/api/videos/ABW-1/rescrape')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn('job_id', data)
+        self.assertEqual(data['code'], 'ABW-1')
+
+    def test_single_video_rescrape_missing_returns_404(self):
+        with patch('web.backend.app.DB_PATH', self.db_path):
+            resp = self.client.post('/api/videos/NOSUCH/rescrape')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_single_video_rescrape_deleted_returns_404(self):
+        with patch('web.backend.app.DB_PATH', self.db_path):
+            resp = self.client.post('/api/videos/ABW-4/rescrape')
+        self.assertEqual(resp.status_code, 404)
 
 
 class JobStreamEndpointTests(unittest.TestCase):

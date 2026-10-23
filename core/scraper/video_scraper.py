@@ -1,6 +1,8 @@
 import logging
+import os
 import random
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 import re
@@ -66,6 +68,76 @@ BASE_URL = "https://javdb.com"
 # 全局刮削计数器，用于触发周期性的深度防封禁等待
 scrape_count = 0
 
+JAVDB_PROFILE_DIR = project_root / "data" / "javdb_chrome_profile"
+JAVDB_PROFILE_LOCK_FILE = project_root / "data" / "javdb_chrome_profile.lock"
+
+@contextmanager
+def javdb_profile_lock(timeout: float = 600.0):
+    """Cross-process lock for JavDB's persistent browser profile."""
+    import fcntl
+
+    JAVDB_PROFILE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(JAVDB_PROFILE_LOCK_FILE, "a+")
+    start = time.time()
+    try:
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.time() - start >= timeout:
+                    raise TimeoutError("JavDB browser profile is still in use")
+                time.sleep(1.0)
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_file.close()
+
+def launch_javdb_browser(playwright, headless: bool = False):
+    """Launch a browser suitable for JavDB/Cloudflare.
+
+    JavDB's newer Cloudflare check blocks Playwright's bundled Chromium more
+    aggressively. Prefer the locally installed Chrome browser, then fall back
+    to bundled Chromium so machines without Chrome still work.
+    """
+    args = ['--disable-blink-features=AutomationControlled']
+    channel = (os.getenv("JAVDB_BROWSER_CHANNEL") or "chrome").strip()
+    if channel:
+        try:
+            return playwright.chromium.launch(
+                channel=channel,
+                headless=headless,
+                args=args,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ 启动 Chrome channel [{channel}] 失败，回退 Playwright Chromium: {e}")
+    return playwright.chromium.launch(headless=headless, args=args)
+
+def launch_javdb_context(playwright, headless: bool = False):
+    """Launch JavDB in a persistent Chrome profile so Cloudflare state survives restarts."""
+    args = ['--disable-blink-features=AutomationControlled']
+    channel = (os.getenv("JAVDB_BROWSER_CHANNEL") or "chrome").strip()
+    JAVDB_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    if channel:
+        try:
+            return playwright.chromium.launch_persistent_context(
+                str(JAVDB_PROFILE_DIR),
+                channel=channel,
+                headless=headless,
+                args=args,
+                viewport={'width': 1280, 'height': 800},
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ 启动持久化 Chrome channel [{channel}] 失败，回退 Playwright Chromium: {e}")
+    return playwright.chromium.launch_persistent_context(
+        str(JAVDB_PROFILE_DIR),
+        headless=headless,
+        args=args,
+        viewport={'width': 1280, 'height': 800},
+    )
+
 def simulate_human_behavior(page: Page, min_sec: float, max_sec: float):
     """模拟人类操作：随机移动鼠标、滚动滚轮，最后回到顶部"""
     total_sleep = random.uniform(min_sec, max_sec)
@@ -113,10 +185,21 @@ def random_sleep(min_sec: float = 3.0, max_sec: float = 7.5):
 
 def bypass_javdb_security(page: Page):
     """统一处理 JavDB 的 18岁弹窗 和 Cloudflare 验证"""
-    over18_btn = page.locator('a[href^="/over18"], a:has-text("是,我已滿18歲")')
+    over18_btn = page.locator('.over18-modal a.button.is-success, .over18-modal a:has-text("是"), a[href^="/over18?respond=1"]')
+    try:
+        over18_btn.first.wait_for(state="attached", timeout=5000)
+    except Exception:
+        pass
     if over18_btn.count() > 0:
         logger.info("🔞 触发 18 岁验证拦截，正在自动点击通过...")
-        over18_btn.first.click()
+        over18_btn.first.click(force=True)
+        try:
+            page.wait_for_selector(".over18-modal", state="detached", timeout=10000)
+        except Exception:
+            href = over18_btn.first.get_attribute("href")
+            if href:
+                over18_url = BASE_URL + href if href.startswith("/") else href
+                page.goto(over18_url, timeout=30000)
         random_sleep(5.67, 10.75)
         
     try:
@@ -136,6 +219,20 @@ def bypass_javdb_security(page: Page):
     except Exception:
         # 没有遇到点击验证（或者被自动放行了），无视异常
         pass
+
+def _is_cloudflare_challenge(page: Page) -> bool:
+    """Return True when Cloudflare's managed challenge page is still active."""
+    try:
+        title = page.title()
+        if "Just a moment" in title:
+            return True
+        body = page.locator("body").inner_text(timeout=1000)
+        return (
+            "Performing security verification" in body
+            or "This website uses a security service" in body
+        )
+    except Exception:
+        return False
 
 def download_cover(image_url: str, code: str) -> Optional[str]:
     """下载封面图并返回本地相对路径"""
@@ -222,6 +319,66 @@ def download_avatar(image_url: str, actor_name: str) -> Optional[str]:
         logger.error(f"❌ 下载头像发生异常 [{actor_name}]: {e}")
         return None
 
+
+def _female_actor_names_from_block(block) -> list[str]:
+    """Extract only female actor links from a JavDB actor panel block."""
+    actor_links = block.locator("span.value a")
+    actors = actor_links.evaluate_all(
+        """
+        (links) => {
+          const colorCategory = (value) => {
+            const text = (value || '').toLowerCase();
+            const colors = [];
+            for (const match of text.matchAll(/#([0-9a-f]{3,8})\\b/g)) {
+              let hex = match[1];
+              if (hex.length === 3 || hex.length === 4) hex = [...hex].map(c => c + c).join('');
+              if (hex.length === 8 && parseInt(hex.slice(6, 8), 16) === 0) continue;
+              if (hex.length === 6 || hex.length === 8) {
+                colors.push([0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16)));
+              }
+            }
+            for (const match of text.matchAll(/rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+%?))?\\s*\\)/g)) {
+              if (match[4] && parseFloat(match[4]) === 0) continue;
+              colors.push([Number(match[1]), Number(match[2]), Number(match[3])]);
+            }
+            for (const [r8, g8, b8] of colors) {
+              const [r, g, b] = [r8, g8, b8].map(v => Math.max(0, Math.min(255, v)) / 255);
+              const max = Math.max(r, g, b), min = Math.min(r, g, b), delta = max - min;
+              if (max === 0 || delta / max < 0.25) continue;
+              let hue;
+              if (max === r) hue = 60 * (((g - b) / delta) % 6);
+              else if (max === g) hue = 60 * ((b - r) / delta + 2);
+              else hue = 60 * ((r - g) / delta + 4);
+              if (hue < 0) hue += 360;
+              if (hue <= 30 || hue >= 300) return 'female';
+              if (hue >= 175 && hue <= 270) return 'male';
+            }
+            return null;
+          };
+          const colorBits = (el) => {
+            const bits = [];
+            for (const node of [el, el.nextElementSibling, el.previousElementSibling, el.parentElement]) {
+              if (!node) continue;
+              const style = window.getComputedStyle(node);
+              bits.push(node.getAttribute('style'), style.color, style.backgroundColor, style.borderColor);
+            }
+            return bits;
+          };
+          return links
+            .filter((link) => {
+              const bits = colorBits(link);
+              if (bits.some(value => colorCategory(value) === 'female')) return true;
+              if (bits.some(value => colorCategory(value) === 'male')) return false;
+              return !link.matches(':has(+ strong.symbol.male)');
+            })
+            .map((link) => link.textContent.trim())
+            .filter(Boolean);
+        }
+        """
+    )
+    return [a.strip() for a in actors if a and a.strip()]
+
+
 def parse_detail_page(page: Page, code: str) -> Dict:
     """在详情页提取所有元数据"""
     data = {
@@ -284,10 +441,7 @@ def parse_detail_page(page: Page, code: str) -> Dict:
                 tags = block.locator("span.value a").all_inner_texts()
                 data['categories'] = ",".join([t.strip() for t in tags])
             elif "演員:" in block_text:
-                # 架构师魔法：使用 CSS 相邻兄弟选择器，直接在 DOM 层面排除男演员
-                # :not(:has(+ strong.symbol.male)) 的意思是：
-                # 抓取所有 <a> 标签，但坚决不要那些“紧跟着一个 class 包含 symbol 和 male 的 <strong> 标签”的 <a>。
-                actors = block.locator("span.value a:not(:has(+ strong.symbol.male))").all_inner_texts()
+                actors = _female_actor_names_from_block(block)
                 
                 # 如果过滤后还有演员，再进行拼装
                 if actors:
@@ -319,6 +473,16 @@ def _normalize_search_code(code: str) -> str:
     """剥离本地附加后缀，得到更纯净的搜索词。"""
     return re.sub(r'-[cur]+$', '', code, flags=re.IGNORECASE)
 
+def _search_code_variants(search_code: str) -> list[str]:
+    normalized = (search_code or '').strip()
+    if not normalized:
+        return []
+    if normalized.upper().startswith('DSVR-'):
+        return [normalized, '3' + normalized]
+    if normalized.upper().startswith('3DSVR-'):
+        return [normalized, normalized[1:]]
+    return [normalized]
+
 def _is_login_required(page: Page) -> bool:
     """判断页面是否被登录墙拦截。"""
     return "/login" in page.url or page.locator("input[type='password']").count() > 0
@@ -331,7 +495,7 @@ def _drop_session_and_reload(page: Page, url: str, wait_selector: str, timeout: 
         page.context.clear_cookies()
         page.goto(url, timeout=30000)
         bypass_javdb_security(page)
-        page.wait_for_selector(wait_selector, timeout=timeout)
+        page.wait_for_selector(wait_selector, state="attached", timeout=timeout)
         if _is_login_required(page):
             logger.warning("🔒 访客模式下该页面仍受限（仅限登录用户），跳过。")
             return False
@@ -349,9 +513,12 @@ def _open_video_search_page(page: Page, search_code: str) -> bool:
     bypass_javdb_security(page)
 
     try:
-        page.wait_for_selector(".movie-list, .empty-message, input[type='password']", timeout=25000)
+        page.wait_for_selector(".movie-list, .empty-message, input[type='password']", state="attached", timeout=25000)
     except PlaywrightTimeoutError:
+        if _is_cloudflare_challenge(page):
+            logger.error("🛡️ Cloudflare 验证未通过：请使用系统 Chrome channel 或手动更新可用 Cookie。")
         return False
+    bypass_javdb_security(page)
     return True
 
 def _search_results_are_empty(page: Page) -> bool:
@@ -366,13 +533,20 @@ def _apply_search_cooldown(page: Page, current_count: int):
     else:
         simulate_human_behavior(page, 5.5, 22.5)
 
+def _normalize_match_code(code: str) -> str:
+    normalized = (code or '').strip().upper()
+    if normalized.startswith('3DSVR-'):
+        return 'DSVR-' + normalized[len('3DSVR-'):]
+    return normalized
+
+
 def _pick_matching_index(item_codes, search_code: str) -> Optional[int]:
-    """返回番号与 search_code 精确匹配（忽略大小写）的结果下标，无匹配则 None。"""
-    target = (search_code or '').strip().upper()
+    """返回番号与 search_code 匹配（忽略大小写；DSVR/3DSVR 视为同一番号）的结果下标。"""
+    target = _normalize_match_code(search_code)
     if not target:
         return None
     for i, c in enumerate(item_codes):
-        if (c or '').strip().upper() == target:
+        if _normalize_match_code(c) == target:
             return i
     return None
 
@@ -391,6 +565,7 @@ def _read_result_codes(page: Page) -> list:
 
 def _open_result_detail(page: Page, code: str, index: int) -> bool:
     """点击指定下标的搜索结果并等待详情页加载。"""
+    bypass_javdb_security(page)
     link = page.locator(".item").nth(index).locator("a").first
     logger.info(f"进入精确匹配的搜索结果 (第 {index + 1} 条)...")
     link.click()
@@ -415,41 +590,54 @@ def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
     logger.info(f"🎬 开始刮削: DB番号 [{code}] -> 搜索词 [{search_code}] (当前刮削计数: {current_count})")
     
     try:
-        # 1. 打开搜索页
-        if not _open_video_search_page(page, search_code):
-            logger.error(f"⚠️ {code} 等待页面加载超时 (网络异常或被强力 Cloudflare 拦截)。")
-            return None
-
-        # 2. 判断是否被强制要求登录 → 尝试访客模式降级
-        search_url = f"{BASE_URL}/search?f=all&q={_normalize_search_code(code)}&locale=zh"
-        if _is_login_required(page):
-            if not _drop_session_and_reload(
-                page, search_url,
-                ".movie-list, .empty-message, input[type='password']"
-            ):
+        result_codes = []
+        match_index = None
+        matched_search_code = search_code
+        for variant in _search_code_variants(search_code):
+            # 1. 打开搜索页
+            if not _open_video_search_page(page, variant):
+                logger.error(f"⚠️ {code} 等待页面加载超时 (网络异常或被强力 Cloudflare 拦截)。")
                 return None
 
-        # 3. 判断搜索结果是否为空
-        if _search_results_are_empty(page):
-            logger.warning(f"❌ 搜索结果为空: 未在 JavDB 找到番号 {code}。跳过此片，等待后续手工添加信息。")
-            return None
+            # 2. 判断是否被强制要求登录 → 尝试访客模式降级
+            search_url = f"{BASE_URL}/search?f=all&q={variant}&locale=zh"
+            if _is_login_required(page):
+                if not _drop_session_and_reload(
+                    page, search_url,
+                    ".movie-list, .empty-message, input[type='password']"
+                ):
+                    return None
 
-        # 4. 搜索页防封冷却
-        _apply_search_cooldown(page, current_count)
+            # 3. 判断搜索结果是否为空
+            if _search_results_are_empty(page):
+                logger.warning(f"❌ 搜索结果为空: 未在 JavDB 找到番号 {variant}。")
+                continue
 
-        # 5. 找到与番号精确匹配的搜索结果（第一位不一定是正确的片）
-        result_codes = _read_result_codes(page)
-        if not result_codes:
-            logger.warning(f"❌ 未在 JavDB 搜索列表中提取到有效的影片项目 ({code})。跳过此片。")
-            return None
-        match_index = _pick_matching_index(result_codes, search_code)
+            # 4. 搜索页防封冷却
+            _apply_search_cooldown(page, current_count)
+
+            # 5. 找到与番号精确匹配的搜索结果（第一位不一定是正确的片）
+            result_codes = _read_result_codes(page)
+            if not result_codes:
+                logger.warning(f"❌ 未在 JavDB 搜索列表中提取到有效的影片项目 ({variant})。跳过此搜索词。")
+                continue
+            match_index = _pick_matching_index(result_codes, search_code)
+            if match_index is not None:
+                matched_search_code = variant
+                break
+
         if match_index is None:
+            if not result_codes:
+                logger.warning(f"❌ 搜索结果为空: 未在 JavDB 找到番号 {code}。跳过此片，等待后续手工添加信息。")
+                return None
             logger.warning(
-                f"🧊 搜索结果中无精确匹配 [{search_code}] 的番号（候选: {result_codes[:5]}），冻结待人工处理。"
+                f"🧊 搜索结果中无匹配 [{search_code}] 的番号（候选: {result_codes[:5]}），冻结待人工处理。"
             )
             return FREEZE
 
         # 6. 进入匹配的详情页
+        if matched_search_code != search_code:
+            logger.info(f"🔁 使用 JavDB 备用搜索词 [{matched_search_code}] 匹配 [{search_code}]。")
         if not _open_result_detail(page, code, match_index):
             return None
 

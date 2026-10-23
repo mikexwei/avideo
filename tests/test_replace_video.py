@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from dal.db_manager import replace_video_file
+from dal.db_manager import replace_multipart_with_single_file, replace_video_file
 
 
 def _init_schema(conn):
@@ -29,6 +29,11 @@ def _init_schema(conn):
             video_id INTEGER,
             tag_id INTEGER,
             PRIMARY KEY (video_id, tag_id)
+        );
+        CREATE TABLE video_actor_link (
+            video_id INTEGER,
+            actor_id INTEGER,
+            PRIMARY KEY (video_id, actor_id)
         );
     """)
     conn.commit()
@@ -106,6 +111,40 @@ class ReplaceVideoFileTests(unittest.TestCase):
         ).fetchone()
         conn.close()
         self.assertEqual(tuple(row), (12345, '2026-07-03T10:00:00', '2026-07-03T09:00:00'))
+
+    def test_replace_multipart_with_single_file_collapses_rows(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("DELETE FROM video_tag_link")
+        conn.execute("DELETE FROM videos")
+        conn.execute("INSERT INTO videos (id, code, part, original_file_path) VALUES (1, 'ABW-123', 'part1', '/vol/ABW-123.part1.mp4')")
+        conn.execute("INSERT INTO videos (id, code, part, original_file_path) VALUES (2, 'ABW-123', 'part2', '/vol/ABW-123.part2.mp4')")
+        conn.execute("INSERT INTO videos (id, code, part, original_file_path) VALUES (3, 'ABW-123', 'part3', '/vol/ABW-123.part3.mp4')")
+        conn.execute("INSERT OR IGNORE INTO tags (name) VALUES ('中文字幕')")
+        tag_id = conn.execute("SELECT id FROM tags WHERE name = '中文字幕'").fetchone()[0]
+        for video_id in (1, 2, 3):
+            conn.execute("INSERT INTO video_tag_link (video_id, tag_id) VALUES (?, ?)", (video_id, tag_id))
+        conn.commit()
+        conn.close()
+
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            result = replace_multipart_with_single_file(
+                'ABW-123', '/vol/ABW-123-C.mp4', True, False, False,
+                file_meta={'file_size': 9, 'file_mtime': 'm', 'file_birthtime': 'b'},
+                keep_part='part2',
+            )
+
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['new_code'], 'ABW-123-C')
+        self.assertEqual(
+            result['old_paths'],
+            ['/vol/ABW-123.part1.mp4', '/vol/ABW-123.part2.mp4', '/vol/ABW-123.part3.mp4'],
+        )
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute("SELECT id, code, part, original_file_path, file_size FROM videos ORDER BY id").fetchall()
+        links = conn.execute("SELECT video_id FROM video_tag_link ORDER BY video_id").fetchall()
+        conn.close()
+        self.assertEqual(rows, [(2, 'ABW-123-C', None, '/vol/ABW-123-C.mp4', 9)])
+        self.assertEqual(links, [(2,)])
 
 
 from web.backend.app import app, _compute_final_filename
@@ -256,6 +295,43 @@ class ReplaceEndpointTests(unittest.TestCase):
                 )
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.get_json()['code'], 'SSIS-001-UC')
+
+    def test_replace_whole_removes_old_part_files(self):
+        video_bytes = b'whole video'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            part1 = Path(tmpdir) / 'ABW-123.part1.mp4'
+            part2 = Path(tmpdir) / 'ABW-123.part2.mp4'
+            part1.write_bytes(b'old1')
+            part2.write_bytes(b'old2')
+
+            def fake_replace(code, dest, sub_zh, leaked, native, file_meta=None, keep_part=None):
+                self.assertEqual(code, 'ABW-123')
+                self.assertEqual(Path(dest).name, 'ABW-123-C.mp4')
+                self.assertEqual(keep_part, 'part1')
+                return {
+                    'ok': True,
+                    'new_code': 'ABW-123-C',
+                    'old_paths': [str(part1), str(part2)],
+                }
+
+            with patch('web.backend.app.replace_multipart_with_single_file', side_effect=fake_replace), \
+                 patch('web.backend.app.get_video_by_code', return_value={'code': 'ABW-123-C', 'tags': [], 'actors': []}), \
+                 patch('web.backend.app.get_video_file_path', return_value=str(part1)):
+                resp = self.client.post(
+                    '/api/videos/ABW-123/replace?part=part1',
+                    data=video_bytes,
+                    headers={
+                        'X-Dest-Name': 'ABW-123.part1.mp4',
+                        'X-File-Size': str(len(video_bytes)),
+                        'X-Subtitle-Zh': '1',
+                        'X-Replace-Whole': '1',
+                    },
+                )
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertFalse(part1.exists())
+            self.assertFalse(part2.exists())
+            self.assertEqual((Path(tmpdir) / 'ABW-123-C.mp4').read_bytes(), video_bytes)
 
 
 from dal.db_manager import _order_clause

@@ -2,7 +2,7 @@
 
 # ================= 配置区 =================
 # 你可以在这里修改你的启动命令、日志文件名和 PID 文件名
-START_CMD=".venv/bin/python -m flask --app web.backend.app run --host 0.0.0.0 --port 8000"
+START_CMD="env AVIDEO_JAVDB_AUTOSTART=1 .venv/bin/python -m flask --app web.backend.app run --host 0.0.0.0 --port 8000"
 LOG_FILE="server.log"
 PID_FILE="server.pid"
 # ==========================================

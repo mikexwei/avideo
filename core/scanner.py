@@ -87,12 +87,18 @@ def _strip_version_suffix(code: str, strip_release_suffix: bool = False) -> str:
 
 def extract_video_code(filename: str, sibling_stems: Optional[set[str]] = None) -> Tuple[Optional[str], Optional[str]]:
     """架构师防弹版：免疫一切站长私货、论坛前缀与贪婪误杀"""
-    
+
     # 0. 先将一些乱七八糟的论坛前缀清洗掉，避免影响后续判断
-    clean_name = re.sub(r'(?i)^.*?@', '', filename)
-    
-    # 限制域名清理器的贪婪属性（去掉了横杠），并增加 org, info, la 等后缀
-    clean_name = re.sub(r'(?i)\b[a-z0-9]+\.(?:com|net|cc|me|vip|tv|xyz|org|info|biz|ws|us|la)\b', '', clean_name)
+    clean_name = filename.translate(str.maketrans({'＠': '@', '－': '-', '＿': '_'}))
+    clean_name = re.sub(r'(?i)%40', '@', clean_name)
+    clean_name = re.sub(r'(?i)^.*@', '', clean_name)
+
+    # 清理多级、带连字符的广告域名，例如 www.1212111-site.com_ABCD-123。
+    clean_name = re.sub(
+        r'(?i)(?:https?[:：]/{1,2})?(?:[a-z0-9-]+\.)+(?:com|net|cc|me|vip|tv|xyz|org|info|biz|ws|us|la)\b',
+        '',
+        clean_name,
+    )
     
     clean_name = re.sub(r'(?i)(?:FHD|HD|SD|UHD)-?(?:1080|720|480|2160)p?', '', clean_name)
     clean_name = re.sub(r'(?i)(?:H|X)\.?26[45]', '', clean_name)
@@ -145,13 +151,13 @@ def extract_video_code(filename: str, sibling_stems: Optional[set[str]] = None) 
     # 仅删除类似 " ... - 01" 这种带前导空格的尾部杂质，避免误删正常番号中的 "-123"
     clean_name = re.sub(r'(?i)\s+-\s*\d+$', '', clean_name)
 
-    fc2 = re.search(r'(?i)fc2[\-_]*(?:ppv)?[\-_]*(\d{5,7})', clean_name)
+    fc2 = re.search(r'(?i)(?:^|[^a-z0-9])(?:fc2[\-_]*(?:ppv)?|fc[\-_]*ppv)[\-_]*(\d{5,7})(?![0-9])', clean_name)
     num = re.search(r'(?i)(?:^|[^0-9])(\d{6})[\-_](\d{3})(?![0-9])', clean_name)
     tokyo = re.search(r'(?i)(?:^|[^a-z0-9])(n)[\-_]?(\d{4})(?![0-9])', clean_name)
     std = re.search(r'(?i)(?:^|[^a-z0-9])(?:([a-z0-9]{2,8})[\-_](\d{2,5})|([a-z]{2,8}|s2m|1pon|10musu|259luxu|300mium)(\d{2,5}))(?:[\-_]?([a-z]))?(?![0-9])', clean_name)
 
     if fc2:
-        code = f"FC2-PPV-{fc2.group(1)}"
+        code = f"FC2-{fc2.group(1)}"
     elif num:
         code = f"{num.group(1)}-{num.group(2)}"
     elif tokyo:
@@ -184,7 +190,7 @@ def extract_video_code(filename: str, sibling_stems: Optional[set[str]] = None) 
                         code += f"-{suffix}"
             
     # 3. 最终版本标记补全：-UC > -U/-C，且只保留一个规范化后缀。
-    if code:
+    if code and not fc2:
         code = _strip_version_suffix(code, strip_release_suffix=bool(version_suffix))
         code += version_suffix
 

@@ -18,6 +18,7 @@ def _make_db(rows=None):
             code TEXT NOT NULL,
             part TEXT,
             original_file_path TEXT UNIQUE,
+            scrape_status TEXT DEFAULT 'PENDING',
             deleted INTEGER DEFAULT 0
         );
     """)
@@ -65,6 +66,24 @@ class BatchCheckEndpointTests(unittest.TestCase):
         self.assertEqual(data[0]['code'], 'SSIS-999')
         self.assertIsNone(data[0]['original_path'])
         self.assertEqual(data[0]['db_parts'], [])
+        self.assertFalse(data[0]['record_exists'])
+        self.assertEqual(data[0]['status'], 'NOT_FOUND')
+
+    def test_deleted_code_returns_deleted_status(self):
+        db = _make_db([('ABW-123', None, '/vol/ABW-123/ABW-123.mp4')])
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE videos SET deleted = 1, scrape_status = 'SUCCESS'")
+        conn.commit()
+        conn.close()
+
+        resp = self._post(['ABW-123.mp4'], db)
+        os.unlink(db)
+        data = resp.get_json()[0]
+        self.assertTrue(data['record_exists'])
+        self.assertFalse(data['exists'])
+        self.assertEqual(data['status'], 'DELETED')
+        self.assertEqual(data['scrape_status'], 'SUCCESS')
+        self.assertEqual(data['db_code'], 'ABW-123')
 
     def test_suffix_variant_matches_existing_video(self):
         # DB has ABW-123-U; uploading ABW-123-C (or ABW-123, ABW-123-UC) is the same video.

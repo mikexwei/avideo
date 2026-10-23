@@ -942,6 +942,98 @@
         </div>
       </div>
 
+      <!-- Volume usage -->
+      <div class="mb-6">
+        <h2 class="text-sm font-semibold text-gray-300 mb-3">磁盘容量</h2>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <section class="lg:col-span-2 bg-gray-900 rounded-lg p-5">
+            <div class="flex items-center justify-between gap-3 mb-4">
+              <h3 class="text-sm font-medium text-gray-300">各磁盘</h3>
+              <span class="text-xs text-gray-500">{{ diskUsages.length }} 个媒体库</span>
+            </div>
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+              <div v-for="d in diskUsages" :key="d.path" class="bg-gray-800 rounded-lg p-4 min-w-0">
+                <div class="flex items-center gap-4" v-if="d.available">
+                  <div class="relative w-20 h-20 flex-shrink-0 rounded-full" :style="diskPieStyle(d.free_percent)">
+                    <div class="absolute inset-2.5 rounded-full bg-gray-800 flex items-center justify-center">
+                      <span class="text-xs font-semibold" :style="{ color: remainingColor(d.free_percent) }">{{ d.free_percent }}%</span>
+                    </div>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="text-sm font-medium text-gray-100 truncate">{{ d.name || d.path }}</div>
+                    <div class="text-xs text-gray-500 truncate mt-0.5 mb-3">{{ d.path }}</div>
+                    <div class="grid grid-cols-3 gap-2 text-xs">
+                      <div><div class="text-gray-500">总计</div><div class="text-gray-300">{{ formatStorage(d.total_gb) }}</div></div>
+                      <div><div class="text-gray-500">已使用</div><div class="text-gray-300">{{ formatStorage(d.used_gb) }}</div></div>
+                      <div><div class="text-gray-500">空闲</div><div class="text-gray-300">{{ formatStorage(d.free_gb) }}</div></div>
+                    </div>
+                  </div>
+                </div>
+                <div v-else>
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="text-sm font-medium text-gray-100 truncate">{{ d.name || d.path }}</div>
+                      <div class="text-xs text-gray-500 truncate mt-0.5">{{ d.path }}</div>
+                    </div>
+                    <span class="text-xs text-red-300 bg-red-950 px-2 py-0.5 rounded flex-shrink-0">不可用</span>
+                  </div>
+                  <div class="text-xs text-gray-500 mt-3">磁盘未挂载或路径不可访问</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="bg-gray-900 rounded-lg p-5 flex flex-col">
+            <div class="flex items-center justify-between gap-3 mb-4">
+              <h3 class="text-sm font-medium text-gray-300">总空闲容量</h3>
+              <span class="text-xs text-gray-500">{{ diskTotals.count }} 个已挂载</span>
+            </div>
+            <div v-if="diskTotals.count" class="flex-1 flex flex-col items-center justify-center py-4">
+              <div class="relative w-40 h-40 rounded-full" :style="diskPieStyle(diskTotals.freePercent)">
+                <div class="absolute inset-4 rounded-full bg-gray-900 flex flex-col items-center justify-center text-center">
+                  <span class="text-2xl font-bold text-white">{{ formatStorage(diskTotals.freeGb) }}</span>
+                  <span class="text-xs mt-1" :style="{ color: remainingColor(diskTotals.freePercent) }">空闲 {{ diskTotals.freePercent }}%</span>
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-8 w-full mt-6 text-center">
+                <div><div class="text-xs text-gray-500">总容量</div><div class="text-sm text-gray-200 mt-1">{{ formatStorage(diskTotals.totalGb) }}</div></div>
+                <div><div class="text-xs text-gray-500">已使用</div><div class="text-sm text-gray-200 mt-1">{{ formatStorage(diskTotals.usedGb) }}</div></div>
+              </div>
+            </div>
+            <div v-else class="flex-1 flex items-center justify-center text-sm text-gray-500">没有可用磁盘</div>
+          </section>
+        </div>
+      </div>
+
+      <!-- Actor disk usage -->
+      <div class="bg-gray-900 rounded-lg p-5 mb-6">
+        <div class="flex items-center justify-between gap-3 mb-4">
+          <h2 class="text-sm font-semibold text-gray-300">女优磁盘占用 Top 50</h2>
+          <span class="text-xs text-gray-500">{{ actorDiskUsage.length }} 人</span>
+        </div>
+        <div v-if="actorDiskUsage.length" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+          <router-link v-for="a in actorDiskUsage" :key="a.id" :to="'/actor/' + a.id"
+            class="bg-gray-800 rounded-lg p-3 hover:bg-gray-700 transition min-w-0">
+            <div class="flex items-center gap-3 min-w-0 mb-3">
+              <img v-if="a.avatar_path" :src="'/static/' + a.avatar_path" class="w-12 h-12 rounded-full object-cover flex-shrink-0" @error="imgErr" />
+              <span v-else class="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center text-xs flex-shrink-0">?</span>
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-gray-100 truncate">{{ a.name }}</div>
+                <div class="text-xs text-gray-500 mt-0.5">{{ a.video_count }} 部</div>
+              </div>
+            </div>
+            <div class="flex items-end justify-between gap-2 mb-2">
+              <div class="text-lg font-semibold text-white">{{ formatBytes(a.size_bytes) }}</div>
+              <div class="text-xs text-gray-500">{{ a.file_count }} 文件</div>
+            </div>
+            <div class="bg-gray-700 rounded-full h-2.5 overflow-hidden">
+              <div class="h-2.5 rounded-full" :style="actorDiskBarStyle(a.size_bytes)"></div>
+            </div>
+          </router-link>
+        </div>
+        <div v-else class="text-sm text-gray-500">暂无文件大小统计</div>
+      </div>
+
       <!-- Row 1: Year bar + Score dist -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
         <!-- By year -->
@@ -1082,6 +1174,10 @@
         <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm">← 返回</button>
         <div class="flex gap-2">
           <template v-if="!editing">
+            <button v-if="!video.deleted" @click="startRescrape" :disabled="rescraping"
+              class="px-3 py-1 text-sm rounded bg-amber-700 hover:bg-amber-600 text-white disabled:opacity-50">
+              {{ rescraping ? '刮削中…' : '重新刮削' }}
+            </button>
             <button v-if="!video.deleted" @click="startEdit" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200">编辑</button>
             <button v-if="!video.deleted" @click="confirmDelete"
               class="px-3 py-1 text-sm rounded bg-red-800 hover:bg-red-700 text-white">删除</button>
@@ -1099,6 +1195,10 @@
       <!-- Deleted banner -->
       <div v-if="video.deleted" class="mb-4 px-4 py-2 bg-red-900 bg-opacity-50 border border-red-700 rounded text-red-300 text-sm flex items-center gap-2">
         <span>⚠️</span><span>该视频文件已删除，数据库记录保留。</span>
+      </div>
+      <div v-if="rescrapeMessage" class="mb-4 px-4 py-2 rounded text-sm"
+        :class="rescrapeError ? 'bg-red-900 bg-opacity-40 border border-red-800 text-red-300' : 'bg-gray-800 text-gray-300'">
+        {{ rescrapeMessage }}
       </div>
 
       <!-- Title -->
@@ -1344,6 +1444,19 @@
                 </select>
               </div>
 
+              <div v-if="fileParts.length > 1" class="flex items-center justify-between rounded-lg border border-amber-900 bg-amber-950 bg-opacity-30 px-4 py-3">
+                <div>
+                  <p class="text-sm text-gray-200">替换整部</p>
+                  <p class="text-xs text-amber-300 mt-0.5">上传单文件后移除其它 part</p>
+                </div>
+                <button @click="replaceWhole = !replaceWhole" :disabled="replaceUploading"
+                  :class="['relative flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer disabled:opacity-50',
+                    replaceWhole ? 'bg-amber-600' : 'bg-gray-700']">
+                  <span :class="['absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200',
+                    replaceWhole ? 'translate-x-6' : 'translate-x-1']"></span>
+                </button>
+              </div>
+
               <!-- File picker -->
               <div>
                 <label class="block text-xs font-medium text-gray-400 mb-1.5">视频文件</label>
@@ -1395,7 +1508,7 @@
                   </button>
                 </div>
                 <!-- Part row: toggle + inline dropdown -->
-                <div class="flex items-center justify-between px-4 py-3">
+                <div v-if="!replaceWhole" class="flex items-center justify-between px-4 py-3">
                   <span class="text-sm text-gray-300">Part</span>
                   <div class="flex items-center gap-2">
                     <template v-if="replacePartOn">
@@ -2585,11 +2698,27 @@
       components: { BatchModal },
       setup() {
         const stats = ref(null), loading = ref(true);
+        const diskUsages = ref([]);
         const imgErr = e => { e.target.style.display = 'none'; };
 
         const maxByYear = computed(() => stats.value ? Math.max(...stats.value.by_year.map(y => y.count), 1) : 1);
         const maxScoreDist = computed(() => stats.value ? Math.max(...stats.value.score_dist.map(s => s.count), 1) : 1);
         const maxMaker = computed(() => stats.value ? Math.max(...stats.value.top_makers.map(m => m.count), 1) : 1);
+        const actorDiskUsage = computed(() => stats.value?.actor_disk_usage || []);
+        const maxActorDisk = computed(() => Math.max(...actorDiskUsage.value.map(a => a.size_bytes || 0), 1));
+        const diskTotals = computed(() => {
+          const available = diskUsages.value.filter(d => d.available);
+          const totalGb = available.reduce((sum, d) => sum + (Number(d.total_gb) || 0), 0);
+          const usedGb = available.reduce((sum, d) => sum + (Number(d.used_gb) || 0), 0);
+          const freeGb = available.reduce((sum, d) => sum + (Number(d.free_gb) || 0), 0);
+          return {
+            count: available.length,
+            totalGb,
+            usedGb,
+            freeGb,
+            freePercent: totalGb ? Math.round(freeGb / totalGb * 1000) / 10 : 0,
+          };
+        });
 
         const statCards = computed(() => {
           if (!stats.value) return [];
@@ -2621,8 +2750,43 @@
           return {};
         }
 
+        function formatStorage(value) {
+          if (value === null || value === undefined) return '-';
+          const gb = Number(value) || 0;
+          if (gb >= 1024) return `${(gb / 1024).toFixed(1)} TB`;
+          return `${gb.toLocaleString()} GB`;
+        }
+
+        function formatBytes(value) {
+          const gb = (Number(value) || 0) / (1024 ** 3);
+          return formatStorage(Math.round(gb * 10) / 10);
+        }
+
+        function remainingColor(percent) {
+          if (percent <= 10) return '#fca5a5';
+          if (percent <= 20) return '#fcd34d';
+          return '#6ee7b7';
+        }
+
+        function diskPieStyle(percent) {
+          const value = Math.max(0, Math.min(100, Number(percent) || 0));
+          const color = value <= 10 ? '#dc2626' : value <= 20 ? '#f59e0b' : '#059669';
+          return { background: `conic-gradient(${color} 0% ${value}%, #374151 ${value}% 100%)` };
+        }
+
+        function actorDiskBarStyle(sizeBytes) {
+          const width = Math.max(2, Math.min(100, (Number(sizeBytes) || 0) / maxActorDisk.value * 100));
+          const color = '#6366f1';
+          return { width: `${width}%`, backgroundColor: color };
+        }
+
         onMounted(async () => {
-          stats.value = await apiFetch('/api/stats');
+          const [statsData, diskData] = await Promise.all([
+            apiFetch('/api/stats'),
+            apiFetch('/api/config/media-libraries'),
+          ]);
+          stats.value = statsData;
+          diskUsages.value = Array.isArray(diskData) ? diskData : [];
           loading.value = false;
           restoreScroll();
         });
@@ -2631,7 +2795,9 @@
         function openBatchModal() { showBatchModal.value = true; }
         function closeBatchModal() { showBatchModal.value = false; }
 
-        return { stats, loading, maxByYear, maxScoreDist, maxMaker, statCards, coverage, scoreRangeQuery, imgErr,
+        return { stats, loading, diskUsages, diskTotals, actorDiskUsage, maxByYear, maxScoreDist, maxMaker,
+          statCards, coverage, scoreRangeQuery, formatStorage, formatBytes, remainingColor,
+          diskPieStyle, actorDiskBarStyle, imgErr,
           showBatchModal, openBatchModal, closeBatchModal };
       }
     };
@@ -2679,6 +2845,7 @@
         const router = VueRouter.useRouter();
         const video = ref(null), loading = ref(true);
         const editing = ref(false), saving = ref(false), saveError = ref('');
+        const rescraping = ref(false), rescrapeMessage = ref(''), rescrapeError = ref(false);
         const form = ref({});
         const actorSuggestions = ref([]);
         const seriesSuggestions = ref([]);
@@ -2747,6 +2914,7 @@
         const replaceSubtitleZh = ref(false);
         const replaceUncensoredLeaked = ref(false);
         const replaceUncensoredNative = ref(false);
+        const replaceWhole = ref(false);
         const replacePartOn = ref(false);
         const replacePartNum = ref(1);
         const replacePartOther = ref(false);
@@ -2765,8 +2933,9 @@
           const ext  = dot > 0 ? name.slice(dot) : '';
           const hasC = replaceSubtitleZh.value;
           const hasU = replaceUncensoredLeaked.value || replaceUncensoredNative.value;
-          const newStem = swapCodeSuffix(stem, hasC, hasU);
-          const partSeg = replacePartOn.value && replacePartNum.value ? `.part${replacePartNum.value}` : '';
+          const cleanStem = replaceWhole.value ? stem.replace(/\.part\d+$/i, '') : stem;
+          const newStem = swapCodeSuffix(cleanStem, hasC, hasU);
+          const partSeg = !replaceWhole.value && replacePartOn.value && replacePartNum.value ? `.part${replacePartNum.value}` : '';
           return `${newStem}${partSeg}${ext}`;
         });
 
@@ -2790,6 +2959,7 @@
           replaceSubtitleZh.value = false;
           replaceUncensoredLeaked.value = false;
           replaceUncensoredNative.value = false;
+          replaceWhole.value = false;
           replaceUploading.value = false;
           replaceProgress.value = 0;
           replaceSpeed.value = '';
@@ -2828,7 +2998,8 @@
             // Strip the existing tag suffix from the code component (first segment).
             const baseParts = origStem.split('.');
             baseParts[0] = baseParts[0].replace(/-(?:UC|U|C)$/i, '');
-            const baseStem = baseParts.join('.');
+            let baseStem = baseParts.join('.');
+            if (replaceWhole.value) baseStem = baseStem.replace(/\.part\d+$/i, '');
             const uploadDot = file.name.lastIndexOf('.');
             const uploadExt = uploadDot > 0 ? file.name.slice(uploadDot) : '';
             replaceDestName.value = baseStem + uploadExt;
@@ -2893,7 +3064,8 @@
           xhr.setRequestHeader('X-Subtitle-Zh', replaceSubtitleZh.value ? '1' : '0');
           xhr.setRequestHeader('X-Uncensored-Leaked', replaceUncensoredLeaked.value ? '1' : '0');
           xhr.setRequestHeader('X-Uncensored-Native', replaceUncensoredNative.value ? '1' : '0');
-          if (replacePartOn.value && replacePartNum.value) xhr.setRequestHeader('X-Part', String(replacePartNum.value));
+          if (replaceWhole.value) xhr.setRequestHeader('X-Replace-Whole', '1');
+          if (!replaceWhole.value && replacePartOn.value && replacePartNum.value) xhr.setRequestHeader('X-Part', String(replacePartNum.value));
           xhr.send(replaceFile.value);
         }
 
@@ -2901,6 +3073,15 @@
           if (replaceFile.value) {
             replaceFile.value = null;
             replaceDestName.value = '';
+          }
+        });
+
+        watch(replaceWhole, () => {
+          if (replaceWhole.value && replaceDestName.value) {
+            const dot = replaceDestName.value.lastIndexOf('.');
+            const stem = dot > 0 ? replaceDestName.value.slice(0, dot) : replaceDestName.value;
+            const ext = dot > 0 ? replaceDestName.value.slice(dot) : '';
+            replaceDestName.value = stem.replace(/\.part\d+$/i, '') + ext;
           }
         });
 
@@ -2918,13 +3099,27 @@
         async function saveCode() {
           const newCode = codeDraft.value.trim();
           if (!newCode || newCode === video.value.code) { editingCode.value = false; return; }
+          rescrapeError.value = false;
+          rescrapeMessage.value = '';
           const res = await apiFetch('/api/videos/' + video.value.code, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ code: newCode }),
           });
           editingCode.value = false;
-          if (res && res.new_code) router.replace('/video/' + res.new_code);
+          if (res && res.new_code) {
+            const renameRes = await fetch('/api/videos/' + encodeURIComponent(res.new_code) + '/finalize-rename', {
+              method: 'POST',
+            });
+            if (!renameRes.ok) {
+              const err = await renameRes.json().catch(() => ({}));
+              rescrapeError.value = true;
+              rescrapeMessage.value = err.error || '文件重命名失败';
+            } else {
+              rescrapeMessage.value = '番号和文件路径已更新';
+            }
+            router.replace('/video/' + encodeURIComponent(res.new_code));
+          }
         }
 
         const meta = computed(() => {
@@ -2960,6 +3155,49 @@
           video.value = await apiFetch('/api/videos/' + route.params.code);
           loading.value = false;
           restoreScroll();
+        }
+
+        async function startRescrape() {
+          if (!video.value || rescraping.value) return;
+          rescraping.value = true;
+          rescrapeError.value = false;
+          rescrapeMessage.value = '正在启动重新刮削…';
+          try {
+            const res = await fetch('/api/videos/' + encodeURIComponent(video.value.code) + '/rescrape', {
+              method: 'POST',
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '启动失败');
+
+            const es = new EventSource('/api/jobs/' + data.job_id + '/stream');
+            es.onmessage = async (e) => {
+              let event; try { event = JSON.parse(e.data); } catch { return; }
+              if (event.step === 'ping') return;
+              if (event.step === 'error') {
+                rescrapeError.value = true;
+                rescrapeMessage.value = event.message || '重新刮削失败';
+                rescraping.value = false;
+                es.close();
+                return;
+              }
+              rescrapeMessage.value = event.message || rescrapeMessage.value;
+              if (event.step === 'done') {
+                rescraping.value = false;
+                es.close();
+                await load();
+              }
+            };
+            es.onerror = () => {
+              rescrapeError.value = true;
+              rescrapeMessage.value = '连接中断';
+              rescraping.value = false;
+              es.close();
+            };
+          } catch (e) {
+            rescrapeError.value = true;
+            rescrapeMessage.value = e.message;
+            rescraping.value = false;
+          }
         }
 
         function startEdit() {
@@ -3123,12 +3361,18 @@
           }
         }
 
-        watch(() => route.params.code, load);
+        watch(() => route.params.code, () => {
+          rescraping.value = false;
+          rescrapeMessage.value = '';
+          rescrapeError.value = false;
+          load();
+        });
         onMounted(load);
         return {
           video, loading, meta, fileParts,
           renamingPath, renameFields, startRename, cancelRename, submitRename,
           editing, saving, saveError, form,
+          rescraping, rescrapeMessage, rescrapeError, startRescrape,
           editFields: EDIT_FIELDS,
           actorSuggestions, seriesSuggestions,
           startEdit, cancelEdit, saveEdit,
@@ -3153,7 +3397,7 @@
           showReplaceModal, replaceOriginalPart,
           replaceFile, replaceDestName, replaceFinalName,
           replaceSubtitleZh, replaceUncensoredLeaked, replaceUncensoredNative,
-          replacePartOn, replacePartNum, replacePartOther,
+          replaceWhole, replacePartOn, replacePartNum, replacePartOther,
           replaceUploading, replaceProgress, replaceSpeed, replaceElapsed, replaceRemaining,
           replaceError,
           openReplaceModal, closeReplaceModal, onReplaceFileChange, startReplaceUpload,
@@ -3460,7 +3704,7 @@
     };
 
     // ── RecommendView ─────────────────────────────────────────
-    const RECOMMEND_CACHE_KEY = 'avideo_recommend_cache';
+    const RECOMMEND_CACHE_KEY = 'avideo_recommend_cache_v2';
     const RECOMMEND_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
     const RecommendView = {

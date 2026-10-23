@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import queue
+import random
 import re
 import sqlite3
 import threading
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory, url_for
 from werkzeug.utils import secure_filename
 
 from config import DB_PATH, MEDIA_LIBRARIES
@@ -50,6 +51,7 @@ from dal.db_manager import (
     patch_video_relations,
     rename_video_code,
     rename_video_file,
+    replace_multipart_with_single_file,
     replace_video_file,
     search_actors,
     search_series,
@@ -78,6 +80,12 @@ class _Job:
 
 _jobs: dict = {}
 _jobs_lock = threading.Lock()
+_javdb_context_lock = threading.Lock()
+_javdb_session = None
+
+_JAVDB_REFRESH_BASE_SECONDS = 30 * 60
+_JAVDB_REFRESH_JITTER_MIN_SECONDS = 5 * 60
+_JAVDB_REFRESH_JITTER_MAX_SECONDS = 10 * 60
 
 
 def _cleanup_old_jobs():
@@ -93,23 +101,160 @@ def _cleanup_old_jobs():
 threading.Thread(target=_cleanup_old_jobs, daemon=True).start()
 
 
-def _scrape_with_playwright(base_code: str) -> dict:
-    """Run Playwright scrape in the calling thread. Returns result_data dict or None."""
-    from playwright.sync_api import sync_playwright
-    from playwright_stealth import Stealth
-    from core.scraper import scrape_video_info, load_javdb_cookies
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True, args=['--disable-blink-features=AutomationControlled']
+def _next_javdb_refresh_delay() -> float:
+    jitter = random.uniform(
+        _JAVDB_REFRESH_JITTER_MIN_SECONDS,
+        _JAVDB_REFRESH_JITTER_MAX_SECONDS,
+    )
+    return _JAVDB_REFRESH_BASE_SECONDS + random.choice((-1, 1)) * jitter
+
+
+class _JavdbSession:
+    def __init__(self):
+        self.commands = queue.Queue()
+        self.thread = None
+        self.context = None
+        self.page = None
+        self.ready = threading.Event()
+        self.stopped = threading.Event()
+        self.start_error = None
+
+    def start(self):
+        if self.thread is not None and self.thread.is_alive():
+            return
+        self.thread = threading.Thread(
+            target=self._run,
+            name='javdb-browser',
+            daemon=True,
         )
-        context = browser.new_context(viewport={'width': 1280, 'height': 800})
-        load_javdb_cookies(context)
-        page = context.new_page()
-        Stealth().apply_stealth_sync(page)
+        self.thread.start()
+        if not self.ready.wait(timeout=120):
+            raise TimeoutError('启动 JavDB 浏览器超时')
+        if self.start_error is not None:
+            raise RuntimeError(f'启动 JavDB 浏览器失败: {self.start_error}') from self.start_error
+
+    def _run(self):
+        from playwright.sync_api import sync_playwright
+        from playwright_stealth import Stealth
+        from core.scraper import load_javdb_cookies, launch_javdb_context, javdb_profile_lock
+
         try:
-            return scrape_video_info(page, base_code)
+            with javdb_profile_lock():
+                with sync_playwright() as playwright:
+                    self.context = launch_javdb_context(playwright, headless=False)
+                    load_javdb_cookies(self.context)
+                    self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+                    Stealth().apply_stealth_sync(self.page)
+                    self.page.goto('about:blank')
+                    self.ready.set()
+                    logging.info('JavDB 常驻浏览器已启动，等待手动进入网站')
+                    self._serve_commands(Stealth())
+        except BaseException as exc:
+            if not self.ready.is_set():
+                self.start_error = exc
+            else:
+                logging.exception('JavDB 常驻浏览器线程异常退出')
         finally:
-            browser.close()
+            if self.context is not None:
+                try:
+                    self.context.close()
+                except Exception:
+                    pass
+                self.context = None
+            self.page = None
+            self.stopped.set()
+            self.ready.set()
+
+    def _live_page(self, stealth):
+        if self.page is not None and not self.page.is_closed():
+            return self.page
+        pages = [page for page in self.context.pages if not page.is_closed()]
+        self.page = pages[-1] if pages else self.context.new_page()
+        stealth.apply_stealth_sync(self.page)
+        return self.page
+
+    def _refresh(self, stealth):
+        page = self._live_page(stealth)
+        if not page.url.startswith(('http://', 'https://')):
+            return
+        try:
+            page.reload(wait_until='domcontentloaded', timeout=30000)
+            logging.info('JavDB 常驻页面已定时刷新: %s', page.url)
+        except Exception:
+            logging.exception('JavDB 常驻页面定时刷新失败，session 保持运行')
+
+    def _serve_commands(self, stealth):
+        from core.scraper import scrape_video_info
+
+        next_refresh = time.monotonic() + _next_javdb_refresh_delay()
+        while True:
+            timeout = max(0.0, next_refresh - time.monotonic())
+            try:
+                action, payload, result_queue = self.commands.get(timeout=timeout)
+            except queue.Empty:
+                action = None
+
+            if action == 'close':
+                return
+            if action == 'scrape':
+                try:
+                    result_queue.put((True, scrape_video_info(self._live_page(stealth), payload)))
+                except BaseException as exc:
+                    result_queue.put((False, exc))
+
+            if time.monotonic() >= next_refresh:
+                self._refresh(stealth)
+                next_refresh = time.monotonic() + _next_javdb_refresh_delay()
+
+    def scrape(self, base_code: str) -> dict:
+        if self.thread is None or not self.thread.is_alive():
+            raise RuntimeError('JavDB 浏览器 session 未运行')
+        result_queue = queue.Queue(maxsize=1)
+        self.commands.put(('scrape', base_code, result_queue))
+        while True:
+            try:
+                ok, value = result_queue.get(timeout=1)
+                break
+            except queue.Empty:
+                if self.stopped.is_set():
+                    raise RuntimeError('JavDB 浏览器 session 已意外退出')
+        if not ok:
+            raise value
+        return value
+
+    def close(self):
+        if self.thread is not None and self.thread.is_alive():
+            self.commands.put(('close', None, None))
+            self.thread.join(timeout=60)
+
+
+def _get_javdb_session() -> '_JavdbSession':
+    global _javdb_session
+    if _javdb_session is None:
+        _javdb_session = _JavdbSession()
+        _javdb_session.start()
+    return _javdb_session
+
+
+import atexit
+atexit.register(lambda: _javdb_session and _javdb_session.close())
+
+
+def _scrape_with_playwright(base_code: str) -> dict:
+    """Run JavDB scrape through a long-lived browser session."""
+    with _javdb_context_lock:
+        session = _get_javdb_session()
+        return session.scrape(base_code)
+
+
+@app.post('/api/javdb/session/close')
+def api_javdb_session_close():
+    global _javdb_session
+    with _javdb_context_lock:
+        if _javdb_session is not None:
+            _javdb_session.close()
+            _javdb_session = None
+    return jsonify({'ok': True})
 
 
 def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
@@ -281,8 +426,9 @@ def _rename_files_for_code(main_code: str) -> None:
             )
             new_name = build_filename(rec)
             old_path = Path(vrow['original_file_path'])
-            new_path = old_path.parent / new_name
+            new_path = _build_current_library_destination(rec)
             if old_path != new_path and old_path.exists():
+                new_path.parent.mkdir(parents=True, exist_ok=True)
                 old_path.rename(new_path)
                 cur.execute(
                     'UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP '
@@ -292,6 +438,20 @@ def _rename_files_for_code(main_code: str) -> None:
         final_conn.commit()
     finally:
         final_conn.close()
+
+
+def _library_root_for_path(path: Path) -> Optional[Path]:
+    for parent in path.parents:
+        if parent.name.lower() == 'avideo':
+            return parent
+    return None
+
+
+def _build_current_library_destination(record: VideoRecord) -> Path:
+    library_root = _library_root_for_path(record.original_file_path)
+    if library_root is None:
+        return record.original_file_path.parent / build_filename(record)
+    return build_destination(record, dest_root=library_root)
 
 
 def _rescrape_one_code(main_code: str) -> dict:
@@ -370,6 +530,24 @@ def _run_rescrape_pipeline(job: '_Job', codes: list) -> None:
         job.status = 'done'
 
 
+def _run_single_rescrape_job(job: '_Job', code: str) -> None:
+    try:
+        job.queue.put({'step': 'scrape', 'status': 'running', 'message': '刮削中…'})
+        try:
+            res = _rescrape_one_code(code)
+        except Exception as exc:
+            logging.exception(f'[{code}] 重新刮削失败')
+            res = {'ok': False, 'message': str(exc)}
+
+        if res['ok']:
+            job.queue.put({'step': 'scrape', 'status': 'done', 'message': res['message']})
+            job.queue.put({'step': 'done', 'status': 'done', 'message': '重新刮削完成', 'code': code})
+        else:
+            job.queue.put({'step': 'error', 'status': 'error', 'message': res['message'], 'code': code})
+    finally:
+        job.status = 'done'
+
+
 def _selected_tags():
     tags = request.args.getlist('tag')
     tags.extend((request.args.get('tags') or '').split(','))
@@ -404,19 +582,59 @@ def _compute_final_filename(
     return f'{stem}{part_seg}{ext}'
 
 
+def _disk_usage_bytes(path: Path):
+    """Return disk usage bytes, preferring df because statvfs is wrong for some macOS external volumes."""
+    import shutil as _shutil
+    import subprocess
+
+    try:
+        output = subprocess.check_output(
+            ['df', '-Pk', str(path)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        lines = [line for line in output.splitlines() if line.strip()]
+        if len(lines) >= 2:
+            fields = lines[-1].split()
+            if len(fields) >= 4:
+                total = int(fields[1]) * 1024
+                used = int(fields[2]) * 1024
+                free = int(fields[3]) * 1024
+                return total, used, free
+    except Exception:
+        pass
+
+    usage = _shutil.disk_usage(str(path))
+    return usage.total, usage.used, usage.free
+
+
 @app.get('/api/config/media-libraries')
 def api_media_libraries():
-    import shutil as _shutil
     result = []
     for p in MEDIA_LIBRARIES:
-        entry = {'path': str(p)}
+        parts = p.parts
+        name = parts[2] if len(parts) > 2 and parts[1] == 'Volumes' else p.name
+        entry = {
+            'path': str(p),
+            'name': name,
+            'available': False,
+            'free_gb': None,
+            'used_gb': None,
+            'total_gb': None,
+            'used_percent': None,
+            'free_percent': None,
+        }
         try:
-            usage = _shutil.disk_usage(str(p))
-            entry['free_gb'] = round(usage.free / (1024 ** 3), 1)
-            entry['total_gb'] = round(usage.total / (1024 ** 3), 1)
+            total, used, free = _disk_usage_bytes(p)
+            used_percent = (used / total * 100) if total else 0
+            entry['available'] = True
+            entry['free_gb'] = round(free / (1024 ** 3), 1)
+            entry['used_gb'] = round(used / (1024 ** 3), 1)
+            entry['total_gb'] = round(total / (1024 ** 3), 1)
+            entry['used_percent'] = round(used_percent, 1)
+            entry['free_percent'] = round(100 - used_percent, 1)
         except Exception:
-            entry['free_gb'] = None
-            entry['total_gb'] = None
+            pass
         result.append(entry)
     return jsonify(result)
 
@@ -455,23 +673,45 @@ def api_batch_check():
             candidates = [base, f'{base}-C', f'{base}-U', f'{base}-UC']
             placeholders = ','.join('?' * len(candidates))
             rows = conn.execute(
-                f'SELECT code, original_file_path, part FROM videos '
-                f'WHERE UPPER(code) IN ({placeholders}) AND deleted = 0',
+                f'SELECT code, original_file_path, part, scrape_status, deleted FROM videos '
+                f'WHERE UPPER(code) IN ({placeholders}) '
+                f'ORDER BY deleted ASC, id ASC',
                 [c.upper() for c in candidates],
             ).fetchall()
-            if rows:
+            active_rows = [r for r in rows if not r['deleted']]
+            if active_rows:
+                row = active_rows[0]
                 results.append({
                     'filename': filename, 'code': code, 'part': part,
-                    'db_code': rows[0]['code'],
+                    'db_code': row['code'],
+                    'record_exists': True,
                     'exists': True,
-                    'original_path': rows[0]['original_file_path'],
+                    'status': 'ACTIVE',
+                    'scrape_status': row['scrape_status'],
+                    'original_path': row['original_file_path'],
+                    'db_parts': [r['part'] for r in active_rows],
+                })
+            elif rows:
+                row = rows[0]
+                results.append({
+                    'filename': filename, 'code': code, 'part': part,
+                    'db_code': row['code'],
+                    'record_exists': True,
+                    'exists': False,
+                    'status': 'DELETED',
+                    'scrape_status': row['scrape_status'],
+                    'original_path': row['original_file_path'],
                     'db_parts': [r['part'] for r in rows],
                 })
             else:
                 results.append({
                     'filename': filename, 'code': code, 'part': part,
                     'db_code': None,
-                    'exists': False, 'original_path': None, 'db_parts': [],
+                    'record_exists': False,
+                    'exists': False,
+                    'status': 'NOT_FOUND',
+                    'scrape_status': None,
+                    'original_path': None, 'db_parts': [],
                 })
     finally:
         conn.close()
@@ -683,8 +923,18 @@ def api_finalize_rename(code: str):
             )
             new_name = build_filename(record)
             old_path = Path(row['original_file_path'])
-            new_path = old_path.parent / new_name
+            new_path = _build_current_library_destination(record)
+            if old_path != new_path:
+                cursor.execute(
+                    "SELECT id FROM videos WHERE original_file_path = ? AND id != ? LIMIT 1",
+                    (str(new_path), row['id']),
+                )
+                if cursor.fetchone():
+                    return jsonify({'error': f'destination path already in DB: {new_path}'}), 409
+            if old_path != new_path and new_path.exists():
+                return jsonify({'error': f'destination exists: {new_path}'}), 409
             if old_path != new_path and old_path.exists():
+                new_path.parent.mkdir(parents=True, exist_ok=True)
                 old_path.rename(new_path)
                 cursor.execute(
                     "UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP "
@@ -775,6 +1025,30 @@ def api_rescrape():
     return jsonify({'job_id': job_id, 'codes': codes})
 
 
+@app.post('/api/videos/<string:code>/rescrape')
+def api_video_rescrape(code: str):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            'SELECT code FROM videos WHERE code = ? AND deleted = 0 LIMIT 1',
+            (code,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    main_code = row[0]
+
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        job = _Job(job_id=job_id)
+        _jobs[job_id] = job
+
+    t = threading.Thread(target=_run_single_rescrape_job, args=(job, main_code), daemon=True)
+    t.start()
+    return jsonify({'job_id': job_id, 'code': main_code})
+
+
 @app.get('/api/jobs/<string:job_id>/stream')
 def api_job_stream(job_id: str):
     with _jobs_lock:
@@ -822,11 +1096,92 @@ def api_videos():
     ))
 
 
+@app.get('/api/videos/files')
+def api_video_files():
+    extension = (request.args.get('extension') or 'mkv').strip().lower().lstrip('.')
+    if not extension or not re.fullmatch(r'[a-z0-9]{1,10}', extension):
+        return jsonify({'error': 'invalid extension'}), 400
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT v.id, v.code, v.part, v.original_file_path, v.file_size,
+                   EXISTS (
+                       SELECT 1 FROM video_tag_link vtl
+                       JOIN tags t ON t.id = vtl.tag_id
+                       WHERE vtl.video_id = v.id AND t.name = '中文字幕'
+                   ) AS subtitle_zh,
+                   EXISTS (
+                       SELECT 1 FROM video_tag_link vtl
+                       JOIN tags t ON t.id = vtl.tag_id
+                       WHERE vtl.video_id = v.id AND t.name IN ('无码流出', '無碼流出', '无码破解', '無碼破解')
+                   ) AS uncensored_leaked,
+                   EXISTS (
+                       SELECT 1 FROM video_tag_link vtl
+                       JOIN tags t ON t.id = vtl.tag_id
+                       WHERE vtl.video_id = v.id AND t.name = '原装无码'
+                   ) AS uncensored_native
+            FROM videos v
+            WHERE v.deleted = 0
+              AND LOWER(v.original_file_path) LIKE ?
+            ORDER BY v.code, v.part, v.id
+            """,
+            (f'%.{extension}',),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    files = []
+    missing = 0
+    for row in rows:
+        path = Path(row['original_file_path'])
+        if not path.is_file():
+            missing += 1
+            continue
+        query = {'part': row['part']} if row['part'] else {}
+        files.append({
+            'id': row['id'],
+            'code': row['code'],
+            'part': row['part'],
+            'filename': path.name,
+            'file_size': row['file_size'] or path.stat().st_size,
+            'subtitle_zh': bool(row['subtitle_zh']),
+            'uncensored_leaked': bool(row['uncensored_leaked']),
+            'uncensored_native': bool(row['uncensored_native']),
+            'download_url': url_for(
+                'api_video_stream_ext', code=row['code'], ext=extension,
+                _external=True, **query,
+            ),
+            'replace_url': url_for(
+                'api_video_replace', code=row['code'],
+                _external=True, **query,
+            ),
+        })
+
+    return jsonify({
+        'extension': extension,
+        'total': len(files),
+        'missing': missing,
+        'files': files,
+    })
+
+
 @app.get('/api/videos/<string:code>')
 def api_video_detail(code: str):
     data = get_video_by_code(code)
     if not data:
-        return jsonify({'error': 'not found'}), 404
+        return jsonify({
+            'error': 'not found',
+            'record_exists': False,
+            'exists': False,
+            'status': 'NOT_FOUND',
+            'scrape_status': None,
+        }), 404
+    data['record_exists'] = True
+    data['exists'] = not bool(data.get('deleted'))
+    data['status'] = 'ACTIVE' if data['exists'] else 'DELETED'
     return jsonify(data)
 
 
@@ -890,6 +1245,7 @@ def api_video_replace(code: str):
         uncensored_leaked = request.headers.get('X-Uncensored-Leaked') == '1'
         uncensored_native = request.headers.get('X-Uncensored-Native') == '1'
         dest_part = (request.headers.get('X-Part') or '').strip() or None
+        replace_whole = request.headers.get('X-Replace-Whole') == '1'
         body_stream = request.stream
     else:
         # Legacy multipart path (used by existing tests)
@@ -905,12 +1261,17 @@ def api_video_replace(code: str):
         uncensored_leaked = request.form.get('uncensored_leaked') == '1'
         uncensored_native = request.form.get('uncensored_native') == '1'
         dest_part = (request.form.get('part') or '').strip() or None
+        replace_whole = request.form.get('replace_whole') == '1'
         body_stream = f.stream
 
     if not dest_name:
         return jsonify({'error': 'missing dest_name'}), 400
     if not expected_size:
         return jsonify({'error': 'file_size must be positive'}), 400
+    if replace_whole:
+        dest_part = None
+        p = Path(dest_name)
+        dest_name = re.sub(r'(?i)\.part\d+$', '', p.stem) + p.suffix
 
     original_path = get_video_file_path(code, original_part)
     if not original_path:
@@ -940,12 +1301,23 @@ def api_video_replace(code: str):
             ).isoformat(),
         }
         # DB update first — filesystem still intact if this fails
-        result = replace_video_file(code, original_part, str(dest_path), subtitle_zh, uncensored_leaked, uncensored_native, file_meta=file_meta)
+        if replace_whole:
+            result = replace_multipart_with_single_file(
+                code, str(dest_path), subtitle_zh, uncensored_leaked,
+                uncensored_native, file_meta=file_meta, keep_part=original_part,
+            )
+        else:
+            result = replace_video_file(code, original_part, str(dest_path), subtitle_zh, uncensored_leaked, uncensored_native, file_meta=file_meta)
         if not result['ok']:
             temp_path.unlink(missing_ok=True)
             return jsonify({'error': result.get('error', 'db update failed')}), 500
         # Filesystem swap — DB already points to new path
-        if Path(original_path) != dest_path:
+        if replace_whole:
+            for old_path in result.get('old_paths', []):
+                old = Path(old_path)
+                if old != dest_path:
+                    old.unlink(missing_ok=True)
+        elif Path(original_path) != dest_path:
             Path(original_path).unlink(missing_ok=True)
         temp_path.rename(dest_path)
     except Exception as e:
@@ -1219,5 +1591,19 @@ def index(path):
     return send_from_directory(_TEMPLATES_DIR, 'index.html')
 
 
+def _autostart_javdb_session() -> None:
+    try:
+        with _javdb_context_lock:
+            _get_javdb_session()
+    except Exception:
+        logging.exception('服务器已启动，但 JavDB 常驻浏览器启动失败')
+
+
+if os.getenv('AVIDEO_JAVDB_AUTOSTART') == '1':
+    _autostart_javdb_session()
+
+
 if __name__ == '__main__':
+    if os.getenv('AVIDEO_JAVDB_AUTOSTART') != '1':
+        _autostart_javdb_session()
     app.run(host='0.0.0.0', port=8000, debug=False)

@@ -957,6 +957,38 @@ def get_stats() -> Dict[str, Any]:
         """)
         top_actors = [{'id': r['id'], 'name': r['name'], 'avatar_path': r['avatar_path'], 'count': r['cnt']} for r in cursor.fetchall()]
 
+        # Top actors by disk usage. For multi-actor videos, the file size counts
+        # toward each linked actor so the list answers "space represented by this actor".
+        cursor.execute("""
+            SELECT
+                a.id,
+                COALESCE(a.name_zh, a.name) as name,
+                a.avatar_path,
+                COUNT(DISTINCT v.code) as video_count,
+                COUNT(v.id) as file_count,
+                COALESCE(SUM(COALESCE(v.file_size, 0)), 0) as size_bytes
+            FROM actors a
+            JOIN video_actor_link val ON val.actor_id = a.id
+            JOIN videos v ON v.id = val.video_id AND v.deleted = 0
+            WHERE a.is_ignored = 0
+            GROUP BY a.id
+            HAVING size_bytes > 0
+            ORDER BY size_bytes DESC
+            LIMIT 50
+        """)
+        actor_disk_usage = [
+            {
+                'id': r['id'],
+                'name': r['name'],
+                'avatar_path': r['avatar_path'],
+                'video_count': r['video_count'],
+                'file_count': r['file_count'],
+                'size_bytes': r['size_bytes'],
+                'size_gb': round(r['size_bytes'] / (1024 ** 3), 1),
+            }
+            for r in cursor.fetchall()
+        ]
+
         # Top tags
         cursor.execute("""
             SELECT t.id, t.name, COUNT(DISTINCT v.code) as cnt
@@ -980,6 +1012,7 @@ def get_stats() -> Dict[str, Any]:
             'score_dist': score_dist,
             'top_makers': top_makers,
             'top_actors': top_actors,
+            'actor_disk_usage': actor_disk_usage,
             'top_tags': top_tags,
         }
     except sqlite3.Error as e:
@@ -991,7 +1024,7 @@ def get_stats() -> Dict[str, Any]:
 
 
 def get_recommendations(count: int = 8, tags: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """Return `count` diverse high-scored videos (score >= 4.0, no VR tags).
+    """Return `count` diverse successful videos with covers (no VR tags).
 
     Uses a single SQL pass: assigns each qualifying video its lexicographically
     first non-VR tag, shuffles with RANDOM(), then picks one video per tag
@@ -1014,7 +1047,7 @@ def get_recommendations(count: int = 8, tags: Optional[List[str]] = None) -> Lis
         )
         vr_ids = {r[0] for r in cursor.fetchall()}
 
-        # Candidates: one representative row per code, high-score, has cover.
+        # Candidates: one representative row per code, has cover.
         tag_conditions, tag_params = _tag_filter_conditions("videos", tags)
         tag_where = "".join(f"\n              AND {condition}" for condition in tag_conditions)
         cursor.execute(
@@ -1023,7 +1056,6 @@ def get_recommendations(count: int = 8, tags: Optional[List[str]] = None) -> Lis
             FROM videos
             WHERE deleted = 0
               AND scrape_status = 'SUCCESS'
-              AND score >= 4.0
               AND cover_path IS NOT NULL
               AND cover_path != ''
               {tag_where}
@@ -1058,9 +1090,13 @@ def get_recommendations(count: int = 8, tags: Optional[List[str]] = None) -> Lis
         import random as _random
         _random.shuffle(candidates)
         seen_tags: set = set()
+        seen_codes: set = set()
         picked: list = []
         leftover: list = []
         for c in candidates:
+            if c['code'] in seen_codes:
+                continue
+            seen_codes.add(c['code'])
             tag = code_tag.get(c['code'], '__none__')
             if tag not in seen_tags:
                 seen_tags.add(tag)
@@ -1521,6 +1557,107 @@ def replace_video_file(
         return {'ok': True, 'original_file_path': dest_path, 'new_code': new_code}
     except sqlite3.Error as e:
         logger.error(f'❌ replace_video_file 失败 [{code}]: {e}')
+        return {'ok': False, 'error': str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+def replace_multipart_with_single_file(
+    code: str,
+    dest_path: str,
+    subtitle_zh: bool,
+    uncensored_leaked: bool,
+    uncensored_native: bool,
+    file_meta: Optional[Dict[str, Any]] = None,
+    keep_part: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Collapse all rows for a code into one non-part row pointing at dest_path."""
+    tag_desired = {'中文字幕': subtitle_zh, '无码破解': uncensored_leaked, '原装无码': uncensored_native}
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        resolved_code = _resolve_video_code(cursor, code)
+        if not resolved_code:
+            return {'ok': False, 'error': 'not found'}
+
+        cursor.execute(
+            'SELECT id, code, part, original_file_path FROM videos WHERE code = ? ORDER BY id ASC',
+            (resolved_code,),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return {'ok': False, 'error': 'not found'}
+
+        keep_row = None
+        if keep_part:
+            keep_row = next((r for r in rows if (r['part'] or '') == keep_part), None)
+            if keep_row is None:
+                return {'ok': False, 'error': 'part not found'}
+        else:
+            keep_row = rows[0]
+
+        keep_id = keep_row['id']
+        all_ids = [r['id'] for r in rows]
+        remove_ids = [vid for vid in all_ids if vid != keep_id]
+        old_paths = [r['original_file_path'] for r in rows if r['original_file_path']]
+        ph = ','.join('?' * len(all_ids))
+
+        has_c = subtitle_zh
+        has_u = uncensored_leaked or uncensored_native
+        suffix = '-UC' if (has_c and has_u) else '-C' if has_c else '-U' if has_u else ''
+        new_code = re.sub(r'(?i)-(?:uc|u|c)$', '', keep_row['code']) + suffix
+
+        cursor.execute(
+            f'SELECT t.name FROM tags t JOIN video_tag_link vtl ON vtl.tag_id = t.id WHERE vtl.video_id IN ({ph})',
+            all_ids,
+        )
+        current_tags = {r['name'] for r in cursor.fetchall()}
+
+        for tag_name, should_have in tag_desired.items():
+            if should_have:
+                cursor.execute('INSERT OR IGNORE INTO tags (name) VALUES (?)', (tag_name,))
+                cursor.execute('SELECT id FROM tags WHERE name = ?', (tag_name,))
+                tag_row = cursor.fetchone()
+                if tag_row:
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO video_tag_link (video_id, tag_id) VALUES (?, ?)',
+                        (keep_id, tag_row['id']),
+                    )
+            elif not should_have and tag_name in current_tags:
+                cursor.execute('SELECT id FROM tags WHERE name = ?', (tag_name,))
+                tag_row = cursor.fetchone()
+                if tag_row:
+                    cursor.execute(
+                        'DELETE FROM video_tag_link WHERE video_id = ? AND tag_id = ?',
+                        (keep_id, tag_row['id']),
+                    )
+
+        if remove_ids:
+            remove_ph = ','.join('?' * len(remove_ids))
+            cursor.execute(f'DELETE FROM video_actor_link WHERE video_id IN ({remove_ph})', remove_ids)
+            cursor.execute(f'DELETE FROM video_tag_link WHERE video_id IN ({remove_ph})', remove_ids)
+            cursor.execute(f'DELETE FROM videos WHERE id IN ({remove_ph})', remove_ids)
+
+        if file_meta:
+            cursor.execute(
+                'UPDATE videos SET original_file_path = ?, code = ?, part = NULL, file_size = ?, '
+                'file_mtime = ?, file_birthtime = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                (dest_path, new_code, file_meta.get('file_size'), file_meta.get('file_mtime'),
+                 file_meta.get('file_birthtime'), keep_id),
+            )
+        else:
+            cursor.execute(
+                'UPDATE videos SET original_file_path = ?, code = ?, part = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                (dest_path, new_code, keep_id),
+            )
+
+        conn.commit()
+        logger.info(f'🔄 replace_multipart_with_single_file [{code}]: {dest_path}')
+        return {'ok': True, 'original_file_path': dest_path, 'new_code': new_code, 'old_paths': old_paths}
+    except sqlite3.Error as e:
+        logger.error(f'❌ replace_multipart_with_single_file 失败 [{code}]: {e}')
         return {'ok': False, 'error': str(e)}
     finally:
         if conn:

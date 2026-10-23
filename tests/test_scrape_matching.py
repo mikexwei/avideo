@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from core.scraper.video_scraper import _pick_matching_index, FREEZE
+from core.scraper.video_scraper import _pick_matching_index, _search_code_variants, FREEZE
 from dal.db_manager import update_video_metadata
 
 
@@ -22,6 +22,12 @@ class PickMatchingIndexTests(unittest.TestCase):
     def test_no_match_returns_none(self):
         self.assertIsNone(_pick_matching_index(['OTHER-1', 'OTHER-2'], 'MFYD-140'))
 
+    def test_dsvr_matches_3dsvr_result(self):
+        self.assertEqual(_pick_matching_index(['OTHER-1', '3DSVR-345'], 'DSVR-345'), 1)
+
+    def test_3dsvr_matches_dsvr_result(self):
+        self.assertEqual(_pick_matching_index(['DSVR-345'], '3DSVR-345'), 0)
+
     def test_empty_list_returns_none(self):
         self.assertIsNone(_pick_matching_index([], 'MFYD-140'))
 
@@ -30,6 +36,14 @@ class PickMatchingIndexTests(unittest.TestCase):
 
     def test_freeze_sentinel(self):
         self.assertEqual(FREEZE, 'FREEZE')
+
+
+class SearchCodeVariantsTests(unittest.TestCase):
+    def test_dsvr_search_also_tries_3dsvr(self):
+        self.assertEqual(_search_code_variants('DSVR-1996'), ['DSVR-1996', '3DSVR-1996'])
+
+    def test_3dsvr_search_also_tries_dsvr(self):
+        self.assertEqual(_search_code_variants('3DSVR-1996'), ['3DSVR-1996', 'DSVR-1996'])
 
 
 class UpdateMetadataFreezeTests(unittest.TestCase):

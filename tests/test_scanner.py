@@ -41,6 +41,36 @@ class ScannerExtractionTests(unittest.TestCase):
         self.assertEqual(code, 'ABP-123')
         self.assertEqual(part, 'part3')
 
+    def test_fc2_suffix_marker_is_ignored(self):
+        self.assertEqual(extract_video_code('fc2-4828968-c.mp4')[0], 'FC2-4828968')
+
+    def test_fc2_ppv_variants_are_normalized(self):
+        filenames = [
+            'fc2ppv-4828968-c.mp4',
+            'fc-ppv-4828968-c.mp4',
+            'fc2-ppv-4828968-c.mp4',
+        ]
+        for filename in filenames:
+            with self.subTest(filename=filename):
+                self.assertEqual(extract_video_code(filename)[0], 'FC2-4828968')
+
+    def test_ad_site_prefix_before_at_sign_is_removed(self):
+        filenames = [
+            '1212111.com@abcd-123.mp4',
+            r'1212111.com\@abcd-123.mp4',
+            '1212111.com＠abcd-123.mp4',
+            '1212111.com%40abcd-123.mp4',
+        ]
+        for filename in filenames:
+            with self.subTest(filename=filename):
+                self.assertEqual(extract_video_code(filename)[0], 'ABCD-123')
+
+    def test_complex_ad_domain_without_at_sign_is_removed(self):
+        self.assertEqual(
+            extract_video_code('www.1212111-site.com_abcd-123.mp4')[0],
+            'ABCD-123',
+        )
+
     def test_scan_directory_uses_siblings_for_c_part(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
