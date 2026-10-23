@@ -83,5 +83,51 @@ class UpdateMetadataFreezeTests(unittest.TestCase):
         self.assertEqual(status, 'FAILED')
 
 
+class UpdateMetadataActorTests(unittest.TestCase):
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript("""
+            CREATE TABLE videos (
+                id INTEGER PRIMARY KEY, code TEXT NOT NULL, title_jp TEXT,
+                release_date TEXT, duration TEXT, maker TEXT, publisher TEXT,
+                series TEXT, score REAL, cover_path TEXT, scrape_status TEXT,
+                updated_at TIMESTAMP
+            );
+            CREATE TABLE actors (
+                id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL,
+                is_ignored INTEGER DEFAULT 0
+            );
+            CREATE TABLE video_actor_link (video_id INTEGER, actor_id INTEGER, UNIQUE(video_id, actor_id));
+            CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL);
+            CREATE TABLE video_tag_link (video_id INTEGER, tag_id INTEGER, UNIQUE(video_id, tag_id));
+            INSERT INTO videos (id, code) VALUES (1, 'CAWB-012-UC');
+            INSERT INTO actors (id, name, is_ignored) VALUES (1, '旧男优', 1), (2, '清野咲', 0), (3, '野島誠', 1);
+            INSERT INTO video_actor_link VALUES (1, 1);
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_success_replaces_old_links_and_skips_ignored_actors(self):
+        data = {
+            'title_jp': 'title', 'release_date': '', 'duration': '',
+            'maker': '', 'publisher': '', 'series': '', 'score': 0,
+            'cover_path': '', 'actors': '清野咲,野島誠', 'categories': '',
+        }
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            update_video_metadata(1, 'SUCCESS', data)
+
+        conn = sqlite3.connect(self.db_path)
+        names = [row[0] for row in conn.execute(
+            "SELECT a.name FROM actors a JOIN video_actor_link val ON val.actor_id=a.id WHERE val.video_id=1"
+        )]
+        conn.close()
+        self.assertEqual(names, ['清野咲'])
+
+
 if __name__ == '__main__':
     unittest.main()

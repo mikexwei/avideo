@@ -242,6 +242,11 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             ))
             
             # 2. 处理演员 (Actors) 的多对多入库
+            placeholders = ','.join('?' * len(target_video_ids))
+            cursor.execute(
+                f"DELETE FROM video_actor_link WHERE video_id IN ({placeholders})",
+                target_video_ids,
+            )
             actors_str = data.get('actors', '')
             if actors_str:
                 # 把逗号分隔的字符串拆成列表，并去掉两边空格
@@ -250,9 +255,9 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
                     # 尝试插入演员 (如果已存在则忽略)
                     cursor.execute("INSERT OR IGNORE INTO actors (name) VALUES (?)", (actor_name,))
                     # 查询该演员的 ID (无论他是刚插入的，还是以前就存在的)
-                    cursor.execute("SELECT id FROM actors WHERE name = ?", (actor_name,))
+                    cursor.execute("SELECT id, is_ignored FROM actors WHERE name = ?", (actor_name,))
                     actor_row = cursor.fetchone()
-                    if actor_row:
+                    if actor_row and not actor_row[1]:
                         actor_id = actor_row[0]
                         # 为所有具有相同 code 的 video_id 插入关联表
                         for t_v_id in target_video_ids:
@@ -563,7 +568,7 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
             FROM actors a
             JOIN video_actor_link val ON val.actor_id = a.id
             JOIN videos v ON v.id = val.video_id
-            WHERE v.code = ?
+            WHERE v.code = ? AND a.is_ignored = 0
             ORDER BY a.name
             """,
             (resolved_code,),

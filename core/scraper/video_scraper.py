@@ -355,20 +355,23 @@ def _female_actor_names_from_block(block) -> list[str]:
             }
             return null;
           };
-          const colorBits = (el) => {
-            const bits = [];
-            for (const node of [el, el.nextElementSibling, el.previousElementSibling, el.parentElement]) {
+          const actorColorCategory = (link) => {
+            for (const node of [link, link.nextElementSibling]) {
               if (!node) continue;
               const style = window.getComputedStyle(node);
-              bits.push(node.getAttribute('style'), style.color, style.backgroundColor, style.borderColor);
+              for (const value of [node.getAttribute('style'), style.color, style.backgroundColor, style.borderColor]) {
+                const category = colorCategory(value);
+                if (category) return category;
+              }
             }
-            return bits;
+            return null;
           };
           return links
             .filter((link) => {
-              const bits = colorBits(link);
-              if (bits.some(value => colorCategory(value) === 'female')) return true;
-              if (bits.some(value => colorCategory(value) === 'male')) return false;
+              if (link.matches(':has(+ strong.symbol.male)')) return false;
+              const category = actorColorCategory(link);
+              if (category === 'female') return true;
+              if (category === 'male') return false;
               return !link.matches(':has(+ strong.symbol.male)');
             })
             .map((link) => link.textContent.trim())
