@@ -2258,7 +2258,7 @@
         }
 
         async function processReplaceGroup(group, result) {
-          const targetCode = group.db_code || group.code;
+          let targetCode = group.db_code || group.code;
           const totalBytes = group.files.reduce((sum, fi) => {
             const f = batchFiles.value.find(bf => bf.name === fi.filename);
             return sum + (f ? f.size : 0);
@@ -2295,15 +2295,17 @@
             if (originalPart) headers['X-Part'] = originalPart;
 
             result.message = group.files.length > 1 ? `上传中… (${fi.filename})` : '上传中…';
-            await _xhrUpload(url, headers, f, loaded => {
+            const replaceResponse = await _xhrUpload(url, headers, f, loaded => {
               result.progress = Math.round((loadedBefore + loaded) / totalBytes * 100);
               const s = speed(loadedBefore + loaded);
               if (s) result.speed = s;
             });
+            targetCode = replaceResponse.new_code || replaceResponse.code || targetCode;
             loadedBefore += f.size;
           }
           result.progress = 100;
           result.viewCode = targetCode;
+          result.code = targetCode;
           result.message = '替换完成';
         }
 

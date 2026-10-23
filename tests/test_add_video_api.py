@@ -314,6 +314,15 @@ class StreamingUploadTests(unittest.TestCase):
             )
         self.assertEqual(resp.status_code, 400)
 
+    def test_upload_part_canonicalizes_ad_prefix_before_rescan(self):
+        uid = '77777777-7777-4777-8777-777777777777'
+        resp = self._upload_part(uid, r'489155.com\@MIAB-679-UC.mp4', b'video')
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['name'], 'MIAB-679-UC.mp4')
+        written = Path(self.tmpdir) / '.upload_tmp' / uid / 'MIAB-679-UC.mp4'
+        self.assertEqual(written.read_bytes(), b'video')
+
     def test_add_manual_via_upload_id_creates_multipart_record(self):
         uid = '33333333-3333-4333-8333-333333333333'
         self.assertEqual(self._upload_part(uid, 'movie_a.mp4', b'v1').status_code, 200)

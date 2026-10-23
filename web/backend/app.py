@@ -786,9 +786,20 @@ def api_upload_part():
     if tmp_dir is None:
         return jsonify({'error': 'invalid volume_path or upload_id'}), 400
 
-    safe_name = secure_filename(unquote(request.headers.get('X-Dest-Name') or '').strip())
+    raw_name = unquote(request.headers.get('X-Dest-Name') or '').strip()
+    safe_name = secure_filename(raw_name)
     if not safe_name:
         return jsonify({'error': 'invalid filename'}), 400
+
+    # secure_filename removes separators such as "\\@". Canonicalize a parseable
+    # video name first so an ad prefix cannot become part of the code on re-scan
+    # (e.g. 489155.com\\@MIAB-679-UC.mp4 -> COMMIAB-679-UC).
+    parsed_code, parsed_part = extract_video_code(Path(raw_name).stem)
+    safe_code, _ = extract_video_code(Path(safe_name).stem)
+    if parsed_code and safe_code != parsed_code:
+        suffix = Path(raw_name).suffix.lower()
+        part_suffix = f'.{parsed_part}' if parsed_part else ''
+        safe_name = secure_filename(f'{parsed_code}{part_suffix}{suffix}')
     try:
         expected_size = int(request.headers.get('X-File-Size') or 0)
     except (ValueError, TypeError):
