@@ -456,9 +456,8 @@
                   </td>
                   <td class="py-2 px-2 whitespace-nowrap align-top">
                     <div v-if="g.warning" class="text-xs text-orange-400 max-w-xs leading-snug whitespace-normal">{{ g.warning }}</div>
-                    <div v-else-if="!g.exists" class="text-xs text-gray-500">自动刮削</div>
                     <div v-else class="flex flex-col gap-1.5">
-                      <label v-for="[key, label] in [['subtitle_zh','中文字幕'],['uncensored_leaked','无码破解'],['uncensored_native','原装无码']]"
+                      <label v-for="[key, label] in [['subtitle_zh','中文字幕'],['uncensored_native','原装无码']]"
                         :key="key" class="flex items-center gap-1.5 cursor-pointer">
                         <button @click="toggleGroupTag(g, key)"
                           class="w-7 h-4 rounded-full transition-colors flex-shrink-0 relative"
@@ -468,6 +467,14 @@
                         </button>
                         <span class="text-xs text-gray-400 whitespace-nowrap">{{ label }}</span>
                       </label>
+                      <div class="flex flex-wrap gap-1 pt-1">
+                        <button v-for="tag in ['JAV 无码破解','LADA 无码破解','LTX 无码破解']" :key="tag"
+                          @click="g.uncensored_crack_tag = tag"
+                          :class="['px-2 py-1 rounded text-xs transition-colors',
+                            g.uncensored_crack_tag === tag ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+                          {{ tag.replace(' 无码破解', '') }}
+                        </button>
+                      </div>
                     </div>
                   </td>
                   <td class="py-2 px-2 align-top">
@@ -1487,15 +1494,17 @@
                       replaceSubtitleZh ? 'translate-x-6' : 'translate-x-1']"></span>
                   </button>
                 </div>
-                <!-- 无码破解 -->
-                <div class="flex items-center justify-between px-4 py-3">
+                <!-- 无码破解分类 -->
+                <div class="px-4 py-3">
                   <span class="text-sm text-gray-300">无码破解</span>
-                  <button @click="replaceUncensoredLeaked = !replaceUncensoredLeaked" :disabled="replaceUploading"
-                    :class="['relative flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer disabled:opacity-50',
-                      replaceUncensoredLeaked ? 'bg-indigo-600' : 'bg-gray-700']">
-                    <span :class="['absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200',
-                      replaceUncensoredLeaked ? 'translate-x-6' : 'translate-x-1']"></span>
-                  </button>
+                  <div class="flex gap-2 mt-2">
+                    <button v-for="tag in ['JAV 无码破解','LADA 无码破解','LTX 无码破解']" :key="tag"
+                      @click="replaceUncensoredCrackTag = tag" :disabled="replaceUploading"
+                      :class="['flex-1 px-2 py-1.5 rounded text-xs transition-colors disabled:opacity-50',
+                        replaceUncensoredCrackTag === tag ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600']">
+                      {{ tag.replace(' 无码破解', '') }}
+                    </button>
+                  </div>
                 </div>
                 <!-- 原装无码 -->
                 <div class="flex items-center justify-between px-4 py-3">
@@ -2111,7 +2120,8 @@
                 original_path: item.original_path,
                 db_parts: item.db_parts || [],
                 subtitle_zh: /(?:-UC|-C)$/i.test(item.code || ''),
-                uncensored_leaked: /(?:-UC|-U)$/i.test(item.code || ''),
+                uncensored_leaked: true,
+                uncensored_crack_tag: 'LTX 无码破解',
                 uncensored_native: false,
                 warning: item.error || null,
               };
@@ -2210,6 +2220,7 @@
           const data = await postJson('/api/videos/add-auto', {
             upload_id: uploadId,
             volume_path: batchVolume.value,
+            uncensored_crack_tag: group.uncensored_crack_tag,
           });
           const jobId = data.job_id;
           result.uploaded = true;  // switch UI from progress bar to step list
@@ -2290,6 +2301,7 @@
               'X-File-Size': String(f.size),
               'X-Subtitle-Zh': group.subtitle_zh ? '1' : '0',
               'X-Uncensored-Leaked': group.uncensored_leaked ? '1' : '0',
+              'X-Uncensored-Crack-Tag': encodeURIComponent(group.uncensored_crack_tag),
               'X-Uncensored-Native': group.uncensored_native ? '1' : '0',
             };
             if (originalPart) headers['X-Part'] = originalPart;
@@ -2914,7 +2926,7 @@
         const replaceFile = ref(null);
         const replaceDestName = ref('');
         const replaceSubtitleZh = ref(false);
-        const replaceUncensoredLeaked = ref(false);
+        const replaceUncensoredCrackTag = ref('LTX 无码破解');
         const replaceUncensoredNative = ref(false);
         const replaceWhole = ref(false);
         const replacePartOn = ref(false);
@@ -2934,7 +2946,7 @@
           const stem = dot > 0 ? name.slice(0, dot) : name;
           const ext  = dot > 0 ? name.slice(dot) : '';
           const hasC = replaceSubtitleZh.value;
-          const hasU = replaceUncensoredLeaked.value || replaceUncensoredNative.value;
+          const hasU = Boolean(replaceUncensoredCrackTag.value) || replaceUncensoredNative.value;
           const cleanStem = replaceWhole.value ? stem.replace(/\.part\d+$/i, '') : stem;
           const newStem = swapCodeSuffix(cleanStem, hasC, hasU);
           const partSeg = !replaceWhole.value && replacePartOn.value && replacePartNum.value ? `.part${replacePartNum.value}` : '';
@@ -2959,7 +2971,7 @@
           replaceFile.value = null;
           replaceDestName.value = '';
           replaceSubtitleZh.value = false;
-          replaceUncensoredLeaked.value = false;
+          replaceUncensoredCrackTag.value = 'LTX 无码破解';
           replaceUncensoredNative.value = false;
           replaceWhole.value = false;
           replaceUploading.value = false;
@@ -2991,7 +3003,6 @@
           // Auto-detect tags from the uploaded filename's code component.
           const upCode = file.name.replace(/\.[^.]+$/, '').split('.')[0];
           replaceSubtitleZh.value = /(?:-UC|-C)$/i.test(upCode);
-          replaceUncensoredLeaked.value = /(?:-UC|-U)$/i.test(upCode);
           const origPath = _getOriginalPathForPart(replaceOriginalPart.value);
           if (origPath) {
             const origFilename = origPath.split('/').pop();
@@ -3064,7 +3075,8 @@
           xhr.setRequestHeader('X-Dest-Name', encodeURIComponent(replaceDestName.value));
           xhr.setRequestHeader('X-File-Size', String(replaceFile.value.size));
           xhr.setRequestHeader('X-Subtitle-Zh', replaceSubtitleZh.value ? '1' : '0');
-          xhr.setRequestHeader('X-Uncensored-Leaked', replaceUncensoredLeaked.value ? '1' : '0');
+          xhr.setRequestHeader('X-Uncensored-Leaked', '1');
+          xhr.setRequestHeader('X-Uncensored-Crack-Tag', encodeURIComponent(replaceUncensoredCrackTag.value));
           xhr.setRequestHeader('X-Uncensored-Native', replaceUncensoredNative.value ? '1' : '0');
           if (replaceWhole.value) xhr.setRequestHeader('X-Replace-Whole', '1');
           if (!replaceWhole.value && replacePartOn.value && replacePartNum.value) xhr.setRequestHeader('X-Part', String(replacePartNum.value));
@@ -3398,7 +3410,7 @@
           confirmDelete,
           showReplaceModal, replaceOriginalPart,
           replaceFile, replaceDestName, replaceFinalName,
-          replaceSubtitleZh, replaceUncensoredLeaked, replaceUncensoredNative,
+          replaceSubtitleZh, replaceUncensoredCrackTag, replaceUncensoredNative,
           replaceWhole, replacePartOn, replacePartNum, replacePartOther,
           replaceUploading, replaceProgress, replaceSpeed, replaceElapsed, replaceRemaining,
           replaceError,

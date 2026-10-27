@@ -312,12 +312,15 @@ def _derived_tags_for_video(
     maker: str,
     existing_tags: set[str],
     file_birthtime: Optional[str] = None,
+    uncensored_crack_tag: Optional[str] = None,
 ) -> list[str]:
     tags = []
     suffix = _version_suffix(code)
 
     if "无码流出" in existing_tags or "無碼流出" in existing_tags:
         tags.append("无码流出")
+    elif uncensored_crack_tag in _UNCENSORED_CRACK_TAGS:
+        tags.append(uncensored_crack_tag)
     elif existing_tags.intersection(_UNCENSORED_CRACK_TAGS + _LEGACY_UNCENSORED_CRACK_TAGS) or suffix in {"-U", "-UC"}:
         tags.append(_uncensored_crack_tag(file_birthtime))
     elif maker in _ORIGINAL_UNCENSORED_MAKERS:
@@ -328,7 +331,7 @@ def _derived_tags_for_video(
     return tags
 
 
-def sync_derived_video_tags_for_code(code: str) -> int:
+def sync_derived_video_tags_for_code(code: str, uncensored_crack_tag: Optional[str] = None) -> int:
     conn = None
     try:
         conn = _get_conn()
@@ -366,6 +369,7 @@ def sync_derived_video_tags_for_code(code: str) -> int:
             derived_tags = _derived_tags_for_video(
                 video_row["code"], video_row["maker"] or "", existing_tags,
                 video_row["file_birthtime"] or video_row["file_mtime"],
+                uncensored_crack_tag,
             )
             for tag in derived_tags:
                 cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
@@ -1492,13 +1496,16 @@ def replace_video_file(
     uncensored_leaked: bool,
     uncensored_native: bool,
     file_meta: Optional[Dict[str, Any]] = None,
+    uncensored_crack_tag: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Update file path and sync 中文字幕/无码破解分类/原装无码 tags after a file replacement.
 
     file_meta, when provided, carries the new file's stat (file_size/file_mtime/
     file_birthtime) so those columns stay in sync with the replaced file.
     """
-    crack_tag = _uncensored_crack_tag((file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime'))
+    crack_tag = uncensored_crack_tag if uncensored_crack_tag in _UNCENSORED_CRACK_TAGS else _uncensored_crack_tag(
+        (file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime')
+    )
     tag_desired = {'中文字幕': subtitle_zh, crack_tag: uncensored_leaked, '原装无码': uncensored_native}
     conn = None
     try:
@@ -1602,9 +1609,12 @@ def replace_multipart_with_single_file(
     uncensored_native: bool,
     file_meta: Optional[Dict[str, Any]] = None,
     keep_part: Optional[str] = None,
+    uncensored_crack_tag: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Collapse all rows for a code into one non-part row pointing at dest_path."""
-    crack_tag = _uncensored_crack_tag((file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime'))
+    crack_tag = uncensored_crack_tag if uncensored_crack_tag in _UNCENSORED_CRACK_TAGS else _uncensored_crack_tag(
+        (file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime')
+    )
     tag_desired = {'中文字幕': subtitle_zh, crack_tag: uncensored_leaked, '原装无码': uncensored_native}
     conn = None
     try:

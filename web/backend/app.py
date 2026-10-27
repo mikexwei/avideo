@@ -257,7 +257,9 @@ def api_javdb_session_close():
     return jsonify({'ok': True})
 
 
-def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
+def _run_auto_pipeline(
+    job: '_Job', file_paths: list, volume_path: 'Path', uncensored_crack_tag: str = 'LTX 无码破解'
+):
     def emit(step: str, status: str, message: str, **extra):
         job.queue.put({'step': step, 'status': status, 'message': message, **extra})
 
@@ -301,7 +303,7 @@ def _run_auto_pipeline(job: '_Job', file_paths: list, volume_path: 'Path'):
 
         # ── Steps 4-5: Insert DB + sync derived tags ─────────────
         batch_insert_scanned_videos(scanned)
-        sync_derived_video_tags_for_code(main_code)
+        sync_derived_video_tags_for_code(main_code, uncensored_crack_tag)
         suffix_upper = main_code.upper()
         if suffix_upper.endswith('-UC'):
             tag_msg = '标签: 中文字幕、无码破解'
@@ -964,6 +966,14 @@ def api_finalize_rename(code: str):
 @app.post('/api/videos/add-auto')
 def api_add_auto():
     payload = request.get_json(silent=True) if request.is_json else None
+    crack_tags = {'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解'}
+    uncensored_crack_tag = (
+        (payload or {}).get('uncensored_crack_tag')
+        or request.form.get('uncensored_crack_tag')
+        or 'LTX 无码破解'
+    )
+    if uncensored_crack_tag not in crack_tags:
+        return jsonify({'error': 'invalid uncensored_crack_tag'}), 400
     if payload and payload.get('upload_id'):
         volume_path = Path((payload.get('volume_path') or '').strip())
         tmp_dir = _resolve_upload_dir(volume_path, payload['upload_id'])
@@ -1000,7 +1010,7 @@ def api_add_auto():
 
     t = threading.Thread(
         target=_run_auto_pipeline,
-        args=(job, saved_paths, volume_path),
+        args=(job, saved_paths, volume_path, uncensored_crack_tag),
         daemon=True,
     )
     t.start()
@@ -1257,6 +1267,7 @@ def api_video_replace(code: str):
             return jsonify({'error': 'invalid X-File-Size'}), 400
         subtitle_zh = request.headers.get('X-Subtitle-Zh') == '1'
         uncensored_leaked = request.headers.get('X-Uncensored-Leaked') == '1'
+        uncensored_crack_tag = unquote(request.headers.get('X-Uncensored-Crack-Tag') or '') or None
         uncensored_native = request.headers.get('X-Uncensored-Native') == '1'
         dest_part = (request.headers.get('X-Part') or '').strip() or None
         replace_whole = request.headers.get('X-Replace-Whole') == '1'
@@ -1273,10 +1284,15 @@ def api_video_replace(code: str):
             return jsonify({'error': 'invalid file_size'}), 400
         subtitle_zh = request.form.get('subtitle_zh') == '1'
         uncensored_leaked = request.form.get('uncensored_leaked') == '1'
+        uncensored_crack_tag = request.form.get('uncensored_crack_tag') or None
         uncensored_native = request.form.get('uncensored_native') == '1'
         dest_part = (request.form.get('part') or '').strip() or None
         replace_whole = request.form.get('replace_whole') == '1'
         body_stream = f.stream
+
+    crack_tags = {'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解'}
+    if uncensored_crack_tag is not None and uncensored_crack_tag not in crack_tags:
+        return jsonify({'error': 'invalid uncensored_crack_tag'}), 400
 
     if not dest_name:
         return jsonify({'error': 'missing dest_name'}), 400
@@ -1315,13 +1331,21 @@ def api_video_replace(code: str):
             ).isoformat(),
         }
         # DB update first — filesystem still intact if this fails
+        crack_kwargs = (
+            {'uncensored_crack_tag': uncensored_crack_tag}
+            if uncensored_crack_tag is not None else {}
+        )
         if replace_whole:
             result = replace_multipart_with_single_file(
                 code, str(dest_path), subtitle_zh, uncensored_leaked,
                 uncensored_native, file_meta=file_meta, keep_part=original_part,
+                **crack_kwargs,
             )
         else:
-            result = replace_video_file(code, original_part, str(dest_path), subtitle_zh, uncensored_leaked, uncensored_native, file_meta=file_meta)
+            result = replace_video_file(
+                code, original_part, str(dest_path), subtitle_zh, uncensored_leaked,
+                uncensored_native, file_meta=file_meta, **crack_kwargs,
+            )
         if not result['ok']:
             temp_path.unlink(missing_ok=True)
             return jsonify({'error': result.get('error', 'db update failed')}), 500

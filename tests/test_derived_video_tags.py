@@ -52,6 +52,14 @@ class DerivedVideoTagsTests(unittest.TestCase):
         self.assertEqual(_uncensored_crack_tag('2026-10-09T23:59:59'), 'LADA 无码破解')
         self.assertEqual(_uncensored_crack_tag('2026-10-10T00:00:00'), 'LTX 无码破解')
 
+    def test_explicit_cracked_tag_overrides_birthtime(self):
+        self.assertEqual(
+            _derived_tags_for_video(
+                'ABP-123', '', set(), '2026-10-20T00:00:00', 'JAV 无码破解'
+            ),
+            ['JAV 无码破解'],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
