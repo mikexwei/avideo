@@ -93,6 +93,7 @@ class UpdateMetadataActorTests(unittest.TestCase):
                 id INTEGER PRIMARY KEY, code TEXT NOT NULL, title_jp TEXT,
                 release_date TEXT, duration TEXT, maker TEXT, publisher TEXT,
                 series TEXT, score REAL, cover_path TEXT, scrape_status TEXT,
+                file_mtime TEXT, file_birthtime TEXT,
                 updated_at TIMESTAMP
             );
             CREATE TABLE actors (

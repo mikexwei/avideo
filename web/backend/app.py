@@ -1127,7 +1127,10 @@ def api_video_files():
                    EXISTS (
                        SELECT 1 FROM video_tag_link vtl
                        JOIN tags t ON t.id = vtl.tag_id
-                       WHERE vtl.video_id = v.id AND t.name IN ('无码流出', '無碼流出', '无码破解', '無碼破解')
+                       WHERE vtl.video_id = v.id AND t.name IN (
+                           '无码流出', '無碼流出', '无码破解', '無碼破解',
+                           'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解'
+                       )
                    ) AS uncensored_leaked,
                    EXISTS (
                        SELECT 1 FROM video_tag_link vtl

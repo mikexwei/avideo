@@ -112,6 +112,18 @@ class ReplaceVideoFileTests(unittest.TestCase):
         conn.close()
         self.assertEqual(tuple(row), (12345, '2026-07-03T10:00:00', '2026-07-03T09:00:00'))
 
+    def test_cracked_tag_uses_replacement_birthtime(self):
+        meta = {'file_size': 1, 'file_mtime': '2026-10-11T10:00:00', 'file_birthtime': '2026-10-11T09:00:00'}
+        result = self._call(leaked=True, file_meta=meta)
+        self.assertTrue(result['ok'])
+        conn = sqlite3.connect(self.db_path)
+        tags = {r[0] for r in conn.execute(
+            "SELECT t.name FROM tags t JOIN video_tag_link vtl ON vtl.tag_id=t.id WHERE vtl.video_id=1"
+        )}
+        conn.close()
+        self.assertIn('LTX 无码破解', tags)
+        self.assertNotIn('无码破解', tags)
+
     def test_replace_multipart_with_single_file_collapses_rows(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute("DELETE FROM video_tag_link")

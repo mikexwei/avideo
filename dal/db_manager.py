@@ -39,8 +39,10 @@ def _order_clause(sort: str) -> str:
 
 
 _VERSION_SUFFIXES = ("-UC", "-C", "-U")
-_DERIVED_TAGS = ("无码流出", "无码破解", "原装无码", "中文字幕")
-_DERIVED_TAGS_TO_REMOVE = _DERIVED_TAGS + ("無碼流出", "無碼破解")
+_UNCENSORED_CRACK_TAGS = ("JAV 无码破解", "LADA 无码破解", "LTX 无码破解")
+_LEGACY_UNCENSORED_CRACK_TAGS = ("无码破解", "無碼破解")
+_DERIVED_TAGS = ("无码流出",) + _UNCENSORED_CRACK_TAGS + ("原装无码", "中文字幕")
+_DERIVED_TAGS_TO_REMOVE = _DERIVED_TAGS + ("無碼流出",) + _LEGACY_UNCENSORED_CRACK_TAGS
 _ORIGINAL_UNCENSORED_MAKERS = {
     "一本道",
     "HEYZO",
@@ -296,14 +298,28 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             conn.close()
 
 
-def _derived_tags_for_video(code: str, maker: str, existing_tags: set[str]) -> list[str]:
+def _uncensored_crack_tag(file_birthtime: Optional[str]) -> str:
+    date = (file_birthtime or "")[:10]
+    if date >= "2026-10-10":
+        return "LTX 无码破解"
+    if date >= "2025-11-10":
+        return "LADA 无码破解"
+    return "JAV 无码破解"
+
+
+def _derived_tags_for_video(
+    code: str,
+    maker: str,
+    existing_tags: set[str],
+    file_birthtime: Optional[str] = None,
+) -> list[str]:
     tags = []
     suffix = _version_suffix(code)
 
     if "无码流出" in existing_tags or "無碼流出" in existing_tags:
         tags.append("无码流出")
-    elif "无码破解" in existing_tags or "無碼破解" in existing_tags or suffix in {"-U", "-UC"}:
-        tags.append("无码破解")
+    elif existing_tags.intersection(_UNCENSORED_CRACK_TAGS + _LEGACY_UNCENSORED_CRACK_TAGS) or suffix in {"-U", "-UC"}:
+        tags.append(_uncensored_crack_tag(file_birthtime))
     elif maker in _ORIGINAL_UNCENSORED_MAKERS:
         tags.append("原装无码")
 
@@ -318,7 +334,7 @@ def sync_derived_video_tags_for_code(code: str) -> int:
         conn = _get_conn()
         conn.execute("PRAGMA foreign_keys = ON;")
         cursor = conn.cursor()
-        cursor.execute("SELECT id, code, maker FROM videos WHERE code = ?", (code,))
+        cursor.execute("SELECT id, code, maker, file_birthtime, file_mtime FROM videos WHERE code = ?", (code,))
         video_rows = cursor.fetchall()
         if not video_rows:
             return 0
@@ -345,23 +361,24 @@ def sync_derived_video_tags_for_code(code: str) -> int:
             video_ids + list(_DERIVED_TAGS_TO_REMOVE),
         )
 
-        derived_tags = _derived_tags_for_video(video_rows[0]["code"], video_rows[0]["maker"] or "", existing_tags)
-        if not derived_tags:
-            conn.commit()
-            return 0
-
-        for tag in derived_tags:
-            cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
-            cursor.execute("SELECT id FROM tags WHERE name = ?", (tag,))
-            tag_id = cursor.fetchone()["id"]
-            for video_id in video_ids:
+        changed = 0
+        for video_row in video_rows:
+            derived_tags = _derived_tags_for_video(
+                video_row["code"], video_row["maker"] or "", existing_tags,
+                video_row["file_birthtime"] or video_row["file_mtime"],
+            )
+            for tag in derived_tags:
+                cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
+                cursor.execute("SELECT id FROM tags WHERE name = ?", (tag,))
+                tag_id = cursor.fetchone()["id"]
                 cursor.execute(
                     "INSERT OR IGNORE INTO video_tag_link (video_id, tag_id) VALUES (?, ?)",
-                    (video_id, tag_id),
+                    (video_row["id"], tag_id),
                 )
+                changed += cursor.rowcount
 
         conn.commit()
-        return len(derived_tags) * len(video_ids)
+        return changed
     except sqlite3.Error as e:
         logger.error(f"❌ sync_derived_video_tags_for_code 失败 [{code}]: {e}")
         return 0
@@ -1476,12 +1493,13 @@ def replace_video_file(
     uncensored_native: bool,
     file_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Update file path and sync 中文字幕/无码破解/原装无码 tags after a file replacement.
+    """Update file path and sync 中文字幕/无码破解分类/原装无码 tags after a file replacement.
 
     file_meta, when provided, carries the new file's stat (file_size/file_mtime/
     file_birthtime) so those columns stay in sync with the replaced file.
     """
-    tag_desired = {'中文字幕': subtitle_zh, '无码破解': uncensored_leaked, '原装无码': uncensored_native}
+    crack_tag = _uncensored_crack_tag((file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime'))
+    tag_desired = {'中文字幕': subtitle_zh, crack_tag: uncensored_leaked, '原装无码': uncensored_native}
     conn = None
     try:
         conn = _get_conn()
@@ -1521,6 +1539,14 @@ def replace_video_file(
             all_ids,
         )
         current_tags = {r['name'] for r in cursor.fetchall()}
+
+        cracked_names = _LEGACY_UNCENSORED_CRACK_TAGS + _UNCENSORED_CRACK_TAGS
+        cursor.execute(
+            f'DELETE FROM video_tag_link WHERE video_id IN ({ph}) '
+            f'AND tag_id IN (SELECT id FROM tags WHERE name IN ({",".join("?" * len(cracked_names))}))',
+            all_ids + list(cracked_names),
+        )
+        current_tags.difference_update(cracked_names)
 
         for tag_name, should_have in tag_desired.items():
             if should_have and tag_name not in current_tags:
@@ -1578,7 +1604,8 @@ def replace_multipart_with_single_file(
     keep_part: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Collapse all rows for a code into one non-part row pointing at dest_path."""
-    tag_desired = {'中文字幕': subtitle_zh, '无码破解': uncensored_leaked, '原装无码': uncensored_native}
+    crack_tag = _uncensored_crack_tag((file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime'))
+    tag_desired = {'中文字幕': subtitle_zh, crack_tag: uncensored_leaked, '原装无码': uncensored_native}
     conn = None
     try:
         conn = _get_conn()
@@ -1619,6 +1646,14 @@ def replace_multipart_with_single_file(
             all_ids,
         )
         current_tags = {r['name'] for r in cursor.fetchall()}
+
+        cracked_names = _LEGACY_UNCENSORED_CRACK_TAGS + _UNCENSORED_CRACK_TAGS
+        cursor.execute(
+            'DELETE FROM video_tag_link WHERE video_id = ? '
+            f'AND tag_id IN (SELECT id FROM tags WHERE name IN ({",".join("?" * len(cracked_names))}))',
+            [keep_id] + list(cracked_names),
+        )
+        current_tags.difference_update(cracked_names)
 
         for tag_name, should_have in tag_desired.items():
             if should_have:

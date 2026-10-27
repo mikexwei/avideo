@@ -881,7 +881,7 @@
           <div>
             <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Tags</div>
             <div class="flex flex-wrap gap-2">
-              <button v-for="tag in ['中文字幕','无码破解','无码流出','原装无码']" :key="tag"
+              <button v-for="tag in ['中文字幕','JAV 无码破解','LADA 无码破解','LTX 无码破解','无码流出','原装无码']" :key="tag"
                 @click="toggleManualTag(tag)"
                 :class="['px-2.5 py-1 rounded-full text-xs transition',
                   manualTags.includes(tag) ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
@@ -1937,7 +1937,7 @@
       }
     };
 
-    const FILTER_TAGS = ['无码流出', '无码破解', '原装无码', '中文字幕'];
+    const FILTER_TAGS = ['无码流出', 'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解', '原装无码', '中文字幕'];
 
     function queryTags(query) {
       const raw = query.tag;
