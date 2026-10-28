@@ -60,6 +60,12 @@ class DerivedVideoTagsTests(unittest.TestCase):
             ['JAV 无码破解'],
         )
 
+    def test_explicit_censored_overrides_u_suffix(self):
+        self.assertEqual(
+            _derived_tags_for_video('ABP-123-U', '', set(), '2026-10-20T00:00:00', ''),
+            [],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

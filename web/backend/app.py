@@ -967,12 +967,13 @@ def api_finalize_rename(code: str):
 def api_add_auto():
     payload = request.get_json(silent=True) if request.is_json else None
     crack_tags = {'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解'}
-    uncensored_crack_tag = (
-        (payload or {}).get('uncensored_crack_tag')
-        or request.form.get('uncensored_crack_tag')
-        or 'LTX 无码破解'
-    )
-    if uncensored_crack_tag not in crack_tags:
+    if payload is not None and 'uncensored_crack_tag' in payload:
+        uncensored_crack_tag = payload.get('uncensored_crack_tag') or ''
+    elif 'uncensored_crack_tag' in request.form:
+        uncensored_crack_tag = request.form.get('uncensored_crack_tag') or ''
+    else:
+        uncensored_crack_tag = 'LTX 无码破解'
+    if uncensored_crack_tag and uncensored_crack_tag not in crack_tags:
         return jsonify({'error': 'invalid uncensored_crack_tag'}), 400
     if payload and payload.get('upload_id'):
         volume_path = Path((payload.get('volume_path') or '').strip())

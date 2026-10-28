@@ -319,6 +319,8 @@ def _derived_tags_for_video(
 
     if "无码流出" in existing_tags or "無碼流出" in existing_tags:
         tags.append("无码流出")
+    elif uncensored_crack_tag == "":
+        pass
     elif uncensored_crack_tag in _UNCENSORED_CRACK_TAGS:
         tags.append(uncensored_crack_tag)
     elif existing_tags.intersection(_UNCENSORED_CRACK_TAGS + _LEGACY_UNCENSORED_CRACK_TAGS) or suffix in {"-U", "-UC"}:

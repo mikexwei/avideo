@@ -468,6 +468,11 @@
                         <span class="text-xs text-gray-400 whitespace-nowrap">{{ label }}</span>
                       </label>
                       <div class="flex flex-wrap gap-1 pt-1">
+                        <button @click="g.uncensored_crack_tag = ''"
+                          :class="['px-2 py-1 rounded text-xs transition-colors',
+                            !g.uncensored_crack_tag ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+                          有码
+                        </button>
                         <button v-for="tag in ['JAV 无码破解','LADA 无码破解','LTX 无码破解']" :key="tag"
                           @click="g.uncensored_crack_tag = tag"
                           :class="['px-2 py-1 rounded text-xs transition-colors',
@@ -2120,8 +2125,8 @@
                 original_path: item.original_path,
                 db_parts: item.db_parts || [],
                 subtitle_zh: /(?:-UC|-C)$/i.test(item.code || ''),
-                uncensored_leaked: true,
-                uncensored_crack_tag: 'LTX 无码破解',
+                uncensored_leaked: /(?:-UC|-U)$/i.test(item.code || ''),
+                uncensored_crack_tag: /(?:-UC|-U)$/i.test(item.code || '') ? 'LTX 无码破解' : '',
                 uncensored_native: false,
                 warning: item.error || null,
               };
@@ -2167,7 +2172,7 @@
         }
         function expectedFinalName(group) {
           const hasC = group.subtitle_zh;
-          const hasU = group.uncensored_leaked || group.uncensored_native;
+          const hasU = Boolean(group.uncensored_crack_tag) || group.uncensored_native;
           return `${swapCodeSuffix(_replaceBaseStem(group), hasC, hasU)}${_uploadExt(group)}`;
         }
 
@@ -2300,8 +2305,8 @@
               'X-Dest-Name': encodeURIComponent(destName),
               'X-File-Size': String(f.size),
               'X-Subtitle-Zh': group.subtitle_zh ? '1' : '0',
-              'X-Uncensored-Leaked': group.uncensored_leaked ? '1' : '0',
-              'X-Uncensored-Crack-Tag': encodeURIComponent(group.uncensored_crack_tag),
+              'X-Uncensored-Leaked': group.uncensored_crack_tag ? '1' : '0',
+              'X-Uncensored-Crack-Tag': encodeURIComponent(group.uncensored_crack_tag || ''),
               'X-Uncensored-Native': group.uncensored_native ? '1' : '0',
             };
             if (originalPart) headers['X-Part'] = originalPart;
