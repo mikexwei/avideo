@@ -2163,7 +2163,8 @@
             ? group.original_path.split('/').pop()
             : (group.files[0] && group.files[0].filename) || '';
           const dot = origName.lastIndexOf('.');
-          return dot > 0 ? origName.slice(0, dot) : origName;
+          const stem = dot > 0 ? origName.slice(0, dot) : origName;
+          return stem.replace(/\.part\d+$/i, '');
         }
         function _uploadExt(group) {
           const name = (group.files[0] && group.files[0].filename) || '';
@@ -2274,7 +2275,8 @@
         }
 
         async function processReplaceGroup(group, result) {
-          let targetCode = group.db_code || group.code;
+          const requestCode = group.db_code || group.code;
+          let finalCode = requestCode;
           const totalBytes = group.files.reduce((sum, fi) => {
             const f = batchFiles.value.find(bf => bf.name === fi.filename);
             return sum + (f ? f.size : 0);
@@ -2291,7 +2293,7 @@
             const qp = originalPart ? `?part=${encodeURIComponent(originalPart)}` : '';
             // Replace must target the actual DB code (variant may differ from the
             // uploaded file's suffix, e.g. DB has ABW-123-U but file is ABW-123-C).
-            const url = `/api/videos/${encodeURIComponent(targetCode)}/replace${qp}`;
+            const url = `/api/videos/${encodeURIComponent(requestCode)}/replace${qp}`;
 
             // Send the suffix-stripped base name; backend's _compute_final_filename
             // appends the -C/-U/-UC suffix from the toggles (avoids doubling, e.g.
@@ -2317,12 +2319,12 @@
               const s = speed(loadedBefore + loaded);
               if (s) result.speed = s;
             });
-            targetCode = replaceResponse.new_code || replaceResponse.code || targetCode;
+            finalCode = replaceResponse.new_code || replaceResponse.code || finalCode;
             loadedBefore += f.size;
           }
           result.progress = 100;
-          result.viewCode = targetCode;
-          result.code = targetCode;
+          result.viewCode = finalCode;
+          result.code = finalCode;
           result.message = '替换完成';
         }
 

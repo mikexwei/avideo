@@ -197,6 +197,14 @@ class ComputeFinalFilenameTests(unittest.TestCase):
     def test_with_part(self):
         self.assertEqual(_compute_final_filename('SSIS-001.mp4', True, False, False, '2'), 'SSIS-001-C.part2.mp4')
 
+    def test_with_prefixed_part_replaces_existing_part(self):
+        self.assertEqual(
+            _compute_final_filename(
+                'IPVR-179.女优.[标题].part2.mp4', False, True, False, 'part1'
+            ),
+            'IPVR-179-U.女优.[标题].part1.mp4',
+        )
+
     def test_mkv_extension(self):
         self.assertEqual(_compute_final_filename('SSIS-001.mkv', False, False, True, None), 'SSIS-001-U.mkv')
 

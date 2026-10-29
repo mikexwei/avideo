@@ -580,7 +580,10 @@ def _compute_final_filename(
     components = stem.split('.')
     components[0] = re.sub(r'(?i)-(?:uc|u|c)$', '', components[0]) + suffix
     stem = '.'.join(components)
-    part_seg = f'.part{part}' if part else ''
+    if part:
+        stem = re.sub(r'(?i)\.part\d+$', '', stem)
+    part_number = re.sub(r'(?i)^part', '', part) if part else ''
+    part_seg = f'.part{part_number}' if part_number else ''
     return f'{stem}{part_seg}{ext}'
 
 
