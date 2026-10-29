@@ -101,6 +101,34 @@ class ReplaceVideoFileTests(unittest.TestCase):
         result = self._call(code='NOSUCH')
         self.assertFalse(result['ok'])
 
+    def test_code_change_updates_all_parts_but_only_selected_path(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("DELETE FROM videos")
+        conn.execute(
+            "INSERT INTO videos (code, part, original_file_path) VALUES ('IPVR-179', 'part1', '/vol/old.part1.mp4')"
+        )
+        conn.execute(
+            "INSERT INTO videos (code, part, original_file_path) VALUES ('IPVR-179', 'part2', '/vol/old.part2.mp4')"
+        )
+        conn.commit()
+        conn.close()
+
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            result = rename_video_file(
+                'IPVR-179', 'part2', '/vol/IPVR-179-U.part2.mp4', 'IPVR-179-U'
+            )
+
+        self.assertTrue(result['ok'])
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT code, part, original_file_path FROM videos ORDER BY part"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(rows, [
+            ('IPVR-179-U', 'part1', '/vol/old.part1.mp4'),
+            ('IPVR-179-U', 'part2', '/vol/IPVR-179-U.part2.mp4'),
+        ])
+
     def test_updates_file_stats(self):
         meta = {'file_size': 12345, 'file_mtime': '2026-07-03T10:00:00', 'file_birthtime': '2026-07-03T09:00:00'}
         result = self._call(sub_zh=True, file_meta=meta)

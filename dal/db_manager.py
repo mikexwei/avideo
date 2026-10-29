@@ -1722,10 +1722,11 @@ def rename_video_file(
     new_path: str,
     new_code: str,
 ) -> Dict[str, Any]:
-    """Point a video record at a renamed file: update original_file_path and code.
+    """Point a video record at a renamed file and keep sibling parts on one code.
 
-    Physical file rename and filename assembly happen in the app layer; this only
-    touches the DB row identified by (code, part).
+    Physical file rename and filename assembly happen in the app layer. Only the
+    selected row's path changes, while every part under the resolved code follows
+    the code change.
     """
     conn = None
     try:
@@ -1750,8 +1751,12 @@ def rename_video_file(
             return {'ok': False, 'error': 'part not found' if part else 'not found'}
 
         cursor.execute(
-            'UPDATE videos SET original_file_path = ?, code = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            (new_path, new_code, row['id']),
+            'UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (new_path, row['id']),
+        )
+        cursor.execute(
+            'UPDATE videos SET code = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?',
+            (new_code, resolved_code),
         )
         conn.commit()
         logger.info(f'✏️  rename_video_file [{code} -> {new_code}]: {new_path}')
