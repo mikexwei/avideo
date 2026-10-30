@@ -36,7 +36,6 @@
   <header><div class="bar">
     <h1>中文字幕人工分类</h1>
     <span class="count" id="count">加载中</span>
-    <label class="toggle"><input id="pendingOnly" type="checkbox"> 只看本次未处理</label>
   </div></header>
   <main>
     <div id="list" class="list"></div>
@@ -46,19 +45,16 @@
     const list = document.querySelector('#list');
     const message = document.querySelector('#message');
     const count = document.querySelector('#count');
-    const pendingOnly = document.querySelector('#pendingOnly');
     let items = [];
-    const reviewed = new Set();
 
     function render() {
-      const visible = pendingOnly.checked ? items.filter(item => !reviewed.has(item.code)) : items;
       list.innerHTML = '';
-      count.textContent = reviewed.size + ' / ' + items.length + ' 已处理';
-      message.hidden = visible.length > 0;
-      if (!visible.length) message.textContent = items.length ? '当前筛选已全部处理' : '没有待分类影片';
-      for (const item of visible) {
+      count.textContent = items.length + ' 个待分类';
+      message.hidden = items.length > 0;
+      if (!items.length) message.textContent = '没有待分类影片';
+      for (const item of items) {
         const row = document.createElement('div');
-        row.className = 'item' + (reviewed.has(item.code) ? ' saved' : '');
+        row.className = 'item';
         row.innerHTML =
           '<div><a class="code" href="/#/video/' + encodeURIComponent(item.code) + '" target="_blank">' +
           escapeHtml(item.code) + '</a><div class="meta">' + item.file_count + ' 个文件 · ' +
@@ -83,8 +79,7 @@
           body: JSON.stringify({ classification }),
         });
         if (!response.ok) throw new Error((await response.json()).error || '保存失败');
-        item.classification = classification;
-        reviewed.add(item.code);
+        items = items.filter(candidate => candidate.code !== item.code);
         render();
       } catch (error) {
         buttons.forEach(button => button.disabled = false);
@@ -98,7 +93,6 @@
       return node.innerHTML;
     }
 
-    pendingOnly.onchange = render;
     fetch('/api/videos/subtitle-review')
       .then(response => {
         if (!response.ok) throw new Error('加载失败');

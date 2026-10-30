@@ -1201,6 +1201,11 @@ def api_subtitle_review():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS subtitle_classification_reviews ("
+            "code TEXT PRIMARY KEY COLLATE NOCASE, classification TEXT NOT NULL, "
+            "reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
         rows = conn.execute(
             """
             SELECT v.code,
@@ -1222,6 +1227,10 @@ def api_subtitle_review():
                   JOIN tags t ON t.id = l.tag_id
                   WHERE l.video_id = v.id AND t.name IN ('中文字幕', '机翻中文')
               )
+              AND NOT EXISTS (
+                  SELECT 1 FROM subtitle_classification_reviews r
+                  WHERE r.code = v.code
+              )
             GROUP BY v.code
             ORDER BY v.code
             """
@@ -1239,6 +1248,11 @@ def api_subtitle_classification(code: str):
 
     conn = sqlite3.connect(DB_PATH)
     try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS subtitle_classification_reviews ("
+            "code TEXT PRIMARY KEY COLLATE NOCASE, classification TEXT NOT NULL, "
+            "reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
         video_ids = [row[0] for row in conn.execute(
             'SELECT id FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0', (code,)
         ).fetchall()]
@@ -1255,6 +1269,12 @@ def api_subtitle_classification(code: str):
         conn.executemany(
             'INSERT OR IGNORE INTO video_tag_link(video_id, tag_id) VALUES (?, ?)',
             [(video_id, tag_id) for video_id in video_ids],
+        )
+        conn.execute(
+            "INSERT INTO subtitle_classification_reviews(code, classification) VALUES (?, ?) "
+            "ON CONFLICT(code) DO UPDATE SET classification=excluded.classification, "
+            "reviewed_at=CURRENT_TIMESTAMP",
+            (code, classification),
         )
         conn.commit()
         return jsonify({'ok': True, 'code': code, 'classification': classification})

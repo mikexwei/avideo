@@ -139,6 +139,9 @@ class SubtitleClassificationEndpointTests(unittest.TestCase):
         ).fetchall()
         conn.close()
         self.assertEqual(tags, [(1, '机翻中文'), (2, '机翻中文')])
+        with patch('web.backend.app.DB_PATH', self.db_path):
+            remaining = self.client.get('/api/videos/subtitle-review')
+        self.assertEqual(remaining.get_json(), [])
 
     def test_rejects_invalid_classification(self):
         with patch('web.backend.app.DB_PATH', self.db_path):
