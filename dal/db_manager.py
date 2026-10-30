@@ -313,6 +313,7 @@ def _derived_tags_for_video(
     existing_tags: set[str],
     file_birthtime: Optional[str] = None,
     uncensored_crack_tag: Optional[str] = None,
+    subtitle_classification: Optional[str] = None,
 ) -> list[str]:
     tags = []
     suffix = _version_suffix(code)
@@ -328,14 +329,22 @@ def _derived_tags_for_video(
     elif maker in _ORIGINAL_UNCENSORED_MAKERS:
         tags.append("原装无码")
 
-    if "机翻中文" in existing_tags:
+    if subtitle_classification == "":
+        pass
+    elif subtitle_classification in {"机翻中文", "中文字幕"}:
+        tags.append(subtitle_classification)
+    elif "机翻中文" in existing_tags:
         tags.append("机翻中文")
     elif suffix in {"-C", "-UC"}:
         tags.append("中文字幕")
     return tags
 
 
-def sync_derived_video_tags_for_code(code: str, uncensored_crack_tag: Optional[str] = None) -> int:
+def sync_derived_video_tags_for_code(
+    code: str,
+    uncensored_crack_tag: Optional[str] = None,
+    subtitle_classification: Optional[str] = None,
+) -> int:
     conn = None
     try:
         conn = _get_conn()
@@ -374,6 +383,7 @@ def sync_derived_video_tags_for_code(code: str, uncensored_crack_tag: Optional[s
                 video_row["code"], video_row["maker"] or "", existing_tags,
                 video_row["file_birthtime"] or video_row["file_mtime"],
                 uncensored_crack_tag,
+                subtitle_classification,
             )
             for tag in derived_tags:
                 cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
@@ -1501,6 +1511,7 @@ def replace_video_file(
     uncensored_native: bool,
     file_meta: Optional[Dict[str, Any]] = None,
     uncensored_crack_tag: Optional[str] = None,
+    subtitle_classification: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Update file path and sync 中文字幕/无码破解分类/原装无码 tags after a file replacement.
 
@@ -1510,7 +1521,10 @@ def replace_video_file(
     crack_tag = uncensored_crack_tag if uncensored_crack_tag in _UNCENSORED_CRACK_TAGS else _uncensored_crack_tag(
         (file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime')
     )
-    tag_desired = {'中文字幕': subtitle_zh, crack_tag: uncensored_leaked, '原装无码': uncensored_native}
+    subtitle_tag = subtitle_classification if subtitle_classification in {'机翻中文', '中文字幕'} else ('中文字幕' if subtitle_zh else None)
+    tag_desired = {crack_tag: uncensored_leaked, '原装无码': uncensored_native}
+    if subtitle_tag:
+        tag_desired[subtitle_tag] = True
     conn = None
     try:
         conn = _get_conn()
@@ -1550,6 +1564,13 @@ def replace_video_file(
             all_ids,
         )
         current_tags = {r['name'] for r in cursor.fetchall()}
+
+        cursor.execute(
+            f"DELETE FROM video_tag_link WHERE video_id IN ({ph}) "
+            "AND tag_id IN (SELECT id FROM tags WHERE name IN ('机翻中文', '中文字幕'))",
+            all_ids,
+        )
+        current_tags.difference_update({'机翻中文', '中文字幕'})
 
         cracked_names = _LEGACY_UNCENSORED_CRACK_TAGS + _UNCENSORED_CRACK_TAGS
         cursor.execute(
@@ -1614,12 +1635,16 @@ def replace_multipart_with_single_file(
     file_meta: Optional[Dict[str, Any]] = None,
     keep_part: Optional[str] = None,
     uncensored_crack_tag: Optional[str] = None,
+    subtitle_classification: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Collapse all rows for a code into one non-part row pointing at dest_path."""
     crack_tag = uncensored_crack_tag if uncensored_crack_tag in _UNCENSORED_CRACK_TAGS else _uncensored_crack_tag(
         (file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime')
     )
-    tag_desired = {'中文字幕': subtitle_zh, crack_tag: uncensored_leaked, '原装无码': uncensored_native}
+    subtitle_tag = subtitle_classification if subtitle_classification in {'机翻中文', '中文字幕'} else ('中文字幕' if subtitle_zh else None)
+    tag_desired = {crack_tag: uncensored_leaked, '原装无码': uncensored_native}
+    if subtitle_tag:
+        tag_desired[subtitle_tag] = True
     conn = None
     try:
         conn = _get_conn()
@@ -1660,6 +1685,13 @@ def replace_multipart_with_single_file(
             all_ids,
         )
         current_tags = {r['name'] for r in cursor.fetchall()}
+
+        cursor.execute(
+            "DELETE FROM video_tag_link WHERE video_id = ? "
+            "AND tag_id IN (SELECT id FROM tags WHERE name IN ('机翻中文', '中文字幕'))",
+            (keep_id,),
+        )
+        current_tags.difference_update({'机翻中文', '中文字幕'})
 
         cracked_names = _LEGACY_UNCENSORED_CRACK_TAGS + _UNCENSORED_CRACK_TAGS
         cursor.execute(

@@ -168,6 +168,26 @@ class ReplaceVideoFileTests(unittest.TestCase):
         self.assertIn('JAV 无码破解', tags)
         self.assertNotIn('LTX 无码破解', tags)
 
+    def test_machine_translation_replaces_chinese_subtitle_tag(self):
+        result = self._call(sub_zh=True, file_meta={
+            'file_size': 1, 'file_mtime': '2026-10-30T10:00:00',
+            'file_birthtime': '2026-10-30T10:00:00',
+        })
+        self.assertTrue(result['ok'])
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            result = replace_video_file(
+                'SSIS-001-C', None, '/vol/SSIS-001-C.mp4', True, False, False,
+                subtitle_classification='机翻中文',
+            )
+        self.assertTrue(result['ok'])
+        conn = sqlite3.connect(self.db_path)
+        tags = {r[0] for r in conn.execute(
+            "SELECT t.name FROM tags t JOIN video_tag_link l ON l.tag_id=t.id WHERE l.video_id=1"
+        )}
+        conn.close()
+        self.assertIn('机翻中文', tags)
+        self.assertNotIn('中文字幕', tags)
+
     def test_replace_multipart_with_single_file_collapses_rows(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute("DELETE FROM video_tag_link")

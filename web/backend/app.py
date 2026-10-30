@@ -258,7 +258,8 @@ def api_javdb_session_close():
 
 
 def _run_auto_pipeline(
-    job: '_Job', file_paths: list, volume_path: 'Path', uncensored_crack_tag: str = 'LTX 无码破解'
+    job: '_Job', file_paths: list, volume_path: 'Path', uncensored_crack_tag: str = 'LTX 无码破解',
+    subtitle_classification: Optional[str] = None,
 ):
     def emit(step: str, status: str, message: str, **extra):
         job.queue.put({'step': step, 'status': status, 'message': message, **extra})
@@ -271,6 +272,11 @@ def _run_auto_pipeline(
             code, part = extract_video_code(fpath.stem)
             if not code:
                 raise ValueError(f'无法解析番号: {fpath.name}，请改用手动模式')
+            if subtitle_classification is not None:
+                base = re.sub(r'(?i)-(?:uc|u|c)$', '', code)
+                has_u = bool(uncensored_crack_tag) or code.upper().endswith(('-U', '-UC'))
+                has_c = bool(subtitle_classification)
+                code = base + ('-UC' if has_u and has_c else '-U' if has_u else '-C' if has_c else '')
             if len(sorted_paths) > 1 and not part:
                 part = f'part{i + 1}'
             codes_parts.append((code, part, fpath))
@@ -303,7 +309,7 @@ def _run_auto_pipeline(
 
         # ── Steps 4-5: Insert DB + sync derived tags ─────────────
         batch_insert_scanned_videos(scanned)
-        sync_derived_video_tags_for_code(main_code, uncensored_crack_tag)
+        sync_derived_video_tags_for_code(main_code, uncensored_crack_tag, subtitle_classification)
         suffix_upper = main_code.upper()
         if suffix_upper.endswith('-UC'):
             tag_msg = '标签: 中文字幕、无码破解'
@@ -978,6 +984,12 @@ def api_add_auto():
         uncensored_crack_tag = 'LTX 无码破解'
     if uncensored_crack_tag and uncensored_crack_tag not in crack_tags:
         return jsonify({'error': 'invalid uncensored_crack_tag'}), 400
+    source = payload if payload is not None else request.form
+    subtitle_classification = source.get('subtitle_classification') if 'subtitle_classification' in source else None
+    if subtitle_classification is not None:
+        subtitle_classification = subtitle_classification or ''
+        if subtitle_classification not in {'', '机翻中文', '中文字幕'}:
+            return jsonify({'error': 'invalid subtitle_classification'}), 400
     if payload and payload.get('upload_id'):
         volume_path = Path((payload.get('volume_path') or '').strip())
         tmp_dir = _resolve_upload_dir(volume_path, payload['upload_id'])
@@ -1014,7 +1026,7 @@ def api_add_auto():
 
     t = threading.Thread(
         target=_run_auto_pipeline,
-        args=(job, saved_paths, volume_path, uncensored_crack_tag),
+        args=(job, saved_paths, volume_path, uncensored_crack_tag, subtitle_classification),
         daemon=True,
     )
     t.start()
@@ -1356,6 +1368,7 @@ def api_video_replace(code: str):
         except (ValueError, TypeError):
             return jsonify({'error': 'invalid X-File-Size'}), 400
         subtitle_zh = request.headers.get('X-Subtitle-Zh') == '1'
+        subtitle_classification = unquote(request.headers.get('X-Subtitle-Classification') or '') or None
         uncensored_leaked = request.headers.get('X-Uncensored-Leaked') == '1'
         uncensored_crack_tag = unquote(request.headers.get('X-Uncensored-Crack-Tag') or '') or None
         uncensored_native = request.headers.get('X-Uncensored-Native') == '1'
@@ -1373,6 +1386,7 @@ def api_video_replace(code: str):
         except ValueError:
             return jsonify({'error': 'invalid file_size'}), 400
         subtitle_zh = request.form.get('subtitle_zh') == '1'
+        subtitle_classification = request.form.get('subtitle_classification') or None
         uncensored_leaked = request.form.get('uncensored_leaked') == '1'
         uncensored_crack_tag = request.form.get('uncensored_crack_tag') or None
         uncensored_native = request.form.get('uncensored_native') == '1'
@@ -1383,6 +1397,8 @@ def api_video_replace(code: str):
     crack_tags = {'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解'}
     if uncensored_crack_tag is not None and uncensored_crack_tag not in crack_tags:
         return jsonify({'error': 'invalid uncensored_crack_tag'}), 400
+    if subtitle_classification is not None and subtitle_classification not in {'机翻中文', '中文字幕'}:
+        return jsonify({'error': 'invalid subtitle_classification'}), 400
 
     if not dest_name:
         return jsonify({'error': 'missing dest_name'}), 400
@@ -1425,6 +1441,8 @@ def api_video_replace(code: str):
             {'uncensored_crack_tag': uncensored_crack_tag}
             if uncensored_crack_tag is not None else {}
         )
+        if subtitle_classification is not None:
+            crack_kwargs['subtitle_classification'] = subtitle_classification
         if replace_whole:
             result = replace_multipart_with_single_file(
                 code, str(dest_path), subtitle_zh, uncensored_leaked,
