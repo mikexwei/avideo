@@ -41,7 +41,7 @@ def _order_clause(sort: str) -> str:
 _VERSION_SUFFIXES = ("-UC", "-C", "-U")
 _UNCENSORED_CRACK_TAGS = ("JAV 无码破解", "LADA 无码破解", "LTX 无码破解")
 _LEGACY_UNCENSORED_CRACK_TAGS = ("无码破解", "無碼破解")
-_DERIVED_TAGS = ("无码流出",) + _UNCENSORED_CRACK_TAGS + ("原装无码", "中文字幕")
+_DERIVED_TAGS = ("无码流出",) + _UNCENSORED_CRACK_TAGS + ("原装无码", "中文字幕", "机翻中文")
 _DERIVED_TAGS_TO_REMOVE = _DERIVED_TAGS + ("無碼流出",) + _LEGACY_UNCENSORED_CRACK_TAGS
 _ORIGINAL_UNCENSORED_MAKERS = {
     "一本道",
@@ -328,7 +328,9 @@ def _derived_tags_for_video(
     elif maker in _ORIGINAL_UNCENSORED_MAKERS:
         tags.append("原装无码")
 
-    if suffix in {"-C", "-UC"}:
+    if "机翻中文" in existing_tags:
+        tags.append("机翻中文")
+    elif suffix in {"-C", "-UC"}:
         tags.append("中文字幕")
     return tags
 

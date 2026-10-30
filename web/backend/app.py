@@ -1196,6 +1196,72 @@ def api_video_files():
     })
 
 
+@app.get('/api/videos/subtitle-review')
+def api_subtitle_review():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT v.code,
+                   MIN(v.cover_path) AS cover_path,
+                   MIN(COALESCE(v.title_zh, v.title_jp, '')) AS title,
+                   COUNT(*) AS file_count,
+                   ROUND(SUM(COALESCE(v.file_size, 0)) / 1073741824.0, 2) AS size_gib,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM videos v2
+                       JOIN video_tag_link l2 ON l2.video_id = v2.id
+                       JOIN tags t2 ON t2.id = l2.tag_id
+                       WHERE v2.code = v.code AND t2.name = '机翻中文'
+                   ) THEN '机翻中文' ELSE '中文字幕' END AS classification
+            FROM videos v
+            WHERE v.deleted = 0
+              AND LOWER(v.original_file_path) LIKE '%.mkv'
+              AND EXISTS (
+                  SELECT 1 FROM video_tag_link l
+                  JOIN tags t ON t.id = l.tag_id
+                  WHERE l.video_id = v.id AND t.name IN ('中文字幕', '机翻中文')
+              )
+            GROUP BY v.code
+            ORDER BY v.code
+            """
+        ).fetchall()
+        return jsonify([dict(row) for row in rows])
+    finally:
+        conn.close()
+
+
+@app.post('/api/videos/<string:code>/subtitle-classification')
+def api_subtitle_classification(code: str):
+    classification = ((request.get_json(silent=True) or {}).get('classification') or '').strip()
+    if classification not in {'机翻中文', '中文字幕'}:
+        return jsonify({'error': 'classification must be 机翻中文 or 中文字幕'}), 400
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        video_ids = [row[0] for row in conn.execute(
+            'SELECT id FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0', (code,)
+        ).fetchall()]
+        if not video_ids:
+            return jsonify({'error': 'video not found'}), 404
+        conn.execute('INSERT OR IGNORE INTO tags(name) VALUES (?)', (classification,))
+        tag_id = conn.execute('SELECT id FROM tags WHERE name = ?', (classification,)).fetchone()[0]
+        placeholders = ','.join('?' * len(video_ids))
+        conn.execute(
+            f"DELETE FROM video_tag_link WHERE video_id IN ({placeholders}) "
+            "AND tag_id IN (SELECT id FROM tags WHERE name IN ('机翻中文', '中文字幕'))",
+            video_ids,
+        )
+        conn.executemany(
+            'INSERT OR IGNORE INTO video_tag_link(video_id, tag_id) VALUES (?, ?)',
+            [(video_id, tag_id) for video_id in video_ids],
+        )
+        conn.commit()
+        return jsonify({'ok': True, 'code': code, 'classification': classification})
+    finally:
+        conn.close()
+
+
 @app.get('/api/videos/<string:code>')
 def api_video_detail(code: str):
     data = get_video_by_code(code)

@@ -89,5 +89,65 @@ class VideoFilesEndpointTests(unittest.TestCase):
         self.assertEqual(invalid_response.status_code, 400)
 
 
+class SubtitleClassificationEndpointTests(unittest.TestCase):
+    def setUp(self):
+        app.config['TESTING'] = True
+        self.client = app.test_client()
+        fd, self.db_path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript("""
+            CREATE TABLE videos (
+                id INTEGER PRIMARY KEY, code TEXT, part TEXT,
+                original_file_path TEXT, file_size INTEGER,
+                cover_path TEXT, title_zh TEXT, title_jp TEXT,
+                deleted INTEGER DEFAULT 0
+            );
+            CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE);
+            CREATE TABLE video_tag_link (
+                video_id INTEGER, tag_id INTEGER,
+                UNIQUE(video_id, tag_id)
+            );
+            INSERT INTO videos VALUES
+                (1, 'IPZ-108-C', 'part1', '/vol/IPZ-108-C.part1.mkv', 100, '', '标题', '', 0),
+                (2, 'IPZ-108-C', 'part2', '/vol/IPZ-108-C.part2.mkv', 200, '', '标题', '', 0);
+            INSERT INTO tags VALUES (1, '中文字幕');
+            INSERT INTO video_tag_link VALUES (1, 1), (2, 1);
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_lists_candidates_and_classifies_all_parts(self):
+        with patch('web.backend.app.DB_PATH', self.db_path):
+            listing = self.client.get('/api/videos/subtitle-review')
+            response = self.client.post(
+                '/api/videos/IPZ-108-C/subtitle-classification',
+                json={'classification': '机翻中文'},
+            )
+
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.get_json()[0]['file_count'], 2)
+        self.assertEqual(response.status_code, 200)
+        conn = sqlite3.connect(self.db_path)
+        tags = conn.execute(
+            "SELECT v.id, t.name FROM videos v "
+            "JOIN video_tag_link l ON l.video_id=v.id "
+            "JOIN tags t ON t.id=l.tag_id ORDER BY v.id"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(tags, [(1, '机翻中文'), (2, '机翻中文')])
+
+    def test_rejects_invalid_classification(self):
+        with patch('web.backend.app.DB_PATH', self.db_path):
+            response = self.client.post(
+                '/api/videos/IPZ-108-C/subtitle-classification',
+                json={'classification': '其他'},
+            )
+        self.assertEqual(response.status_code, 400)
+
+
 if __name__ == '__main__':
     unittest.main()

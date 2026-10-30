@@ -40,6 +40,12 @@ class DerivedVideoTagsTests(unittest.TestCase):
             ['中文字幕'],
         )
 
+    def test_machine_translation_survives_c_suffix_sync(self):
+        self.assertEqual(
+            _derived_tags_for_video('ABP-123-C', '', {'机翻中文'}),
+            ['机翻中文'],
+        )
+
     def test_traditional_leaked_tag_is_removed_during_sync(self):
         self.assertIn('無碼流出', _DERIVED_TAGS_TO_REMOVE)
         self.assertIn('无码流出', _DERIVED_TAGS_TO_REMOVE)

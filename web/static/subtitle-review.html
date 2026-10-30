@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>中文字幕人工分类</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #111318; color: #e5e7eb; font: 14px/1.5 system-ui, sans-serif; }
+    header { position: sticky; top: 0; z-index: 2; background: #181b22; border-bottom: 1px solid #30343d; }
+    .bar, main { width: min(1120px, calc(100% - 32px)); margin: auto; }
+    .bar { min-height: 64px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { margin: 0 auto 0 0; font-size: 18px; letter-spacing: 0; }
+    .count { color: #9ca3af; font-variant-numeric: tabular-nums; }
+    .toggle { display: flex; align-items: center; gap: 8px; color: #c7cad1; }
+    main { padding: 18px 0 40px; }
+    .list { display: grid; gap: 8px; }
+    .item { min-height: 82px; display: grid; grid-template-columns: 150px minmax(220px, 1fr) 210px; gap: 16px; align-items: center; padding: 12px 14px; background: #1b1e25; border: 1px solid #30343d; border-radius: 6px; }
+    .item.saved { border-color: #3f6651; }
+    .code { color: #9da7ff; font: 600 14px ui-monospace, monospace; text-decoration: none; }
+    .code:hover { text-decoration: underline; }
+    .meta { margin-top: 5px; color: #7f8793; font-size: 12px; }
+    .title { min-width: 0; overflow-wrap: anywhere; color: #d4d7dd; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    button { min-height: 38px; border: 1px solid #464c58; border-radius: 5px; background: #272b34; color: #d5d8df; cursor: pointer; font-weight: 600; }
+    button:hover { background: #313641; }
+    button.active.machine { background: #8a4f14; border-color: #d08024; color: white; }
+    button.active.human { background: #245e48; border-color: #43a879; color: white; }
+    button:disabled { cursor: wait; opacity: .55; }
+    .empty, .error { padding: 48px 0; text-align: center; color: #8d94a0; }
+    .error { color: #ef8c8c; }
+    @media (max-width: 760px) { .item { grid-template-columns: 1fr; gap: 8px; } }
+  </style>
+</head>
+<body>
+  <header><div class="bar">
+    <h1>中文字幕人工分类</h1>
+    <span class="count" id="count">加载中</span>
+    <label class="toggle"><input id="pendingOnly" type="checkbox"> 只看本次未处理</label>
+  </div></header>
+  <main>
+    <div id="list" class="list"></div>
+    <div id="message" class="empty">正在加载影片...</div>
+  </main>
+  <script>
+    const list = document.querySelector('#list');
+    const message = document.querySelector('#message');
+    const count = document.querySelector('#count');
+    const pendingOnly = document.querySelector('#pendingOnly');
+    let items = [];
+    const reviewed = new Set();
+
+    function render() {
+      const visible = pendingOnly.checked ? items.filter(item => !reviewed.has(item.code)) : items;
+      list.innerHTML = '';
+      count.textContent = reviewed.size + ' / ' + items.length + ' 已处理';
+      message.hidden = visible.length > 0;
+      if (!visible.length) message.textContent = items.length ? '当前筛选已全部处理' : '没有待分类影片';
+      for (const item of visible) {
+        const row = document.createElement('div');
+        row.className = 'item' + (reviewed.has(item.code) ? ' saved' : '');
+        row.innerHTML =
+          '<div><a class="code" href="/#/video/' + encodeURIComponent(item.code) + '" target="_blank">' +
+          escapeHtml(item.code) + '</a><div class="meta">' + item.file_count + ' 个文件 · ' +
+          item.size_gib + ' GiB</div></div><div class="title">' +
+          escapeHtml(item.title || '无标题') + '</div><div class="actions">' +
+          '<button class="machine ' + (item.classification === '机翻中文' ? 'active' : '') +
+          '">机翻中文</button><button class="human ' +
+          (item.classification === '中文字幕' ? 'active' : '') + '">中文字幕</button></div>';
+        row.querySelector('.machine').onclick = () => classify(item, row, '机翻中文');
+        row.querySelector('.human').onclick = () => classify(item, row, '中文字幕');
+        list.appendChild(row);
+      }
+    }
+
+    async function classify(item, row, classification) {
+      const buttons = [...row.querySelectorAll('button')];
+      buttons.forEach(button => button.disabled = true);
+      try {
+        const response = await fetch('/api/videos/' + encodeURIComponent(item.code) + '/subtitle-classification', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ classification }),
+        });
+        if (!response.ok) throw new Error((await response.json()).error || '保存失败');
+        item.classification = classification;
+        reviewed.add(item.code);
+        render();
+      } catch (error) {
+        buttons.forEach(button => button.disabled = false);
+        alert(error.message);
+      }
+    }
+
+    function escapeHtml(value) {
+      const node = document.createElement('div');
+      node.textContent = value;
+      return node.innerHTML;
+    }
+
+    pendingOnly.onchange = render;
+    fetch('/api/videos/subtitle-review')
+      .then(response => {
+        if (!response.ok) throw new Error('加载失败');
+        return response.json();
+      })
+      .then(data => { items = data; render(); })
+      .catch(error => {
+        message.className = 'error';
+        message.textContent = error.message;
+      });
+  </script>
+</body>
+</html>
