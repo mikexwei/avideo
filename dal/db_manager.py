@@ -593,9 +593,20 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
         base = dict(video_rows[0])
         if len(video_rows) > 1:
             base['parts'] = [
-                {'id': dict(r)['id'], 'part': dict(r)['part'], 'original_file_path': dict(r)['original_file_path']}
+                {
+                    'id': dict(r)['id'],
+                    'part': dict(r)['part'],
+                    'original_file_path': dict(r)['original_file_path'],
+                    'file_size': dict(r)['file_size'],
+                    'file_mtime': dict(r)['file_mtime'],
+                    'file_birthtime': dict(r)['file_birthtime'],
+                }
                 for r in video_rows
             ]
+            sizes = [r['file_size'] for r in video_rows if r['file_size'] is not None]
+            base['total_file_size'] = sum(sizes) if sizes else None
+        else:
+            base['total_file_size'] = base.get('file_size')
 
         cursor.execute(
             """

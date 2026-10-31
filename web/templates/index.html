@@ -493,7 +493,7 @@
                   <td class="py-2 px-2 align-top">
                     <div v-if="g.exists && !g.warning" style="max-width:16rem"
                       class="text-xs text-indigo-300 font-mono break-all leading-relaxed">
-                      {{ expectedFinalName(g) }}
+                      <div v-for="name in expectedFinalNames(g)" :key="name">{{ name }}</div>
                     </div>
                     <div v-else class="text-xs text-gray-600">—</div>
                   </td>
@@ -1271,6 +1271,7 @@
           <div class="flex items-center gap-2 mt-2">
             <select v-if="fileParts.length > 1" v-model="selectedPart"
               class="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none">
+              <option value="">全部</option>
               <option v-for="f in fileParts" :key="f.part" :value="f.part || ''">{{ f.part || '完整' }}</option>
             </select>
             <button @click="playVideo"
@@ -1410,6 +1411,11 @@
                 </div>
               </div>
               <span class="text-xs text-gray-400 font-mono break-all leading-relaxed">{{ f.path }}</span>
+              <div class="mt-1 text-xs text-gray-600 flex flex-wrap gap-x-4 gap-y-1">
+                <span v-if="f.file_size">{{ formatSize(f.file_size) }}</span>
+                <span v-if="f.file_mtime">修改 {{ f.file_mtime.slice(0,10) }}</span>
+                <span v-if="f.file_birthtime">创建 {{ f.file_birthtime.slice(0,10) }}</span>
+              </div>
 
               <div v-if="renamingPath === f.path" class="mt-2 space-y-1.5 border-t border-gray-700 pt-2">
                 <div class="flex items-center gap-2">
@@ -1438,10 +1444,10 @@
           </div>
 
           <!-- File meta -->
-          <div v-if="video.file_size" class="mt-2 text-xs text-gray-600 flex gap-4">
-            <span>{{ formatSize(video.file_size) }}</span>
-            <span v-if="video.file_mtime">修改 {{ video.file_mtime.slice(0,10) }}</span>
-            <span v-if="video.file_birthtime">创建 {{ video.file_birthtime.slice(0,10) }}</span>
+          <div v-if="selectedFileMeta.file_size" class="mt-2 text-xs text-gray-600 flex gap-4">
+            <span>{{ selectedFileMeta.isTotal ? '总计 ' : '' }}{{ formatSize(selectedFileMeta.file_size) }}</span>
+            <span v-if="selectedFileMeta.file_mtime">修改 {{ selectedFileMeta.file_mtime.slice(0,10) }}</span>
+            <span v-if="selectedFileMeta.file_birthtime">创建 {{ selectedFileMeta.file_birthtime.slice(0,10) }}</span>
           </div>
         </div>
       </div>
@@ -2190,15 +2196,16 @@
           const stem = dot > 0 ? origName.slice(0, dot) : origName;
           return stem.replace(/\.part\d+$/i, '');
         }
-        function _uploadExt(group) {
-          const name = (group.files[0] && group.files[0].filename) || '';
-          const dot = name.lastIndexOf('.');
-          return dot > 0 ? name.slice(dot) : '';
-        }
-        function expectedFinalName(group) {
+        function expectedFinalNames(group) {
           const hasC = Boolean(group.subtitle_classification);
           const hasU = Boolean(group.uncensored_crack_tag) || group.uncensored_native;
-          return `${swapCodeSuffix(_replaceBaseStem(group), hasC, hasU)}${_uploadExt(group)}`;
+          const stem = swapCodeSuffix(_replaceBaseStem(group), hasC, hasU);
+          return group.files.map(file => {
+            const part = file.part ? `.${file.part}` : '';
+            const dot = file.filename.lastIndexOf('.');
+            const ext = dot > 0 ? file.filename.slice(dot) : '';
+            return `${stem}${part}${ext}`;
+          });
         }
 
         async function startBatchProcess() {
@@ -2360,7 +2367,7 @@
           batchProcessing, batchResults,
           batchStepNum, hasNewGroups, hasWarnings, canStartUpload,
           autoStepLabel,
-          onBatchFilesChange, runBatchCheck, buildGroups, toggleGroupTag, expectedFinalName,
+          onBatchFilesChange, runBatchCheck, buildGroups, toggleGroupTag, expectedFinalNames,
           startBatchProcess, processNewGroup, processReplaceGroup,
         };
       }
@@ -3201,10 +3208,32 @@
           const v = video.value;
           if (v.parts && v.parts.length > 1) {
             return v.parts
-              .map(p => ({ part: p.part, path: p.original_file_path }))
+              .map(p => ({
+                part: p.part,
+                path: p.original_file_path,
+                file_size: p.file_size,
+                file_mtime: p.file_mtime,
+                file_birthtime: p.file_birthtime,
+              }))
               .sort((a, b) => partSortKey(a.part) - partSortKey(b.part));
           }
-          return v.original_file_path ? [{ part: v.part, path: v.original_file_path }] : [];
+          return v.original_file_path ? [{
+            part: v.part,
+            path: v.original_file_path,
+            file_size: v.file_size,
+            file_mtime: v.file_mtime,
+            file_birthtime: v.file_birthtime,
+          }] : [];
+        });
+        const selectedFileMeta = computed(() => {
+          if (!video.value) return {};
+          if (fileParts.value.length > 1) {
+            if (selectedPart.value) {
+              return fileParts.value.find(f => f.part === selectedPart.value) || {};
+            }
+            return { file_size: video.value.total_file_size, isTotal: true };
+          }
+          return fileParts.value[0] || {};
         });
 
         async function load() {
@@ -3426,7 +3455,7 @@
         });
         onMounted(load);
         return {
-          video, loading, meta, fileParts,
+          video, loading, meta, fileParts, selectedFileMeta,
           renamingPath, renameFields, startRename, cancelRename, submitRename,
           editing, saving, saveError, form,
           rescraping, rescrapeMessage, rescrapeError, startRescrape,
