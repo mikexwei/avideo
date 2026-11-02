@@ -26,6 +26,7 @@ from utils.rename_and_move_videos import (
 )
 
 from dal.db_manager import (
+    add_existing_tags_to_video,
     get_actor_with_videos,
     get_tag_with_videos,
     get_video_by_code,
@@ -259,7 +260,7 @@ def api_javdb_session_close():
 
 def _run_auto_pipeline(
     job: '_Job', file_paths: list, volume_path: 'Path', uncensored_crack_tag: str = 'LTX 无码破解',
-    subtitle_classification: Optional[str] = None,
+    subtitle_classification: Optional[str] = None, additional_tags: Optional[list[str]] = None,
 ):
     def emit(step: str, status: str, message: str, **extra):
         job.queue.put({'step': step, 'status': status, 'message': message, **extra})
@@ -310,6 +311,8 @@ def _run_auto_pipeline(
         # ── Steps 4-5: Insert DB + sync derived tags ─────────────
         batch_insert_scanned_videos(scanned)
         sync_derived_video_tags_for_code(main_code, uncensored_crack_tag, subtitle_classification)
+        if additional_tags and not add_existing_tags_to_video(main_code, additional_tags):
+            raise ValueError('添加标签失败')
         suffix_upper = main_code.upper()
         if suffix_upper.endswith('-UC'):
             tag_msg = '标签: 中文字幕、无码破解'
@@ -660,12 +663,47 @@ def api_batch_check():
     results = []
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+
+    def media_flags(rows, parsed_code):
+        tags = []
+        video_ids = [row['id'] for row in rows]
+        if video_ids:
+            placeholders = ','.join('?' * len(video_ids))
+            tags = [row['name'] for row in conn.execute(
+                f'SELECT DISTINCT t.name FROM video_tag_link vtl '
+                f'JOIN tags t ON t.id = vtl.tag_id '
+                f'WHERE vtl.video_id IN ({placeholders}) ORDER BY t.name',
+                video_ids,
+            ).fetchall()]
+
+        subtitle_tags = [tag for tag in tags if '中文' in tag]
+        uncensored_names = {
+            '无码流出', '無碼流出', '无码破解', '無碼破解',
+            'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解', '原装无码',
+        }
+        uncensored_tags = [tag for tag in tags if tag in uncensored_names]
+        suffix = (parsed_code or '').upper()
+        suffix_has_subtitle = suffix.endswith(('-C', '-UC'))
+        suffix_is_uncensored = suffix.endswith(('-U', '-UC'))
+        return {
+            'has_subtitle': bool(subtitle_tags) or suffix_has_subtitle,
+            'subtitle_type': subtitle_tags[0] if subtitle_tags else (
+                '中文字幕' if suffix_has_subtitle else None
+            ),
+            'is_uncensored': bool(uncensored_tags) or suffix_is_uncensored,
+            'uncensored_type': uncensored_tags[0] if uncensored_tags else (
+                '无码' if suffix_is_uncensored else None
+            ),
+        }
+
     try:
         for filename in filenames:
             if not isinstance(filename, str):
                 results.append({
                     'filename': str(filename), 'code': None, 'part': None,
                     'exists': None, 'original_path': None, 'db_parts': [],
+                    'has_subtitle': None, 'subtitle_type': None,
+                    'is_uncensored': None, 'uncensored_type': None,
                     'error': 'filename must be a string',
                 })
                 continue
@@ -675,6 +713,8 @@ def api_batch_check():
                 results.append({
                     'filename': filename, 'code': None, 'part': part,
                     'exists': None, 'original_path': None, 'db_parts': [],
+                    'has_subtitle': None, 'subtitle_type': None,
+                    'is_uncensored': None, 'uncensored_type': None,
                     'error': '无法解析番号',
                 })
                 continue
@@ -684,7 +724,7 @@ def api_batch_check():
             candidates = [base, f'{base}-C', f'{base}-U', f'{base}-UC']
             placeholders = ','.join('?' * len(candidates))
             rows = conn.execute(
-                f'SELECT code, original_file_path, part, scrape_status, deleted FROM videos '
+                f'SELECT id, code, original_file_path, part, scrape_status, deleted FROM videos '
                 f'WHERE UPPER(code) IN ({placeholders}) '
                 f'ORDER BY deleted ASC, id ASC',
                 [c.upper() for c in candidates],
@@ -701,6 +741,7 @@ def api_batch_check():
                     'scrape_status': row['scrape_status'],
                     'original_path': row['original_file_path'],
                     'db_parts': [r['part'] for r in active_rows],
+                    **media_flags(active_rows, row['code']),
                 })
             elif rows:
                 row = rows[0]
@@ -713,6 +754,7 @@ def api_batch_check():
                     'scrape_status': row['scrape_status'],
                     'original_path': row['original_file_path'],
                     'db_parts': [r['part'] for r in rows],
+                    **media_flags(rows, row['code']),
                 })
             else:
                 results.append({
@@ -723,6 +765,7 @@ def api_batch_check():
                     'status': 'NOT_FOUND',
                     'scrape_status': None,
                     'original_path': None, 'db_parts': [],
+                    **media_flags([], code),
                 })
     finally:
         conn.close()
@@ -788,6 +831,40 @@ def _list_uploaded_files(tmp_dir: Optional[Path]) -> list:
     )
 
 
+def _parse_upload_tags(source, header_value: Optional[str] = None) -> list[str]:
+    raw = header_value
+    if raw is None:
+        raw = source.get('tags') if source is not None else None
+    if raw in (None, ''):
+        return []
+    if isinstance(raw, list):
+        values = raw
+    elif isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            decoded = [item.strip() for item in raw.split(',')]
+        values = decoded if isinstance(decoded, list) else []
+    else:
+        values = []
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _missing_existing_tags(tag_names: list[str]) -> list[str]:
+    if not tag_names:
+        return []
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        placeholders = ','.join('?' * len(tag_names))
+        rows = conn.execute(
+            f'SELECT name FROM tags WHERE name IN ({placeholders})', tag_names
+        ).fetchall()
+    finally:
+        conn.close()
+    existing = {row[0] for row in rows}
+    return [name for name in tag_names if name not in existing]
+
+
 @app.post('/api/videos/upload-part')
 def api_upload_part():
     from urllib.parse import unquote
@@ -834,6 +911,10 @@ def api_add_manual():
     payload = request.get_json(silent=True) if request.is_json else None
     use_upload = bool(payload and payload.get('upload_id'))
     src = payload if use_upload else request.form
+    additional_tags = _parse_upload_tags(src)
+    missing_tags = _missing_existing_tags(additional_tags)
+    if missing_tags:
+        return jsonify({'error': 'unknown tags', 'tags': missing_tags}), 400
 
     volume_path = Path((src.get('volume_path') or '').strip())
     if volume_path not in [Path(p) for p in MEDIA_LIBRARIES]:
@@ -898,6 +979,8 @@ def api_add_manual():
         # Manual uploads carry user-provided metadata — no scraping needed.
         batch_insert_scanned_videos(scanned, scrape_status='SUCCESS')
         sync_derived_video_tags_for_code(code)
+        if additional_tags and not add_existing_tags_to_video(code, additional_tags):
+            raise ValueError('添加标签失败')
     except Exception as exc:
         import shutil as _shutil
         _shutil.rmtree(str(tmp_dir), ignore_errors=True)
@@ -985,11 +1068,17 @@ def api_add_auto():
     if uncensored_crack_tag and uncensored_crack_tag not in crack_tags:
         return jsonify({'error': 'invalid uncensored_crack_tag'}), 400
     source = payload if payload is not None else request.form
+    additional_tags = _parse_upload_tags(source)
+    missing_tags = _missing_existing_tags(additional_tags)
+    if missing_tags:
+        return jsonify({'error': 'unknown tags', 'tags': missing_tags}), 400
     subtitle_classification = source.get('subtitle_classification') if 'subtitle_classification' in source else None
     if subtitle_classification is not None:
         subtitle_classification = subtitle_classification or ''
         if subtitle_classification not in {'', '机翻中文', '中文字幕'}:
-            return jsonify({'error': 'invalid subtitle_classification'}), 400
+            missing_subtitle_tags = _missing_existing_tags([subtitle_classification])
+            if missing_subtitle_tags:
+                return jsonify({'error': 'unknown subtitle classification', 'tags': missing_subtitle_tags}), 400
     if payload and payload.get('upload_id'):
         volume_path = Path((payload.get('volume_path') or '').strip())
         tmp_dir = _resolve_upload_dir(volume_path, payload['upload_id'])
@@ -1026,7 +1115,7 @@ def api_add_auto():
 
     t = threading.Thread(
         target=_run_auto_pipeline,
-        args=(job, saved_paths, volume_path, uncensored_crack_tag, subtitle_classification),
+        args=(job, saved_paths, volume_path, uncensored_crack_tag, subtitle_classification, additional_tags),
         daemon=True,
     )
     t.start()
@@ -1374,6 +1463,7 @@ def api_video_replace(code: str):
         uncensored_native = request.headers.get('X-Uncensored-Native') == '1'
         dest_part = (request.headers.get('X-Part') or '').strip() or None
         replace_whole = request.headers.get('X-Replace-Whole') == '1'
+        additional_tags = _parse_upload_tags(None, unquote(request.headers.get('X-Tags') or ''))
         body_stream = request.stream
     else:
         # Legacy multipart path (used by existing tests)
@@ -1392,13 +1482,19 @@ def api_video_replace(code: str):
         uncensored_native = request.form.get('uncensored_native') == '1'
         dest_part = (request.form.get('part') or '').strip() or None
         replace_whole = request.form.get('replace_whole') == '1'
+        additional_tags = _parse_upload_tags(request.form)
         body_stream = f.stream
 
     crack_tags = {'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解'}
     if uncensored_crack_tag is not None and uncensored_crack_tag not in crack_tags:
         return jsonify({'error': 'invalid uncensored_crack_tag'}), 400
     if subtitle_classification is not None and subtitle_classification not in {'机翻中文', '中文字幕'}:
-        return jsonify({'error': 'invalid subtitle_classification'}), 400
+        missing_subtitle_tags = _missing_existing_tags([subtitle_classification])
+        if missing_subtitle_tags:
+            return jsonify({'error': 'unknown subtitle classification', 'tags': missing_subtitle_tags}), 400
+    missing_tags = _missing_existing_tags(additional_tags)
+    if missing_tags:
+        return jsonify({'error': 'unknown tags', 'tags': missing_tags}), 400
 
     if not dest_name:
         return jsonify({'error': 'missing dest_name'}), 400
@@ -1473,6 +1569,8 @@ def api_video_replace(code: str):
     # replace_video_file may re-suffix the code (e.g. -C → -UC), so fetch the
     # detail by the new code, not the original request code.
     final_code = result.get('new_code') or code
+    if additional_tags and not add_existing_tags_to_video(final_code, additional_tags):
+        return jsonify({'error': 'failed to add tags'}), 500
     return jsonify({'ok': True, **(get_video_by_code(final_code) or {})})
 
 

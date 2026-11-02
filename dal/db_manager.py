@@ -331,7 +331,7 @@ def _derived_tags_for_video(
 
     if subtitle_classification == "":
         pass
-    elif subtitle_classification in {"机翻中文", "中文字幕"}:
+    elif subtitle_classification:
         tags.append(subtitle_classification)
     elif "机翻中文" in existing_tags:
         tags.append("机翻中文")
@@ -922,6 +922,42 @@ def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, ta
         return True
     except sqlite3.Error as e:
         logger.error(f"❌ patch_video_relations 失败 [{code}]: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def add_existing_tags_to_video(code: str, tag_names: List[str]) -> bool:
+    """Add existing tags to every active row for a code without replacing other tags."""
+    if not tag_names:
+        return True
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.cursor()
+        resolved_code = _resolve_video_code(cursor, code)
+        if not resolved_code:
+            return False
+        cursor.execute("SELECT id FROM videos WHERE code = ? AND deleted = 0", (resolved_code,))
+        video_ids = [row["id"] for row in cursor.fetchall()]
+        if not video_ids:
+            return False
+        placeholders = ",".join("?" * len(tag_names))
+        cursor.execute(
+            f"SELECT id FROM tags WHERE name IN ({placeholders})",
+            tag_names,
+        )
+        tag_ids = [row["id"] for row in cursor.fetchall()]
+        for video_id in video_ids:
+            cursor.executemany(
+                "INSERT OR IGNORE INTO video_tag_link (video_id, tag_id) VALUES (?, ?)",
+                [(video_id, tag_id) for tag_id in tag_ids],
+            )
+        conn.commit()
+        return len(tag_ids) == len(set(tag_names))
+    except sqlite3.Error as e:
+        logger.error(f"❌ add_existing_tags_to_video 失败 [{code}]: {e}")
         return False
     finally:
         if conn:
@@ -1532,7 +1568,7 @@ def replace_video_file(
     crack_tag = uncensored_crack_tag if uncensored_crack_tag in _UNCENSORED_CRACK_TAGS else _uncensored_crack_tag(
         (file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime')
     )
-    subtitle_tag = subtitle_classification if subtitle_classification in {'机翻中文', '中文字幕'} else ('中文字幕' if subtitle_zh else None)
+    subtitle_tag = subtitle_classification or ('中文字幕' if subtitle_zh else None)
     tag_desired = {crack_tag: uncensored_leaked, '原装无码': uncensored_native}
     if subtitle_tag:
         tag_desired[subtitle_tag] = True
@@ -1652,7 +1688,7 @@ def replace_multipart_with_single_file(
     crack_tag = uncensored_crack_tag if uncensored_crack_tag in _UNCENSORED_CRACK_TAGS else _uncensored_crack_tag(
         (file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime')
     )
-    subtitle_tag = subtitle_classification if subtitle_classification in {'机翻中文', '中文字幕'} else ('中文字幕' if subtitle_zh else None)
+    subtitle_tag = subtitle_classification or ('中文字幕' if subtitle_zh else None)
     tag_desired = {crack_tag: uncensored_leaked, '原装无码': uncensored_native}
     if subtitle_tag:
         tag_desired[subtitle_tag] = True

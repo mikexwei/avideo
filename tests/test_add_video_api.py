@@ -524,6 +524,57 @@ class AddAutoEndpointTests(unittest.TestCase):
             )
         self.assertEqual(resp.status_code, 400)
 
+    def test_accepts_any_existing_tags_and_custom_subtitle_classification(self):
+        db_fd, db_path = tempfile.mkstemp(suffix='.db')
+        os.close(db_fd)
+        conn = sqlite3.connect(db_path)
+        conn.execute('CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE)')
+        conn.executemany(
+            'INSERT INTO tags(name) VALUES (?)',
+            [('机翻中文 V2',), ('VR',)],
+        )
+        conn.commit()
+        conn.close()
+        try:
+            with patch('web.backend.app.DB_PATH', Path(db_path)), \
+                 patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]), \
+                 patch('web.backend.app.threading.Thread') as thread_cls:
+                resp = self.client.post(
+                    '/api/videos/add-auto',
+                    data={
+                        'volume_path': self.tmpdir,
+                        'files[]': (io.BytesIO(b'video'), 'SSIS-001.mp4'),
+                        'subtitle_classification': '机翻中文 V2',
+                        'tags': json.dumps(['VR']),
+                    },
+                    content_type='multipart/form-data',
+                )
+
+            self.assertEqual(resp.status_code, 200)
+            pipeline_args = thread_cls.call_args.kwargs['args']
+            self.assertEqual(pipeline_args[4], '机翻中文 V2')
+            self.assertEqual(pipeline_args[5], ['VR'])
+        finally:
+            os.unlink(db_path)
+
+    def test_rejects_unknown_upload_tags(self):
+        db_fd, db_path = tempfile.mkstemp(suffix='.db')
+        os.close(db_fd)
+        conn = sqlite3.connect(db_path)
+        conn.execute('CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE)')
+        conn.commit()
+        conn.close()
+        try:
+            with patch('web.backend.app.DB_PATH', Path(db_path)):
+                resp = self.client.post(
+                    '/api/videos/add-auto',
+                    json={'tags': ['不存在的标签']},
+                )
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.get_json()['tags'], ['不存在的标签'])
+        finally:
+            os.unlink(db_path)
+
 
 class RescrapeEndpointTests(unittest.TestCase):
     def setUp(self):

@@ -3,7 +3,6 @@ from typing import Iterable
 
 from .cleaning import strip_entities_from_title
 
-# DEFAULT_MODEL = 'gemma4:e4b'
 DEFAULT_MODEL = 'quantumcookie/Sakura-qwen2.5-v1.0:14b'
 DEFAULT_HOST = 'http://10.0.0.43:11434'
 SHORT_TITLE_MODEL = 'gemma4:e4b'
@@ -18,6 +17,12 @@ GENERIC_SHORT_TITLE_WORDS = {
     '中文字幕',
     '中字',
     '高清',
+}
+CORE_SHORT_TITLE_TERMS = {
+    '侵犯', '强暴', '轮奸', '凌辱', '调教', '奴隶',
+    '性交', '口交', '颜射', '中出', '内射', '操到',
+    '丈夫', '人妻', '妻子', '未婚夫', '姐姐', '妹妹',
+    '母亲', '父亲', '叔父', '部下', '青梅竹马',
 }
 
 
@@ -171,6 +176,12 @@ def _short_title_score(candidate: str, title_zh: str, actor_names: Iterable[str]
         if word in candidate:
             score -= 5
 
+    for term in CORE_SHORT_TITLE_TERMS:
+        if term in candidate and term not in title_clean:
+            return -1000
+        if term in title_clean:
+            score += 8 if term in candidate else -4
+
     if candidate == title_clean[:max_len]:
         score -= 3
     return score
@@ -190,10 +201,12 @@ def select_short_title(candidates: Iterable[str], title_zh: str, actor_names: It
     if not cleaned_candidates:
         return ''
 
-    return max(
-        cleaned_candidates,
-        key=lambda candidate: _short_title_score(candidate, title_zh, actor_list, max_len),
-    )
+    scored = [
+        (candidate, _short_title_score(candidate, title_zh, actor_list, max_len))
+        for candidate in cleaned_candidates
+    ]
+    valid = [(candidate, score) for candidate, score in scored if score > -1000]
+    return max(valid, key=lambda item: item[1])[0] if valid else ''
 
 
 def shorten_chinese_title(
@@ -231,16 +244,27 @@ def shorten_chinese_title_with_candidates(
         f'要求：1. 输出3个候选，每行一个；2. 每个候选最多{max_len}个字符；'
         '3. 不包含空格；4. 不包含任何标点符号；'
         '5. 去除女优名、番号、厂商、中文字幕、无码、高清等非标题信息；'
-        '6. 保留原标题中的核心场景、关系或主题，不要添加原标题没有的信息；'
-        '7. 避免精彩剧情、激情性爱、热门作品这类泛化标题；'
-        '8. 不要解释，不要编号。\n\n'
+        '6. 核心主题是原标题中发生的具体事件必须优先保留人物关系加行为加对象例如丈夫眼前被侵犯；'
+        '7. 色情暴力禁忌和露骨行为词是主题不是杂质必须原样保留不得弱化美化或审查；'
+        '8. 禁止把侵犯强暴轮奸中出内射性交操到爽等具体事件概括成欲望诱惑激情邂逅等抽象词；'
+        '9. 标题过长时先删除修饰词仍须保留最关键的关系和具体行为不得只保留写真作品特辑等无关词；'
+        '10. 示例只用于说明规则严禁把示例中的丈夫侵犯未婚夫等内容复制到当前标题；'
+        '11. 输出中的人物关系和事件必须能在当前原标题中找到不得添加原标题没有的信息不要解释不要编号。\n\n'
         '示例：\n'
-        '女优名：三上悠亚、新有菜\n'
-        '中文标题：三上悠亚和新有菜与相泽南精美写真三张\n'
+        '女优名：水野朝阳\n'
+        '中文标题：在丈夫眼前被侵犯 危险的欲望 水野朝阳\n'
         '输出：\n'
-        '精美写真三张\n'
-        '写真特典三张\n'
-        '三人写真特典\n\n'
+        '丈夫眼前被侵犯\n'
+        '在丈夫面前被侵犯\n'
+        '丈夫目睹妻子被侵犯\n\n'
+        '女优名：希崎洁希卡\n'
+        '中文标题：原作改编 被未婚夫操到爽了 希崎洁希卡\n'
+        '输出：\n'
+        '被未婚夫操到爽了\n'
+        '未婚夫操到高潮\n'
+        '未婚夫的猛烈性交\n\n'
+        '错误示例：危险欲望 情色刺激 写真 精彩作品\n'
+        '错误原因：删除了具体事件或凭空替换了原标题主题\n\n'
         f'女优名：{names_text}\n'
         f'中文标题：{title_zh}\n'
         '输出：'

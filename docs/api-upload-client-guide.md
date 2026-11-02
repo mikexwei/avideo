@@ -84,6 +84,10 @@ Content-Type: application/json
     "exists": true,
     "status": "ACTIVE",
     "scrape_status": "SUCCESS",
+    "has_subtitle": true,
+    "subtitle_type": "中文字幕",
+    "is_uncensored": true,
+    "uncensored_type": "LTX 无码破解",
     "original_path": "/Volumes/T71/avideo/IPVR/IPVR-179-U....part1.mp4",
     "db_parts": ["part1", "part2"]
   }
@@ -102,6 +106,10 @@ Content-Type: application/json
 | `exists` | 是否存在有效记录 |
 | `status` | `ACTIVE`、`DELETED` 或 `NOT_FOUND` |
 | `scrape_status` | 刮削状态 |
+| `has_subtitle` | 是否包含字幕；无法解析文件名时为 `null` |
+| `subtitle_type` | 字幕分类，例如 `中文字幕`、`机翻中文`、`机翻中文 V2`；无字幕时为 `null` |
+| `is_uncensored` | 是否无码；无法解析文件名时为 `null` |
+| `uncensored_type` | 无码分类，例如 `JAV 无码破解`、`LADA 无码破解`、`LTX 无码破解`、`原装无码`；有码时为 `null` |
 | `original_path` | 当前文件路径 |
 | `db_parts` | 数据库中已有的 part 列表 |
 | `error` | 文件名无法解析时的错误 |
@@ -183,7 +191,8 @@ Content-Type: application/json
   "upload_id": "550e8400-e29b-41d4-a716-446655440000",
   "volume_path": "/Volumes/T71/avideo",
   "uncensored_crack_tag": "LTX 无码破解",
-  "subtitle_classification": ""
+  "subtitle_classification": "机翻中文 V2",
+  "tags": ["VR", "單體作品"]
 }
 ```
 
@@ -198,7 +207,16 @@ Content-Type: application/json
 | 字段 | 允许值 |
 |---|---|
 | `uncensored_crack_tag` | `""`、`"JAV 无码破解"`、`"LADA 无码破解"`、`"LTX 无码破解"` |
-| `subtitle_classification` | `""`、`"机翻中文"`、`"中文字幕"` |
+| `subtitle_classification` | `""`、`"机翻中文"`、`"中文字幕"`，或数据库中已有的自定义字幕标签 |
+| `tags` | 数据库中已经存在的任意标签名称数组 |
+
+`tags` 是附加操作，不会清除刮削得到的其他标签。接口不会自动创建通用标签；数组中任一名称不存在时返回 `400`：
+
+```json
+{"error":"unknown tags","tags":["不存在的标签"]}
+```
+
+可通过 `GET /api/tags/all` 获取当前所有可用标签。
 
 重要：有码影片必须显式发送：
 
@@ -254,6 +272,7 @@ X-Subtitle-Classification:
 X-Uncensored-Leaked: 1
 X-Uncensored-Crack-Tag: LTX%20无码破解
 X-Uncensored-Native: 0
+X-Tags: %5B%22VR%22%2C%22机翻中文%20V2%22%5D
 
 <raw file bytes>
 ```
@@ -282,6 +301,7 @@ X-Uncensored-Native: 0
 | `X-Uncensored-Leaked` | 是 | 破解无码为 `1` |
 | `X-Uncensored-Crack-Tag` | 建议 | 空或具体破解类型 |
 | `X-Uncensored-Native` | 是 | 原装无码为 `1` |
+| `X-Tags` | 否 | URL 编码后的 JSON 标签名称数组；标签必须已存在 |
 | `X-Replace-Whole` | 否 | `1` 表示用单文件替换整个 multipart 影片 |
 
 URL 查询参数 `part` 表示数据库中要被替换的原 part；`X-Part` 表示新文件保存后的 part。通常两者相同。

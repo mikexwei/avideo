@@ -21,6 +21,14 @@ def _make_db(rows=None):
             scrape_status TEXT DEFAULT 'PENDING',
             deleted INTEGER DEFAULT 0
         );
+        CREATE TABLE tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        );
+        CREATE TABLE video_tag_link (
+            video_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL
+        );
     """)
     for row in (rows or []):
         conn.execute(
@@ -56,6 +64,38 @@ class BatchCheckEndpointTests(unittest.TestCase):
         self.assertEqual(data[0]['code'], 'ABW-123-C')
         self.assertIsNone(data[0]['part'])
         self.assertEqual(data[0]['original_path'], '/vol/ABW-123-C/ABW-123-C.mp4')
+        self.assertTrue(data[0]['has_subtitle'])
+        self.assertEqual(data[0]['subtitle_type'], '中文字幕')
+        self.assertFalse(data[0]['is_uncensored'])
+        self.assertIsNone(data[0]['uncensored_type'])
+
+    def test_existing_code_returns_subtitle_and_uncensored_tag_types(self):
+        db = _make_db([('ABW-123', None, '/vol/ABW-123/ABW-123.mp4')])
+        conn = sqlite3.connect(db)
+        conn.execute("INSERT INTO tags(name) VALUES ('机翻中文 V2')")
+        conn.execute("INSERT INTO tags(name) VALUES ('LTX 无码破解')")
+        conn.execute('INSERT INTO video_tag_link VALUES (1, 1)')
+        conn.execute('INSERT INTO video_tag_link VALUES (1, 2)')
+        conn.commit()
+        conn.close()
+
+        resp = self._post(['ABW-123.mp4'], db)
+        os.unlink(db)
+        data = resp.get_json()[0]
+        self.assertTrue(data['has_subtitle'])
+        self.assertEqual(data['subtitle_type'], '机翻中文 V2')
+        self.assertTrue(data['is_uncensored'])
+        self.assertEqual(data['uncensored_type'], 'LTX 无码破解')
+
+    def test_not_found_code_returns_media_info_from_suffix(self):
+        db = _make_db()
+        resp = self._post(['SSIS-999-UC.mkv'], db)
+        os.unlink(db)
+        data = resp.get_json()[0]
+        self.assertTrue(data['has_subtitle'])
+        self.assertEqual(data['subtitle_type'], '中文字幕')
+        self.assertTrue(data['is_uncensored'])
+        self.assertEqual(data['uncensored_type'], '无码')
 
     def test_non_existing_code_returns_exists_false(self):
         db = _make_db()
