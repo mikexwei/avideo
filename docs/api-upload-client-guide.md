@@ -116,7 +116,35 @@ Content-Type: application/json
 
 `ABW-123`、`ABW-123-C`、`ABW-123-U` 和 `ABW-123-UC` 在检测阶段会按同一基础番号匹配。因此，替换请求必须使用响应中的 `db_code`，不能直接使用 `code`。
 
-## 5. 获取可用 Volume
+## 5. 获取视频下载 URL
+
+```http
+GET /api/videos/START-656/download-url
+Accept: application/json
+```
+
+番号不区分大小写，可以使用不带 `-C/-U/-UC` 的基础番号。单文件响应中的 `download_url` 可以直接交给浏览器或下载程序：
+
+```json
+{
+  "input_code": "START-656",
+  "code": "START-656-UC",
+  "base_code": "START-656",
+  "download_url": "http://10.0.0.30:8000/api/videos/START-656/stream.mp4?download=1",
+  "files": [
+    {
+      "part": null,
+      "filename": "START-656-UC.title.mp4",
+      "file_size": 123456789,
+      "download_url": "http://10.0.0.30:8000/api/videos/START-656/stream.mp4?download=1"
+    }
+  ]
+}
+```
+
+多 part 影片的顶层 `download_url` 为 `null`，每个 part 的下载地址位于 `files` 数组中。
+
+## 6. 获取可用 Volume
 
 ```http
 GET /api/config/media-libraries
@@ -128,11 +156,11 @@ curl -s "$BASE_URL/api/config/media-libraries"
 
 新增影片时，`volume_path` 必须是该接口返回的完整路径之一。替换影片不需要选择 Volume，文件会写入原文件所在目录。
 
-## 6. 新增影片
+## 7. 新增影片
 
 新增分为三步：创建上传组、上传文件、启动自动处理。
 
-### 6.1 创建 upload_id
+### 7.1 创建 upload_id
 
 客户端生成标准 UUID。一个 `upload_id` 只能包含同一个影片番号的文件。
 
@@ -142,7 +170,7 @@ curl -s "$BASE_URL/api/config/media-libraries"
 
 不同番号必须使用不同的 `upload_id`。
 
-### 6.2 上传文件
+### 7.2 上传文件
 
 ```http
 POST /api/videos/upload-part
@@ -164,7 +192,7 @@ X-File-Size: 6136402186
 
 包含中文或特殊字符的 `X-Dest-Name`、`X-Volume-Path` 应使用 URL percent-encoding。服务端会执行 URL decode。
 
-### 6.3 多 part 上传
+### 7.3 多 part 上传
 
 多 part 使用相同 `upload_id`，每个文件分别调用一次 `upload-part`：
 
@@ -179,7 +207,7 @@ upload_id=B
 
 只有所有 part 上传成功后，才能调用 `add-auto`。
 
-### 6.4 启动自动处理
+### 7.4 启动自动处理
 
 ```http
 POST /api/videos/add-auto
@@ -226,7 +254,7 @@ Content-Type: application/json
 
 如果完全省略 `uncensored_crack_tag`，服务端默认使用 `LTX 无码破解`。
 
-### 6.5 监听处理进度
+### 7.5 监听处理进度
 
 ```http
 GET /api/jobs/<job_id>/stream
@@ -250,7 +278,7 @@ data: {"step":"done","status":"done","message":"全部完成","code":"IPVR-179-U
 
 客户端应在收到 `add-auto` 响应后立即连接 SSE。任务保存在服务进程内存中，服务重启后无法恢复任务或进度流。
 
-## 7. 替换已有影片
+## 8. 替换已有影片
 
 替换前必须先执行 `batch-check`，并使用返回的：
 
@@ -260,7 +288,7 @@ data: {"step":"done","status":"done","message":"全部完成","code":"IPVR-179-U
 
 不要因为上传文件名缺少 `-U`、`-C` 或 `-UC`，自动清除数据库中已有的影片属性。
 
-### 7.1 替换单文件或指定 part
+### 8.1 替换单文件或指定 part
 
 ```http
 POST /api/videos/IPVR-179-U/replace?part=part2
@@ -289,7 +317,7 @@ X-Tags: %5B%22VR%22%2C%22机翻中文%20V2%22%5D
 }
 ```
 
-### 7.2 替换请求字段
+### 8.2 替换请求字段
 
 | Header | 必填 | 说明 |
 |---|---:|---|
@@ -306,7 +334,7 @@ X-Tags: %5B%22VR%22%2C%22机翻中文%20V2%22%5D
 
 URL 查询参数 `part` 表示数据库中要被替换的原 part；`X-Part` 表示新文件保存后的 part。通常两者相同。
 
-### 7.3 用单文件替换整个 multipart 影片
+### 8.3 用单文件替换整个 multipart 影片
 
 ```http
 POST /api/videos/ABW-123-C/replace?part=part1
@@ -315,7 +343,7 @@ X-Replace-Whole: 1
 
 该操作会删除同番号的其他 part 文件和数据库记录，属于破坏性操作。客户端必须要求用户明确确认。
 
-## 8. 批量处理规则
+## 9. 批量处理规则
 
 服务端没有单一的“批量上传并全部处理”端点。客户端负责调度。
 
@@ -352,7 +380,7 @@ for group in groups:
         waitForSSE(job_id)
 ```
 
-## 9. curl 示例
+## 10. curl 示例
 
 ### 新增单文件
 
@@ -412,7 +440,7 @@ done
 
 上传完成后对该 `UPLOAD_ID` 调用一次 `add-auto`。
 
-## 10. HTTP 状态与重试
+## 11. HTTP 状态与重试
 
 | 状态 | 含义 | 客户端处理 |
 |---|---|---|
@@ -432,7 +460,7 @@ GET /api/videos/<code>
 Accept: application/json
 ```
 
-## 11. 客户端完成条件
+## 12. 客户端完成条件
 
 新增影片只有在 SSE 收到 `step: done` 后才算完成。响应中的 `code` 是最终番号，客户端应使用它生成详情页链接：
 
@@ -442,7 +470,7 @@ http://10.0.0.30:8000/#/video/<code>
 
 替换影片在 `/replace` 返回 HTTP `200` 且 JSON 中 `ok: true` 后完成。响应中的 `code` 可能因标签选择发生变化，后续操作必须使用响应中的新番号。
 
-## 12. 已知限制
+## 13. 已知限制
 
 - 不支持断点续传。
 - 不支持查询上传临时文件的进度或列表。

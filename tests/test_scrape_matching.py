@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from core.scraper.video_scraper import _pick_matching_index, _search_code_variants, FREEZE
-from dal.db_manager import update_video_metadata
+from dal.db_manager import patch_video_relations, update_video_metadata
 
 
 class PickMatchingIndexTests(unittest.TestCase):
@@ -128,6 +128,42 @@ class UpdateMetadataActorTests(unittest.TestCase):
         )]
         conn.close()
         self.assertEqual(names, ['清野咲'])
+
+    def test_success_converts_scraped_metadata_to_simplified_chinese(self):
+        data = {
+            'title_jp': '女教師の物語', 'release_date': '', 'duration': '',
+            'maker': '亞洲片商', 'publisher': '發行公司', 'series': '戀愛系列',
+            'score': 0, 'cover_path': '', 'actors': '橋本有菜',
+            'categories': '女教師,騎乘位',
+        }
+        with patch('dal.db_manager.DB_PATH', self.db_path), \
+             patch('core.translator.service.translate_series_if_japanese', side_effect=lambda value: value):
+            update_video_metadata(1, 'SUCCESS', data)
+
+        conn = sqlite3.connect(self.db_path)
+        video = conn.execute(
+            'SELECT title_jp, maker, publisher, series FROM videos WHERE id = 1'
+        ).fetchone()
+        actors = conn.execute('SELECT name FROM actors ORDER BY name').fetchall()
+        tags = conn.execute('SELECT name FROM tags ORDER BY name').fetchall()
+        conn.close()
+        self.assertEqual(video, ('女教師の物語', '亚洲片商', '发行公司', '恋爱系列'))
+        self.assertIn(('桥本有菜',), actors)
+        self.assertIn(('女教师',), tags)
+        self.assertIn(('骑乘位',), tags)
+
+    def test_user_can_create_a_new_simplified_tag(self):
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            changed = patch_video_relations('CAWB-012-UC', tag_names=['新標籤'])
+
+        conn = sqlite3.connect(self.db_path)
+        tags = conn.execute(
+            'SELECT t.name FROM tags t '
+            'JOIN video_tag_link l ON l.tag_id = t.id WHERE l.video_id = 1'
+        ).fetchall()
+        conn.close()
+        self.assertTrue(changed)
+        self.assertEqual(tags, [('新标签',)])
 
 
 if __name__ == '__main__':

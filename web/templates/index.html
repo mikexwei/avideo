@@ -1383,9 +1383,21 @@
                   <button @click="removeTag(i)" class="text-gray-400 hover:text-red-400 ml-1 leading-none">×</button>
                 </span>
               </div>
-              <div class="flex gap-2">
-                <input v-ltrim v-model="form.newTag" @keydown.enter.prevent="addTag" placeholder="输入标签名后 Enter"
-                  class="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
+              <div class="relative flex gap-2">
+                <div class="relative flex-1">
+                  <input v-ltrim v-model="form.newTag" @input="onTagInput" @blur="closeTagDropdown"
+                    @keydown.enter.prevent="addTag" placeholder="输入标签名搜索"
+                    class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
+                  <ul v-if="tagSuggestions.length"
+                    class="absolute z-50 left-0 right-0 bg-gray-800 border border-gray-600 rounded mt-1 max-h-48 overflow-y-auto shadow-xl">
+                    <li v-for="tag in tagSuggestions" :key="tag.id"
+                      @mousedown.prevent="pickTag(tag)"
+                      class="flex items-center justify-between px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 cursor-pointer">
+                      <span>{{ tag.name }}</span>
+                      <span class="text-xs text-gray-500">{{ tag.count }}</span>
+                    </li>
+                  </ul>
+                </div>
                 <button @click="addTag" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600">添加</button>
               </div>
             </template>
@@ -1940,6 +1952,10 @@
       }
     }
 
+    function baseVideoCode(code) {
+      return (code || '').replace(/-(?:UC|U|C)$/i, '');
+    }
+
     // ── SortBar ───────────────────────────────────────────────
     const SortBar = {
       name: 'SortBar',
@@ -1955,7 +1971,7 @@
       props: { video: Object },
       setup(props) {
         const router = VueRouter.useRouter();
-        function go() { router.push('/video/' + props.video.code); }
+        function go() { router.push('/video/' + baseVideoCode(props.video.code)); }
         return { go, imgErr };
       }
     };
@@ -2601,7 +2617,7 @@
 
         function goToVideo(code) {
           emit('close');
-          router.push(`/video/${code}`);
+          router.push(`/video/${baseVideoCode(code)}`);
         }
 
         return {
@@ -2913,6 +2929,8 @@
         const form = ref({});
         const actorSuggestions = ref([]);
         const seriesSuggestions = ref([]);
+        const allTags = ref([]);
+        const tagSuggestions = ref([]);
         const pickedSeriesClusterId = ref(null);
         let actorTimer = null, seriesTimer = null;
 
@@ -2925,7 +2943,7 @@
             ? (video.value.parts.find(p => p.part === selectedPart.value) || video.value.parts[0]).original_file_path
             : video.value.original_file_path;
           const ext = filePath ? filePath.split('.').pop().toLowerCase() : 'mp4';
-          const base = window.location.origin + '/api/videos/' + video.value.code + '/stream.' + ext;
+          const base = window.location.origin + '/api/videos/' + baseVideoCode(video.value.code) + '/stream.' + ext;
           return selectedPart.value ? base + '?part=' + encodeURIComponent(selectedPart.value) : base;
         }
         function playVideo() { window.open(streamUrl(), '_blank'); }
@@ -3240,6 +3258,12 @@
           loading.value = true;
           video.value = await apiFetch('/api/videos/' + route.params.code);
           loading.value = false;
+          if (video.value) {
+            const canonicalRouteCode = baseVideoCode(video.value.code);
+            if (route.params.code !== canonicalRouteCode) {
+              router.replace('/video/' + encodeURIComponent(canonicalRouteCode));
+            }
+          }
           restoreScroll();
         }
 
@@ -3356,12 +3380,30 @@
         }
 
         function removeTag(i) { form.value.tags.splice(i, 1); }
+        async function onTagInput() {
+          const q = form.value.newTag.trim().toLowerCase();
+          if (!q) { tagSuggestions.value = []; return; }
+          if (!allTags.value.length) allTags.value = await apiFetch('/api/tags/all') || [];
+          const selected = new Set(form.value.tags.map(tag => tag.name));
+          tagSuggestions.value = allTags.value
+            .filter(tag => tag.name.toLowerCase().includes(q) && !selected.has(tag.name))
+            .slice(0, 20);
+        }
+        function closeTagDropdown() { setTimeout(() => { tagSuggestions.value = []; }, 150); }
+        function pickTag(tag) {
+          if (!form.value.tags.find(item => item.name === tag.name)) {
+            form.value.tags.push({ id: tag.id, name: tag.name });
+          }
+          form.value.newTag = '';
+          tagSuggestions.value = [];
+        }
         function addTag() {
           const name = form.value.newTag.trim();
           if (name && !form.value.tags.find(t => t.name === name)) {
             form.value.tags.push({ name });
           }
           form.value.newTag = '';
+          tagSuggestions.value = [];
         }
 
         async function saveEdit() {
@@ -3440,8 +3482,9 @@
           });
           renamingPath.value = null;
           const newCode = res.code || video.value.code;
-          if (newCode !== route.params.code) {
-            router.replace('/video/' + encodeURIComponent(newCode));
+          const canonicalRouteCode = baseVideoCode(newCode);
+          if (canonicalRouteCode !== route.params.code) {
+            router.replace('/video/' + encodeURIComponent(canonicalRouteCode));
           } else {
             video.value = res;
           }
@@ -3460,11 +3503,11 @@
           editing, saving, saveError, form,
           rescraping, rescrapeMessage, rescrapeError, startRescrape,
           editFields: EDIT_FIELDS,
-          actorSuggestions, seriesSuggestions,
+          actorSuggestions, seriesSuggestions, tagSuggestions,
           startEdit, cancelEdit, saveEdit,
           removeActor, onActorInput, closeActorDropdown, pickActor, addActorFromInput,
           onSeriesInput, closeSeriesDropdown, pickSeries,
-          removeTag, addTag,
+          removeTag, onTagInput, closeTagDropdown, pickTag, addTag,
           imgErr, formatSize,
           copiedPaths,
           copyPath(path) {

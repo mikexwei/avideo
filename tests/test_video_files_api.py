@@ -88,6 +88,55 @@ class VideoFilesEndpointTests(unittest.TestCase):
         self.assertEqual(default_response.get_json()['extension'], 'mkv')
         self.assertEqual(invalid_response.status_code, 400)
 
+    def test_returns_download_url_for_base_code(self):
+        video = {
+            'code': 'START-656-UC',
+            'part': None,
+            'original_file_path': '/vol/START-656-UC.title.mp4',
+            'file_size': 123,
+            'deleted': 0,
+        }
+        with patch('web.backend.app.get_video_by_code', return_value=video):
+            response = self.client.get(
+                '/api/videos/start-656/download-url',
+                base_url='http://10.0.0.30:8000',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data['code'], 'START-656-UC')
+        self.assertEqual(data['base_code'], 'START-656')
+        self.assertEqual(
+            data['download_url'],
+            'http://10.0.0.30:8000/api/videos/START-656/stream.mp4?download=1',
+        )
+        self.assertEqual(data['files'][0]['filename'], 'START-656-UC.title.mp4')
+
+    def test_returns_one_download_url_per_part(self):
+        video = {
+            'code': 'IPVR-179-U', 'deleted': 0,
+            'parts': [
+                {'part': 'part1', 'original_file_path': '/vol/IPVR-179-U.part1.mp4', 'file_size': 10},
+                {'part': 'part2', 'original_file_path': '/vol/IPVR-179-U.part2.mkv', 'file_size': 20},
+            ],
+        }
+        with patch('web.backend.app.get_video_by_code', return_value=video):
+            response = self.client.get('/api/videos/IPVR-179/download-url')
+
+        data = response.get_json()
+        self.assertIsNone(data['download_url'])
+        self.assertEqual(len(data['files']), 2)
+        self.assertIn('part=part1', data['files'][0]['download_url'])
+        self.assertIn('download=1', data['files'][0]['download_url'])
+
+    def test_download_query_sets_attachment_header(self):
+        with patch('web.backend.app.get_video_file_path', return_value=str(self.mkv)):
+            response = self.client.get('/api/videos/ABW-123/stream.mkv?download=1')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('attachment', response.headers['Content-Disposition'])
+        self.assertIn(self.mkv.name, response.headers['Content-Disposition'])
+
 
 class SubtitleClassificationEndpointTests(unittest.TestCase):
     def setUp(self):

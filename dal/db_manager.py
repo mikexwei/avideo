@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Any
 
+from zhconv import convert
+
 # 为了解决模块导入路径问题，动态引入 config
 import sys
 project_root = Path(__file__).resolve().parent.parent
@@ -14,6 +16,10 @@ if str(project_root) not in sys.path:
 from config import DB_PATH
 
 logger = logging.getLogger(__name__)
+
+
+def _to_simplified(value: Any) -> Any:
+    return convert(value, 'zh-cn') if isinstance(value, str) and value else value
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -220,11 +226,11 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
         target_video_ids = [r[0] for r in cursor.fetchall()]
         
         if status == 'SUCCESS' and data:
-            series_value = data.get('series', '')
+            series_value = _to_simplified(data.get('series', ''))
             if series_value:
                 try:
                     from core.translator.service import translate_series_if_japanese
-                    series_value = translate_series_if_japanese(series_value)
+                    series_value = _to_simplified(translate_series_if_japanese(series_value))
                 except Exception:
                     # 翻译异常不影响主流程，保留原始 series
                     pass
@@ -239,7 +245,8 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             """
             cursor.execute(sql_video, (
                 data.get('title_jp', ''), data.get('release_date', ''), data.get('duration', ''),
-                data.get('maker', ''), data.get('publisher', ''), series_value,
+                _to_simplified(data.get('maker', '')),
+                _to_simplified(data.get('publisher', '')), series_value,
                 data.get('score', 0.0), data.get('cover_path', ''), code
             ))
             
@@ -252,8 +259,18 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             actors_str = data.get('actors', '')
             if actors_str:
                 # 把逗号分隔的字符串拆成列表，并去掉两边空格
-                actor_list = [a.strip() for a in actors_str.split(',') if a.strip()]
+                actor_list = [_to_simplified(a.strip()) for a in actors_str.split(',') if a.strip()]
                 for actor_name in actor_list:
+                    cursor.execute("SELECT id, name, is_ignored FROM actors")
+                    equivalent_actor = next(
+                        (actor for actor in cursor.fetchall() if _to_simplified(actor[1]) == actor_name),
+                        None,
+                    )
+                    if equivalent_actor and equivalent_actor[1] != actor_name:
+                        cursor.execute(
+                            "UPDATE OR IGNORE actors SET name = ? WHERE id = ?",
+                            (actor_name, equivalent_actor[0]),
+                        )
                     # 尝试插入演员 (如果已存在则忽略)
                     cursor.execute("INSERT OR IGNORE INTO actors (name) VALUES (?)", (actor_name,))
                     # 查询该演员的 ID (无论他是刚插入的，还是以前就存在的)
@@ -268,7 +285,7 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             # 3. 处理标签/类别 (Tags/Categories) 的多对多入库
             tags_str = data.get('categories', '')
             if tags_str:
-                tag_list = [t.strip() for t in tags_str.split(',') if t.strip()]
+                tag_list = [_to_simplified(t.strip()) for t in tags_str.split(',') if t.strip()]
                 for tag_name in tag_list:
                     cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
                     cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
@@ -908,7 +925,7 @@ def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, ta
         if tag_names is not None:
             cursor.execute(f"DELETE FROM video_tag_link WHERE video_id IN ({ph})", video_ids)
             for name in tag_names:
-                name = name.strip()
+                name = _to_simplified(name.strip())
                 if not name:
                     continue
                 cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))

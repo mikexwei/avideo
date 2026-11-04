@@ -1400,6 +1400,44 @@ def api_video_detail(code: str):
     return jsonify(data)
 
 
+@app.get('/api/videos/<string:code>/download-url')
+def api_video_download_url(code: str):
+    data = get_video_by_code(code)
+    if not data or data.get('deleted'):
+        return jsonify({'error': 'not found'}), 404
+
+    base_code = re.sub(r'(?i)-(?:uc|u|c)$', '', data['code'])
+    source_files = data.get('parts') or [{
+        'part': data.get('part'),
+        'original_file_path': data.get('original_file_path'),
+        'file_size': data.get('file_size'),
+    }]
+    files = []
+    for source in source_files:
+        path = Path(source.get('original_file_path') or '')
+        ext = path.suffix.lower().lstrip('.') or 'mp4'
+        query = {'download': 1}
+        if source.get('part'):
+            query['part'] = source['part']
+        files.append({
+            'part': source.get('part'),
+            'filename': path.name,
+            'file_size': source.get('file_size'),
+            'download_url': url_for(
+                'api_video_stream_ext', code=base_code, ext=ext,
+                _external=True, **query,
+            ),
+        })
+
+    return jsonify({
+        'input_code': code,
+        'code': data['code'],
+        'base_code': base_code,
+        'download_url': files[0]['download_url'] if len(files) == 1 else None,
+        'files': files,
+    })
+
+
 @app.patch('/api/videos/<string:code>')
 def api_video_patch(code: str):
     body = request.get_json(silent=True) or {}
@@ -1638,7 +1676,11 @@ def _do_stream(code: str, part: str = None):
         return jsonify({'error': 'file not found'}), 404
     ext = Path(path).suffix.lower()
     mime = _MIME_MAP.get(ext, 'video/mp4')
-    resp = send_file(path, mimetype=mime, conditional=True)
+    resp = send_file(
+        path, mimetype=mime, conditional=True,
+        as_attachment=request.args.get('download') == '1',
+        download_name=Path(path).name,
+    )
     resp.headers['Access-Control-Allow-Origin'] = '*'
     resp.headers['Access-Control-Allow-Headers'] = 'Range'
     resp.headers['Access-Control-Expose-Headers'] = 'Content-Range, Accept-Ranges, Content-Length'
