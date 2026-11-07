@@ -208,6 +208,15 @@
         transition-duration: .01ms !important;
       }
     }
+    .ltx-column-filters th { padding: 0 12px 12px; vertical-align: top; font-weight: 400; }
+    .ltx-column-filters input, .ltx-column-filters select {
+      display: block; width: 100%; min-width: 0; height: 30px; padding: 4px 6px;
+      border: 1px solid #374151; border-radius: 4px; background: #1f2937;
+      color: #d1d5db; font-size: 12px; letter-spacing: 0;
+    }
+    .ltx-column-filters input:focus, .ltx-column-filters select:focus { outline: 1px solid #2997ff; }
+    .ltx-column-filters th > * + * { margin-top: 4px; }
+    .ltx-filter-range { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px; }
   </style>
 </head>
 
@@ -1885,6 +1894,145 @@
     <div v-else-if="items.length === 0" class="text-center py-20 text-gray-500">暂无符合条件的推荐影片</div>
     <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
       <video-card v-for="v in items" :key="v.code" :video="v" />
+    </div>
+  </div>
+</script>
+
+  <!-- ========== LTX Scrape ========== -->
+  <script type="text/x-template" id="tpl-ltx-scrape">
+  <div>
+    <div class="flex items-center gap-2 mb-4 flex-wrap">
+      <h1 class="text-xl font-semibold text-white mr-2">LTX 刮削</h1>
+      <span :class="worker.alive ? 'text-green-400 text-xs' : 'text-gray-500 text-xs'">{{ worker.alive ? 'Worker 在线' : 'Worker 已停止' }}</span>
+      <button @click="workerAction('resume')" :disabled="working" class="px-3 py-1.5 text-sm rounded bg-green-700 hover:bg-green-600 disabled:opacity-40">启动 / 恢复</button>
+      <button @click="workerAction('pause')" :disabled="working || !worker.alive || control.paused" class="px-3 py-1.5 text-sm rounded bg-gray-700 disabled:opacity-40">暂停</button>
+      <button @click="workerAction('stop')" :disabled="working || !worker.alive" class="px-3 py-1.5 text-sm rounded bg-red-800 disabled:opacity-40">停止</button>
+      <button @click="workerAction('restart')" :disabled="working" class="px-3 py-1.5 text-sm rounded bg-gray-700 disabled:opacity-40">重启 Worker</button>
+      <button @click="checkLogin" :disabled="working || !!worker.task_id" class="ml-auto px-3 py-1.5 text-sm rounded bg-gray-800 disabled:opacity-40">检查登录</button>
+      <button @click="openLogin" :disabled="working || !!worker.task_id" class="px-3 py-1.5 text-sm rounded bg-gray-800 disabled:opacity-40">打开登录页</button>
+      <span v-if="loggedIn != null" class="text-xs" :class="loggedIn ? 'text-green-400' : 'text-amber-400'">{{ loggedIn ? 'JavDB 已登录' : 'JavDB 待登录' }}</span>
+    </div>
+
+    <section class="border-y border-gray-800 py-3 mb-4">
+      <div class="flex flex-wrap items-center gap-3 text-sm mb-2" role="status" aria-live="polite">
+        <span class="text-amber-400">{{ stateLabel }}</span>
+        <span v-if="worker.code" class="font-mono text-indigo-400">{{ worker.code }}</span>
+        <span class="text-gray-400">队列剩余 {{ task.remaining || 0 }} 部</span>
+        <span class="text-gray-500">今日 {{ quota.daily_used || 0 }} / {{ quota.daily_limit || 200 }}</span>
+        <span class="text-gray-500">本小时 {{ quota.hour_used || 0 }} / {{ quota.hour_limit == null ? '—' : quota.hour_limit }}</span>
+        <span v-if="task.next_at" class="text-gray-400">下次执行 {{ formatTime(task.next_at) }}</span>
+      </div>
+      <p class="text-sm break-words" :class="error ? 'text-red-400' : 'text-gray-400'">{{ error || message || task.message }}</p>
+      <div v-if="task.total" class="flex items-center gap-3 mt-2">
+        <div class="h-1.5 flex-1 bg-gray-800 rounded overflow-hidden"><div class="h-full bg-indigo-500" :style="{ width: (task.current / task.total * 100) + '%' }"></div></div>
+        <span class="text-xs text-gray-500">{{ task.current }} / {{ task.total }}</span>
+      </div>
+    </section>
+
+    <form @submit.prevent="saveQuota" class="flex flex-wrap gap-3 items-end border-b border-gray-800 pb-4 mb-4">
+      <label class="text-xs text-gray-400">每日上限<input v-model.number="quotaDraft.daily_limit" aria-label="每日刮削上限" type="number" min="1" max="10000" required class="block w-28 mt-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm" /></label>
+      <label class="text-xs text-gray-400">峰值小时<input v-model.number="quotaDraft.peak_hour" aria-label="配额峰值小时" type="number" min="0" max="23" required class="block w-24 mt-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm" /></label>
+      <label class="text-xs text-gray-400">分布宽度<input v-model.number="quotaDraft.spread" aria-label="配额分布宽度" type="number" min="0.5" max="12" step="0.5" required class="block w-24 mt-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm" /></label>
+      <button :disabled="working" class="px-3 py-1.5 text-sm rounded bg-gray-700 disabled:opacity-40">保存配额</button>
+      <span class="text-xs text-gray-600 pb-1">America/Los_Angeles</span>
+    </form>
+
+    <div class="flex flex-wrap gap-2 mb-4">
+      <button @click="view = 'candidates'" :class="['px-3 py-2 text-sm rounded',view === 'candidates' ? 'bg-indigo-600' : 'bg-gray-800 text-gray-400']">影片候选 {{ candidates.length }}</button>
+      <button @click="view = 'queue'" :class="['px-3 py-2 text-sm rounded',view === 'queue' ? 'bg-indigo-600' : 'bg-gray-800 text-gray-400']">持久化队列 {{ tasks.length }}</button>
+      <input v-model="rawCodes" aria-label="添加番号" placeholder="输入番号，空格或逗号分隔" class="flex-1 min-w-0 w-64 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm" />
+      <button @click="addCodes(rawCodes.split(/[\s,，;；]+/).filter(Boolean))" :disabled="working || !rawCodes.trim()" class="px-3 py-1.5 text-sm rounded bg-indigo-600 disabled:opacity-40">添加番号</button>
+    </div>
+
+    <div class="flex flex-wrap gap-2 items-center mb-3">
+      <input v-model="query" type="search" aria-label="过滤番号" placeholder="过滤番号，多个用空格或逗号分隔" class="w-64 max-w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm" />
+      <input v-model="actressQuery" type="search" list="ltx-actress-options" aria-label="过滤女优名字" placeholder="女优名字" class="w-48 max-w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm" />
+      <datalist id="ltx-actress-options"><option v-for="name in actressOptions" :key="name" :value="name"></option></datalist>
+      <select v-model="prefixFilter" aria-label="过滤番号前缀" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm"><option value="">全部番号前缀</option><option v-for="prefix in prefixOptions" :key="prefix" :value="prefix">{{ prefix }}</option></select>
+      <select v-model="statusFilter" aria-label="过滤队列状态" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm"><option value="">全部状态</option><option value="NONE">未入队</option><option v-for="status in statuses" :key="status" :value="status">{{ statusLabel(status) }}</option></select>
+      <span class="text-xs text-gray-500">{{ filteredRows.length }} 部</span>
+      <button @click="resetFilters" class="px-2 py-1.5 text-xs rounded bg-gray-800 text-gray-400">清空筛选</button>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2 mb-4">
+      <button v-if="view === 'candidates'" @click="addCodes(selectedCodes)" :disabled="working || !selectedCodes.length" class="px-3 py-1.5 text-sm rounded bg-indigo-600 disabled:opacity-40">加入已选 ({{ selectedCodes.length }})</button>
+      <button v-if="view === 'candidates'" @click="addCodes(filteredRows.map(row => row.code))" :disabled="working || !filteredRows.length" class="px-3 py-1.5 text-sm rounded bg-gray-700 disabled:opacity-40">加入筛选结果 ({{ filteredRows.length }})</button>
+      <button v-if="view === 'queue'" @click="bulkAction('requeue')" :disabled="working || !selectedCodes.length" class="px-3 py-1.5 text-sm rounded bg-indigo-600 disabled:opacity-40">重新排队 ({{ selectedCodes.length }})</button>
+      <button @click="runImmediate" :disabled="working || (!selectedCodes.length && !rawCodes.trim())" class="px-3 py-1.5 text-sm rounded bg-amber-700 disabled:opacity-40">立即刮削</button>
+      <template v-if="view === 'queue'">
+        <button @click="bulkAction('cancel')" :disabled="working || !selectedCodes.length" class="px-3 py-1.5 text-sm rounded bg-gray-700 disabled:opacity-40">取消任务</button>
+        <button @click="bulkAction('delete')" :disabled="working || !selectedCodes.length" class="px-3 py-1.5 text-sm rounded bg-red-900 disabled:opacity-40">删除任务</button>
+        <input v-model.number="priority" aria-label="批量优先级" type="number" min="-10000" max="10000" class="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm" />
+        <button @click="bulkAction('priority')" :disabled="working || !selectedCodes.length" class="px-3 py-1.5 text-sm rounded bg-gray-700 disabled:opacity-40">设优先级</button>
+      </template>
+    </div>
+
+    <div v-if="loading" class="text-center py-16 text-gray-500">加载中…</div>
+    <div v-else class="overflow-x-auto border-y border-gray-800">
+      <table class="w-full text-sm" style="min-width:1950px">
+        <thead class="text-xs text-gray-500 text-left bg-gray-900"><tr>
+          <th class="px-3 py-3 w-10"><input type="checkbox" aria-label="全选当前结果" :checked="allSelected" :indeterminate="someSelected && !allSelected" @change="toggleVisible($event.target.checked)" :disabled="working || !filteredRows.length" class="h-4 w-4 accent-indigo-600" /></th>
+          <th class="px-3 py-3">番号</th><th class="px-3 py-3 whitespace-nowrap">队列顺位</th><th class="px-3 py-3">女优</th><th class="px-3 py-3">标题</th><th class="px-3 py-3 whitespace-nowrap">评分</th>
+          <th class="px-3 py-3">状态 / 结果</th><th class="px-3 py-3 whitespace-nowrap">优先级档位</th><th class="px-3 py-3 whitespace-nowrap">入队时间</th><th class="px-3 py-3">链接</th><th class="px-3 py-3 whitespace-nowrap">已下载</th><th class="px-3 py-3">历史</th>
+        </tr>
+        <tr class="ltx-column-filters">
+          <th style="min-width:90px"><select v-model="columnFilters.selection" aria-label="列筛选：选择状态"><option value="">全部</option><option value="selected">已选</option><option value="unselected">未选</option></select></th>
+          <th style="min-width:160px"><input v-model="query" type="search" aria-label="列筛选：番号" placeholder="番号" /></th>
+          <th style="min-width:155px">
+            <select v-model="columnFilters.rankMode" aria-label="列筛选：队列顺位类型"><option value="">全部顺位</option><option value="pending">等待执行</option><option value="running">执行中</option><option value="none">无顺位</option></select>
+            <div class="ltx-filter-range"><input v-model.number="columnFilters.rankMin" type="number" min="1" placeholder="最小" aria-label="列筛选：最小顺位" /><input v-model.number="columnFilters.rankMax" type="number" min="1" placeholder="最大" aria-label="列筛选：最大顺位" /></div>
+          </th>
+          <th style="min-width:140px"><input v-model="actressQuery" type="search" list="ltx-actress-options" aria-label="列筛选：女优" placeholder="女优名字" /></th>
+          <th style="min-width:180px"><input v-model="columnFilters.title" type="search" aria-label="列筛选：标题" placeholder="标题" /></th>
+          <th style="min-width:155px"><div class="ltx-filter-range"><input v-model.number="columnFilters.scoreMin" type="number" step="0.1" placeholder="最低" aria-label="列筛选：最低评分" /><input v-model.number="columnFilters.scoreMax" type="number" step="0.1" placeholder="最高" aria-label="列筛选：最高评分" /></div></th>
+          <th style="min-width:145px">
+            <select v-model="statusFilter" aria-label="列筛选：队列状态"><option value="">全部状态</option><option value="NONE">未入队</option><option v-for="status in statuses" :key="status" :value="status">{{ statusLabel(status) }}</option></select>
+            <select v-model="columnFilters.result" aria-label="列筛选：刮削结果"><option value="">全部结果</option><option value="FOUND">找到链接</option><option value="NOT_FOUND">未找到链接</option><option value="NONE">未返回结果</option></select>
+            <select v-model="columnFilters.forced" aria-label="列筛选：执行方式"><option value="">全部方式</option><option value="yes">立即刮削</option><option value="no">普通任务</option></select>
+          </th>
+          <th style="min-width:155px"><div class="ltx-filter-range"><input v-model.number="columnFilters.priorityMin" type="number" placeholder="最低" aria-label="列筛选：最低优先级" /><input v-model.number="columnFilters.priorityMax" type="number" placeholder="最高" aria-label="列筛选：最高优先级" /></div></th>
+          <th style="min-width:165px"><input v-model="columnFilters.dateFrom" type="date" aria-label="列筛选：入队日期起（洛杉矶）" /><input v-model="columnFilters.dateTo" type="date" aria-label="列筛选：入队日期止（洛杉矶）" /></th>
+          <th style="min-width:200px"><select v-model="columnFilters.linkPresence" aria-label="列筛选：链接有无"><option value="">全部链接</option><option value="yes">有链接</option><option value="no">无链接</option></select><input v-model="columnFilters.linkText" type="search" placeholder="链接关键词" aria-label="列筛选：链接关键词" /></th>
+          <th style="min-width:100px"><select v-model="columnFilters.downloaded" aria-label="列筛选：下载状态"><option value="">全部</option><option value="yes">已下载</option><option value="no">未下载</option></select></th>
+          <th style="min-width:155px"><div class="ltx-filter-range"><input v-model.number="columnFilters.attemptsMin" type="number" min="0" placeholder="最少" aria-label="列筛选：最少执行次数" /><input v-model.number="columnFilters.attemptsMax" type="number" min="0" placeholder="最多" aria-label="列筛选：最多执行次数" /></div></th>
+        </tr></thead>
+        <tbody class="divide-y divide-gray-800">
+          <tr v-for="row in filteredRows" :key="row.code" class="hover:bg-gray-900">
+            <td class="px-3 py-3"><input type="checkbox" v-model="selectedCodes" :value="row.code" :aria-label="'选择 ' + row.code" :disabled="working" class="h-4 w-4 accent-indigo-600" /></td>
+            <td class="px-3 py-3 font-mono text-indigo-400 whitespace-nowrap"><a :href="'#/video/' + encodeURIComponent(row.code)" target="_blank">{{ row.code }}</a></td>
+            <td class="px-3 py-3 whitespace-nowrap tabular-nums" :class="row.queue_status === 'RUNNING' ? 'text-amber-400' : 'text-indigo-400'">
+              {{ row.queue_status === 'RUNNING' ? '执行中' : queuePositions.has(row.code) ? '#' + queuePositions.get(row.code) : '—' }}
+            </td>
+            <td class="px-3 py-3 text-gray-300" style="min-width:120px;max-width:180px">{{ row.actresses || '—' }}</td>
+            <td class="px-3 py-3 text-gray-400" style="min-width:180px;max-width:300px">{{ row.title || '—' }}</td>
+            <td class="px-3 py-3 text-gray-400 tabular-nums">{{ row.score == null ? '—' : Number(row.score).toFixed(2) }}</td>
+            <td class="px-3 py-3" style="min-width:130px;max-width:220px">
+              <span :class="row.queue_status === 'FAILED' ? 'text-red-400' : row.queue_status === 'RUNNING' ? 'text-amber-400' : 'text-gray-300'">{{ statusLabel(row.queue_status) }}</span>
+              <span v-if="row.forced" class="text-xs text-amber-400 ml-2">立即</span>
+              <div v-if="row.status === 'FOUND' || row.status === 'NOT_FOUND'" class="text-xs mt-1 text-gray-500">{{ row.status === 'FOUND' ? '找到链接' : '未找到链接' }}</div>
+              <div v-if="row.error" class="text-xs text-red-400 mt-1 break-words">{{ row.error }}</div>
+            </td>
+            <td class="px-3 py-3 text-gray-500">{{ row.priority || 0 }}</td>
+            <td class="px-3 py-3 text-xs text-gray-500 whitespace-nowrap">{{ formatTime(row.queued_at) }}</td>
+            <td class="px-3 py-3" style="max-width:320px;min-width:200px"><div v-for="link in row.links" :key="link" class="truncate"><a :href="link" :title="link" class="text-blue-400">{{ link }}</a></div><span v-if="!row.links.length" class="text-gray-600">—</span></td>
+            <td class="px-3 py-3 text-center"><input type="checkbox" v-model="row.downloaded" @change="setDownloaded(row)" :disabled="!row.links.length" :aria-label="row.code + ' 已下载'" class="h-4 w-4 accent-indigo-600" /></td>
+            <td class="px-3 py-3"><button v-if="row.id" @click="showHistory(row)" class="text-xs text-indigo-400 whitespace-nowrap">查看 {{ row.attempts || 0 }}</button></td>
+          </tr>
+          <tr v-if="!filteredRows.length"><td colspan="12" class="text-center py-16 text-gray-500">暂无数据</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div v-if="historyCode" class="fixed inset-0 z-50 bg-black bg-opacity-80 flex items-center justify-center p-4" @click.self="historyCode = ''">
+      <section class="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-3xl p-5" style="max-height:85vh;overflow:auto" role="dialog" aria-label="刮削历史">
+        <div class="flex justify-between items-center mb-4"><h2 class="font-semibold">{{ historyCode }} 执行历史</h2><button @click="historyCode = ''" aria-label="关闭历史" class="text-gray-400 px-2 py-1">×</button></div>
+        <div v-for="item in history" :key="item.id" class="border-t border-gray-800 py-3 text-sm">
+          <div class="flex gap-3 flex-wrap text-gray-400"><span>{{ statusLabel(item.status) }}</span><span>{{ formatTime(item.finished_at) }}</span><span v-if="item.forced" class="text-amber-400">立即刮削</span></div>
+          <p v-if="item.error" class="text-red-400 mt-2 break-words">{{ item.error }}</p>
+          <div v-for="link in historyLinks(item)" :key="link" class="break-all mt-2"><a :href="link" class="text-blue-400">{{ link }}</a></div>
+        </div>
+        <p v-if="!history.length" class="text-gray-500">暂无执行记录</p>
+      </section>
     </div>
   </div>
 </script>
@@ -3895,6 +4043,210 @@
     };
 
     // ── Router ────────────────────────────────────────────────
+    const LtxScrapeView = {
+      template: '#tpl-ltx-scrape',
+      setup() {
+        const candidates = ref([]), tasks = ref([]), view = ref('candidates'), loading = ref(true);
+        const worker = ref({}), control = ref({}), task = ref({}), quota = ref({});
+        const quotaDraft = ref({ daily_limit: 200, peak_hour: 17, spread: 4 });
+        const working = ref(false), error = ref(''), message = ref(''), loggedIn = ref(null);
+        const query = ref(''), actressQuery = ref(''), prefixFilter = ref(''), statusFilter = ref('');
+        const columnDefaults = { selection:'',title:'',rankMode:'',rankMin:'',rankMax:'',scoreMin:'',scoreMax:'',
+          result:'',forced:'',priorityMin:'',priorityMax:'',dateFrom:'',dateTo:'',linkPresence:'',linkText:'',
+          downloaded:'',attemptsMin:'',attemptsMax:'' };
+        const columnFilters = ref({...columnDefaults});
+        function resetFilters() {
+          query.value=''; actressQuery.value=''; prefixFilter.value=''; statusFilter.value='';
+          columnFilters.value={...columnDefaults};
+        }
+        function inRange(value,min,max) {
+          const hasMin = min !== '' && min != null, hasMax = max !== '' && max != null;
+          if (!hasMin && !hasMax) return true;
+          if (value == null) return false;
+          return (!hasMin || Number(value) >= Number(min)) && (!hasMax || Number(value) <= Number(max));
+        }
+        const queuedDateFormatter = new Intl.DateTimeFormat('en-US', { timeZone:'America/Los_Angeles',year:'numeric',month:'2-digit',day:'2-digit' });
+        function queuedDate(value) {
+          if (value == null) return '';
+          const parts = Object.fromEntries(queuedDateFormatter.formatToParts(new Date(value * 1000)).map(part => [part.type,part.value]));
+          return parts.year + '-' + parts.month + '-' + parts.day;
+        }
+        const rawCodes = ref(''), selectedCodes = ref([]), priority = ref(100);
+        const historyCode = ref(''), history = ref([]);
+        const statuses = ['PENDING', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED', 'CANCELLED'];
+        const queuePositions = computed(() => new Map(tasks.value
+          .filter(row => row.queue_status === 'PENDING')
+          .map((row,index) => [row.code,index + 1])));
+        const rows = computed(() => {
+          if (view.value !== 'queue') return candidates.value;
+          const group = row => row.queue_status === 'RUNNING' ? 0 : row.queue_status === 'PENDING' ? 1 : 2;
+          return [...tasks.value].sort((a,b) => group(a) - group(b));
+        });
+        const actressOptions = computed(() => [...new Set(rows.value.flatMap(row =>
+          (row.actresses || '').split(',').map(name => name.trim()).filter(Boolean)
+        ))].sort((a,b) => a.localeCompare(b, 'zh-CN')));
+        const prefixOptions = computed(() => [...new Set(rows.value.map(row => row.code.split('-')[0]))].sort());
+        const filteredRows = computed(() => {
+          const codes = query.value.trim().toLowerCase().split(/[\s,，;；]+/).filter(Boolean);
+          const actor = actressQuery.value.trim().toLowerCase();
+          const filters = columnFilters.value, selected = new Set(selectedCodes.value);
+          const title = filters.title.trim().toLowerCase(), linkText = filters.linkText.trim().toLowerCase();
+          return rows.value.filter(row => {
+            const links = row.links || [], rank = queuePositions.value.get(row.code);
+            const date = filters.dateFrom || filters.dateTo ? queuedDate(row.queued_at) : '';
+            return (
+            (!codes.length || codes.some(code => row.code.toLowerCase().includes(code))) &&
+            (!actor || (row.actresses || '').toLowerCase().includes(actor)) &&
+            (!prefixFilter.value || row.code.split('-')[0] === prefixFilter.value) &&
+            (!statusFilter.value || (statusFilter.value === 'NONE' ? !row.queue_status : row.queue_status === statusFilter.value)) &&
+            (!filters.selection || selected.has(row.code) === (filters.selection === 'selected')) &&
+            (!title || (row.title || '').toLowerCase().includes(title)) &&
+            (!filters.rankMode || (filters.rankMode === 'pending' ? row.queue_status === 'PENDING' :
+              filters.rankMode === 'running' ? row.queue_status === 'RUNNING' : rank == null && row.queue_status !== 'RUNNING')) &&
+            inRange(rank,filters.rankMin,filters.rankMax) && inRange(row.score,filters.scoreMin,filters.scoreMax) &&
+            inRange(row.priority ?? 0,filters.priorityMin,filters.priorityMax) &&
+            inRange(row.id ? row.attempts || 0 : null,filters.attemptsMin,filters.attemptsMax) &&
+            (!filters.result || (filters.result === 'NONE' ? !['FOUND','NOT_FOUND'].includes(row.status) : row.status === filters.result)) &&
+            (!filters.forced || !!row.forced === (filters.forced === 'yes')) &&
+            (!filters.dateFrom || !!date && date >= filters.dateFrom) && (!filters.dateTo || !!date && date <= filters.dateTo) &&
+            (!filters.linkPresence || (links.length > 0) === (filters.linkPresence === 'yes')) &&
+            (!linkText || links.some(link => link.toLowerCase().includes(linkText))) &&
+            (!filters.downloaded || !!row.downloaded === (filters.downloaded === 'yes')));
+          });
+        });
+        const allSelected = computed(() => filteredRows.value.length > 0 && filteredRows.value.every(row => selectedCodes.value.includes(row.code)));
+        const someSelected = computed(() => filteredRows.value.some(row => selectedCodes.value.includes(row.code)));
+        function toggleVisible(checked) {
+          const visible = new Set(filteredRows.value.map(row => row.code));
+          selectedCodes.value = checked ? [...new Set([...selectedCodes.value,...visible])] : selectedCodes.value.filter(code => !visible.has(code));
+        }
+        function statusLabel(status) {
+          return { PENDING:'等待执行', RUNNING:'执行中', DONE:'已完成', FAILED:'失败', SKIPPED:'已跳过',
+            CANCELLED:'已取消', INTERRUPTED:'已中断并恢复' }[status] || '未入队';
+        }
+        const stateLabel = computed(() => {
+          if (!worker.value.alive) return 'Worker 已停止';
+          if (control.value.desired === 'stop') return '停止中…';
+          if (control.value.desired === 'restart') return '重启中…';
+          if (control.value.paused && worker.value.task_id) return '暂停中，完成当前任务后暂停';
+          return { starting:'启动中…', idle:'等待任务', paused:'已暂停', scraping:'刮削中…',
+            searching:'搜索中…', checking_login:'检查登录中…', reading_reviews:'读取短评中…',
+            cooling_down:'Cooling down · 冷却中…', hourly_limit:'等待小时额度', daily_limit:'等待次日额度',
+            waiting_login:'等待手工登录', waiting:'等待重试', stopped:'已停止' }[task.value.state] || task.value.state || '等待开始';
+        });
+        function formatTime(value) {
+          if (!value) return '—';
+          return new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('zh-CN',
+            { timeZone:'America/Los_Angeles',hour12:false }) + ' 洛杉矶';
+        }
+        async function request(url, body, method='POST') {
+          let response = await fetch(url, { method, headers:{'Content-Type':'application/json'},body:JSON.stringify(body) });
+          let data; try { data = await response.json(); } catch { data = {}; }
+          if (response.status === 409 && data.confirm_required) {
+            const names = (data.conflicts || []).map(row => row.code);
+            if (!window.confirm(names.slice(0,10).join('、') + (names.length > 10 ? ' 等 ' + names.length + ' 部' : '') + ' 已有执行记录，确认重新刮削？')) return null;
+            return request(url, { ...body, confirm_rescrape:true }, method);
+          }
+          if (!response.ok) throw new Error(data.error || '请求失败，HTTP ' + response.status);
+          return data;
+        }
+        let disposed = false, polling = false, timer = null, quotaInitialized = false;
+        async function loadRows() {
+          const [available, queued] = await Promise.all([apiFetch('/api/ltx/results'),apiFetch('/api/ltx/queue')]);
+          if (!available || !queued) throw new Error('无法读取持久化队列，请确认后端已更新');
+          if (disposed) return;
+          candidates.value = available; tasks.value = queued; loading.value = false;
+        }
+        async function poll() {
+          if (polling || disposed) return;
+          polling = true;
+          try {
+            const data = await apiFetch('/api/ltx/status');
+            if (!data || !data.worker) throw new Error('后端尚未启用独立 worker，请重启 Web 服务');
+            if (disposed) return;
+            const changed = task.value.current !== data.task.current || task.value.total !== data.task.total ||
+              worker.value.state !== data.worker.state;
+            task.value = data.task; worker.value = data.worker; control.value = data.control; quota.value = data.quota;
+            if (!quotaInitialized) {
+              quotaDraft.value = {daily_limit:data.quota.daily_limit,peak_hour:data.quota.peak_hour,spread:data.quota.spread};
+              quotaInitialized = true;
+            }
+            if (changed && !working.value) await loadRows();
+          } catch (e) { error.value = e.message; }
+          finally { polling = false; }
+        }
+        async function perform(action) {
+          working.value = true; error.value = ''; message.value = '';
+          try { await action(); await Promise.all([loadRows(),poll()]); }
+          catch (e) { error.value = e.message; }
+          finally { working.value = false; }
+        }
+        async function addCodes(codes, immediate=false) {
+          if (!codes.length) return;
+          await perform(async () => {
+            const data = await request('/api/ltx/scrape/enqueue', { codes, immediate });
+            if (!data) return;
+            message.value = '已加入 ' + data.added + ' 部，重复跳过 ' + data.duplicates + ' 部' +
+              (data.rejected.length ? '，不符合条件 ' + data.rejected.length + ' 部：' + data.rejected.slice(0,3).map(row=>row.code + ' ' + row.reason).join('；') : '');
+            selectedCodes.value = []; rawCodes.value = '';
+          });
+        }
+        async function bulkAction(action) {
+          if (action === 'delete' && !window.confirm('从队列删除所选任务？执行历史和视频文件会保留。')) return;
+          await perform(async () => {
+            const data = await request('/api/ltx/queue/bulk',{codes:selectedCodes.value,action,priority:priority.value});
+            if (!data) return;
+            message.value = '已更新 ' + data.changed + ' 个任务'; selectedCodes.value = [];
+          });
+        }
+        function runImmediate() {
+          if (!selectedCodes.value.length) return addCodes(rawCodes.value.split(/[\s,，;；]+/).filter(Boolean),true);
+          return view.value === 'queue' ? bulkAction('immediate') : addCodes([...selectedCodes.value],true);
+        }
+        async function workerAction(action) {
+          await perform(async () => {
+            await request('/api/worker/control',{action});
+            message.value = {pause:'已请求暂停，当前任务完成后暂停',stop:'已请求停止，待执行任务保留',
+              restart:'已请求重启，待执行任务保留',resume:'Worker 已启动 / 恢复'}[action];
+          });
+        }
+        async function saveQuota() {
+          await perform(async () => { quota.value = await request('/api/worker/quota',quotaDraft.value,'PATCH'); message.value='配额已保存'; });
+        }
+        async function checkLogin() {
+          await perform(async () => {
+            const data = await apiFetch('/api/ltx/login-status');
+            if (!data) throw new Error('登录状态检查失败，请查看 worker 状态');
+            loggedIn.value = data.logged_in;
+          });
+        }
+        async function openLogin() {
+          await perform(async () => { await request('/api/ltx/open-login',{}); loggedIn.value=false; message.value='JavDB 登录页已打开'; });
+        }
+        async function setDownloaded(row) {
+          const desired = row.downloaded;
+          try { await request('/api/ltx/results/' + encodeURIComponent(row.code) + '/downloaded',{downloaded:desired},'PATCH'); }
+          catch (e) { row.downloaded=!desired; error.value=e.message; }
+        }
+        async function showHistory(row) {
+          historyCode.value=row.code; history.value=[];
+          try { history.value=await apiFetch('/api/ltx/queue/'+row.id+'/history') || []; }
+          catch (e) { error.value=e.message; }
+        }
+        function historyLinks(item) { try { const result=JSON.parse(item.result_json || '[]'); return Array.isArray(result)?result:[]; } catch { return []; } }
+        watch(view, () => { selectedCodes.value=[]; statusFilter.value=''; });
+        onMounted(async () => {
+          try { await Promise.all([loadRows(),poll()]); } catch (e) { error.value=e.message; loading.value=false; }
+          if (!disposed) timer=setInterval(poll,2000);
+        });
+        Vue.onUnmounted(() => { disposed=true; clearInterval(timer); });
+        return { candidates,tasks,view,loading,worker,control,task,quota,quotaDraft,working,error,message,loggedIn,
+          query,actressQuery,prefixFilter,statusFilter,columnFilters,resetFilters,rawCodes,selectedCodes,priority,historyCode,history,statuses,
+          actressOptions,prefixOptions,filteredRows,queuePositions,allSelected,someSelected,toggleVisible,statusLabel,stateLabel,
+          formatTime,addCodes,bulkAction,runImmediate,workerAction,saveQuota,checkLogin,openLogin,setDownloaded,showHistory,historyLinks };
+      }
+    };
+
     const router = createRouter({
       history: createWebHashHistory(),
       scrollBehavior(to, from, savedPosition) {
@@ -3918,6 +4270,7 @@
         { path: '/prefixes', component: AllPrefixesView },
         { path: '/prefix/:code', component: PrefixDetailView },
         { path: '/recommend', component: RecommendView },
+        { path: '/ltx-scrape', component: LtxScrapeView },
       ]
     });
 
@@ -3961,6 +4314,7 @@
           <router-link to="/series"   class="nav-tab">系列</router-link>
           <router-link to="/prefixes" class="nav-tab">番号</router-link>
           <router-link to="/recommend" class="nav-tab">推荐</router-link>
+          <router-link to="/ltx-scrape" class="nav-tab">LTX</router-link>
         </nav>
       </div>
       <!-- Page -->

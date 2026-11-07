@@ -1,105 +1,52 @@
-import importlib
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
+from core.scrape_worker import Browser
+from core.scraper.video_scraper import scrape_control, _drop_session_and_reload
+import importlib
+
 app_module = importlib.import_module('web.backend.app')
-from web.backend.app import _JavdbSession, _next_javdb_refresh_delay
 
 
-class _FakePage:
-    def __init__(self):
-        self.url = 'about:blank'
-        self.thread_ids = []
-        self.reload_calls = 0
+class BrowserOwnershipTests(unittest.TestCase):
+    def test_managed_browser_never_clears_manual_login_on_login_wall(self):
+        page = MagicMock()
+        with scrape_control(lambda: None, lambda: False):
+            with self.assertRaises(PermissionError):
+                _drop_session_and_reload(page, 'https://javdb.com/login', 'nav')
+        page.context.clear_cookies.assert_not_called()
+        page.goto.assert_not_called()
 
-    def goto(self, url):
-        self.thread_ids.append(threading.get_ident())
-        self.url = url
-
-    def is_closed(self):
-        return False
-
-    def reload(self, **_kwargs):
-        self.thread_ids.append(threading.get_ident())
-        self.reload_calls += 1
-
-
-class _FakeContext:
-    def __init__(self, page):
-        self.pages = [page]
-        self.close_thread_id = None
-
-    def new_page(self):
-        page = _FakePage()
-        self.pages.append(page)
-        return page
-
-    def close(self):
-        self.close_thread_id = threading.get_ident()
-
-
-class JavdbRefreshDelayTests(unittest.TestCase):
-    def test_refresh_delay_uses_positive_and_negative_jitter(self):
-        with patch.object(app_module.random, 'uniform', return_value=300), \
-             patch.object(app_module.random, 'choice', return_value=-1):
-            self.assertEqual(_next_javdb_refresh_delay(), 1500)
-        with patch.object(app_module.random, 'uniform', return_value=600), \
-             patch.object(app_module.random, 'choice', return_value=1):
-            self.assertEqual(_next_javdb_refresh_delay(), 2400)
-
-
-class JavdbSessionTests(unittest.TestCase):
-    def test_browser_work_stays_on_its_owner_thread(self):
-        page = _FakePage()
-        context = _FakeContext(page)
-        profile_guard = MagicMock()
-        playwright_manager = MagicMock()
-        scrape_thread_ids = []
-
-        def fake_scrape(_page, code):
-            scrape_thread_ids.append(threading.get_ident())
-            return {'code': code}
-
-        with patch('core.scraper.javdb_profile_lock', return_value=profile_guard), \
+    def test_browser_operations_run_in_the_worker_calling_thread(self):
+        owner = threading.get_ident()
+        context = MagicMock()
+        context.pages = [MagicMock()]
+        calls = []
+        with patch('core.scraper.javdb_profile_lock'), \
              patch('core.scraper.launch_javdb_context', return_value=context), \
-             patch('core.scraper.load_javdb_cookies'), \
-             patch('core.scraper.scrape_video_info', side_effect=fake_scrape), \
-             patch('playwright.sync_api.sync_playwright', return_value=playwright_manager), \
-             patch('playwright_stealth.Stealth'):
-            session = _JavdbSession()
-            session.start()
-            self.assertEqual(session.scrape('MDVR-426'), {'code': 'MDVR-426'})
-            session.close()
+             patch('playwright.sync_api.sync_playwright'), \
+             patch('playwright_stealth.Stealth'), \
+             patch('core.scraper.scrape_video_info', side_effect=lambda page, code, on_progress: calls.append(threading.get_ident()) or {'code':code}):
+            browser = Browser(MagicMock())
+            browser.open()
+            self.assertEqual(browser.scrape('RBD-918'), {'code':'RBD-918'})
+            browser.close()
+        self.assertEqual(calls, [owner])
+        context.close.assert_called_once()
 
-        owner_thread_id = page.thread_ids[0]
-        self.assertNotEqual(owner_thread_id, threading.get_ident())
-        self.assertEqual(scrape_thread_ids, [owner_thread_id])
-        self.assertEqual(context.close_thread_id, owner_thread_id)
+    def test_web_gets_a_client_not_a_browser(self):
+        client = MagicMock()
+        with patch.object(app_module, '_worker_browser', None), \
+             patch.object(app_module, '_javdb_session', None), \
+             patch.object(app_module, 'WorkerClient', return_value=client):
+            self.assertIs(app_module._get_javdb_session(), client)
 
-    def test_scrape_error_keeps_the_existing_session(self):
-        session = MagicMock()
-        session.scrape.side_effect = RuntimeError('blocked')
-
-        with patch.object(app_module, '_javdb_session', session):
-            with self.assertRaisesRegex(RuntimeError, 'blocked'):
-                app_module._scrape_with_playwright('MDVR-426')
-            self.assertIs(app_module._javdb_session, session)
-            session.close.assert_not_called()
-
-    def test_refresh_skips_blank_page_and_reloads_web_page(self):
-        page = _FakePage()
-        session = _JavdbSession()
-        session.page = page
-        session.context = _FakeContext(page)
-        stealth = MagicMock()
-
-        session._refresh(stealth)
-        self.assertEqual(page.reload_calls, 0)
-
-        page.url = 'https://javdb.com/'
-        session._refresh(stealth)
-        self.assertEqual(page.reload_calls, 1)
+    def test_pipeline_inside_worker_uses_its_owned_browser(self):
+        browser = MagicMock()
+        with patch.object(app_module, '_worker_browser', browser):
+            app_module._scrape_with_playwright('RBD-918')
+        browser.scrape.assert_called_once_with('RBD-918')
 
 
 if __name__ == '__main__':

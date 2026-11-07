@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import queue
-import random
 import re
 import sqlite3
 import threading
@@ -17,6 +16,9 @@ from werkzeug.utils import secure_filename
 
 from config import DB_PATH, MEDIA_LIBRARIES
 from core.scanner import extract_video_code
+from core.worker_client import WorkerClient, ensure_worker
+from core.scrape_queue import QueueStore
+from core.scraper.video_scraper import ScrapeInterrupted
 from core.translator.service import shorten_chinese_title_with_candidates, translate_title
 from utils.rename_and_move_videos import (
     VideoRecord,
@@ -83,10 +85,15 @@ _jobs: dict = {}
 _jobs_lock = threading.Lock()
 _javdb_context_lock = threading.Lock()
 _javdb_session = None
+_worker_browser = None
+_scrape_store = None
 
-_JAVDB_REFRESH_BASE_SECONDS = 30 * 60
-_JAVDB_REFRESH_JITTER_MIN_SECONDS = 5 * 60
-_JAVDB_REFRESH_JITTER_MAX_SECONDS = 10 * 60
+
+def scrape_store():
+    global _scrape_store
+    if _scrape_store is None or _scrape_store.path != str(DB_PATH):
+        _scrape_store = QueueStore(DB_PATH)
+    return _scrape_store
 
 
 def _cleanup_old_jobs():
@@ -102,143 +109,15 @@ def _cleanup_old_jobs():
 threading.Thread(target=_cleanup_old_jobs, daemon=True).start()
 
 
-def _next_javdb_refresh_delay() -> float:
-    jitter = random.uniform(
-        _JAVDB_REFRESH_JITTER_MIN_SECONDS,
-        _JAVDB_REFRESH_JITTER_MAX_SECONDS,
-    )
-    return _JAVDB_REFRESH_BASE_SECONDS + random.choice((-1, 1)) * jitter
 
 
-class _JavdbSession:
-    def __init__(self):
-        self.commands = queue.Queue()
-        self.thread = None
-        self.context = None
-        self.page = None
-        self.ready = threading.Event()
-        self.stopped = threading.Event()
-        self.start_error = None
-
-    def start(self):
-        if self.thread is not None and self.thread.is_alive():
-            return
-        self.thread = threading.Thread(
-            target=self._run,
-            name='javdb-browser',
-            daemon=True,
-        )
-        self.thread.start()
-        if not self.ready.wait(timeout=120):
-            raise TimeoutError('启动 JavDB 浏览器超时')
-        if self.start_error is not None:
-            raise RuntimeError(f'启动 JavDB 浏览器失败: {self.start_error}') from self.start_error
-
-    def _run(self):
-        from playwright.sync_api import sync_playwright
-        from playwright_stealth import Stealth
-        from core.scraper import load_javdb_cookies, launch_javdb_context, javdb_profile_lock
-
-        try:
-            with javdb_profile_lock():
-                with sync_playwright() as playwright:
-                    self.context = launch_javdb_context(playwright, headless=False)
-                    load_javdb_cookies(self.context)
-                    self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
-                    Stealth().apply_stealth_sync(self.page)
-                    self.page.goto('about:blank')
-                    self.ready.set()
-                    logging.info('JavDB 常驻浏览器已启动，等待手动进入网站')
-                    self._serve_commands(Stealth())
-        except BaseException as exc:
-            if not self.ready.is_set():
-                self.start_error = exc
-            else:
-                logging.exception('JavDB 常驻浏览器线程异常退出')
-        finally:
-            if self.context is not None:
-                try:
-                    self.context.close()
-                except Exception:
-                    pass
-                self.context = None
-            self.page = None
-            self.stopped.set()
-            self.ready.set()
-
-    def _live_page(self, stealth):
-        if self.page is not None and not self.page.is_closed():
-            return self.page
-        pages = [page for page in self.context.pages if not page.is_closed()]
-        self.page = pages[-1] if pages else self.context.new_page()
-        stealth.apply_stealth_sync(self.page)
-        return self.page
-
-    def _refresh(self, stealth):
-        page = self._live_page(stealth)
-        if not page.url.startswith(('http://', 'https://')):
-            return
-        try:
-            page.reload(wait_until='domcontentloaded', timeout=30000)
-            logging.info('JavDB 常驻页面已定时刷新: %s', page.url)
-        except Exception:
-            logging.exception('JavDB 常驻页面定时刷新失败，session 保持运行')
-
-    def _serve_commands(self, stealth):
-        from core.scraper import scrape_video_info
-
-        next_refresh = time.monotonic() + _next_javdb_refresh_delay()
-        while True:
-            timeout = max(0.0, next_refresh - time.monotonic())
-            try:
-                action, payload, result_queue = self.commands.get(timeout=timeout)
-            except queue.Empty:
-                action = None
-
-            if action == 'close':
-                return
-            if action == 'scrape':
-                try:
-                    result_queue.put((True, scrape_video_info(self._live_page(stealth), payload)))
-                except BaseException as exc:
-                    result_queue.put((False, exc))
-
-            if time.monotonic() >= next_refresh:
-                self._refresh(stealth)
-                next_refresh = time.monotonic() + _next_javdb_refresh_delay()
-
-    def scrape(self, base_code: str) -> dict:
-        if self.thread is None or not self.thread.is_alive():
-            raise RuntimeError('JavDB 浏览器 session 未运行')
-        result_queue = queue.Queue(maxsize=1)
-        self.commands.put(('scrape', base_code, result_queue))
-        while True:
-            try:
-                ok, value = result_queue.get(timeout=1)
-                break
-            except queue.Empty:
-                if self.stopped.is_set():
-                    raise RuntimeError('JavDB 浏览器 session 已意外退出')
-        if not ok:
-            raise value
-        return value
-
-    def close(self):
-        if self.thread is not None and self.thread.is_alive():
-            self.commands.put(('close', None, None))
-            self.thread.join(timeout=60)
-
-
-def _get_javdb_session() -> '_JavdbSession':
+def _get_javdb_session():
     global _javdb_session
+    if _worker_browser is not None:
+        return _worker_browser
     if _javdb_session is None:
-        _javdb_session = _JavdbSession()
-        _javdb_session.start()
+        _javdb_session = WorkerClient()
     return _javdb_session
-
-
-import atexit
-atexit.register(lambda: _javdb_session and _javdb_session.close())
 
 
 def _scrape_with_playwright(base_code: str) -> dict:
@@ -265,6 +144,7 @@ def _run_auto_pipeline(
     def emit(step: str, status: str, message: str, **extra):
         job.queue.put({'step': step, 'status': status, 'message': message, **extra})
 
+    succeeded = False
     try:
         # ── Step 1: Parse codes ──────────────────────────────────
         sorted_paths = sorted(file_paths, key=lambda p: p.name)
@@ -287,15 +167,36 @@ def _run_auto_pipeline(
         # ── Steps 2-3: Move to destination ──────────────────────
         dest_dir = None
         scanned = []
-        for code, part, tmp_path in codes_parts:
-            record = VideoRecord(
-                id=0, code=code, part=part, original_file_path=tmp_path,
-                title_zh_short=None, title_zh=None, title_jp=None, actors=[],
-            )
-            dest_path = build_destination(record, dest_root=volume_path)
+        checkpoint = job.checkpoint() if hasattr(job, 'checkpoint') else {}
+        planned = checkpoint.get('upload_files')
+        if planned is None:
+            planned = []
+            for code, part, tmp_path in codes_parts:
+                record = VideoRecord(id=0, code=code, part=part, original_file_path=tmp_path,
+                                     title_zh_short=None, title_zh=None, title_jp=None, actors=[])
+                target = build_destination(record, dest_root=volume_path)
+                st = tmp_path.stat()
+                planned.append({'code': code, 'part': part, 'source': str(tmp_path), 'original_path': str(target),
+                                'file_size': st.st_size, 'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                'file_birthtime': datetime.fromtimestamp(getattr(st, 'st_birthtime', st.st_mtime)).isoformat()})
+            if hasattr(job, 'checkpoint'):
+                checkpoint['upload_files'] = planned
+                job.checkpoint(checkpoint)
+        for item in planned:
+            code, part, tmp_path = item['code'], item['part'], Path(item['source'])
+            dest_path = Path(item['original_path'])
             dest_dir = dest_path.parent
             dest_dir.mkdir(parents=True, exist_ok=True)
-            tmp_path.rename(dest_path)
+            if tmp_path.exists():
+                if dest_path.exists() and tmp_path != dest_path:
+                    raise ValueError(f'目标文件已存在，保留上传文件: {dest_path}')
+                tmp_path.rename(dest_path)
+            elif not dest_path.exists():
+                with sqlite3.connect(DB_PATH) as recovery:
+                    row = recovery.execute('SELECT original_file_path FROM videos WHERE UPPER(code)=UPPER(?) AND COALESCE(part,\'\')=COALESCE(?,\'\') AND deleted=0 LIMIT 1', (code, part)).fetchone()
+                if not row or not Path(row[0]).exists():
+                    raise FileNotFoundError(f'上传文件和目标文件均不存在: {tmp_path}')
+                dest_path = Path(row[0])
             st = dest_path.stat()
             scanned.append({
                 'code': code, 'part': part, 'original_path': dest_path,
@@ -387,17 +288,20 @@ def _run_auto_pipeline(
 
         # ── Steps 10-12: Rename files ────────────────────────────
         emit('calc_filename', 'running', '计算文件名…')
-        _rename_files_for_code(main_code)
+        _rename_files_for_code(main_code, job=job)
         emit('calc_filename', 'done', '文件名已计算')
         emit('rename', 'done', '文件已重命名')
         emit('db_update', 'done', '数据库已更新')
         emit('done', 'done', '全部完成', code=main_code)
+        succeeded = True
 
+    except ScrapeInterrupted:
+        raise
     except Exception as exc:
         emit('error', 'error', str(exc))
     finally:
         job.status = 'done'
-        if file_paths:
+        if succeeded and file_paths:
             try:
                 tmp_parent = file_paths[0].parent
                 if '.upload_tmp' in str(tmp_parent):
@@ -407,7 +311,7 @@ def _run_auto_pipeline(
                 pass
 
 
-def _rename_files_for_code(main_code: str) -> None:
+def _rename_files_for_code(main_code: str, job=None) -> None:
     """Rebuild on-disk filenames from current DB metadata for all parts of a code."""
     final_conn = sqlite3.connect(DB_PATH)
     final_conn.row_factory = sqlite3.Row
@@ -437,8 +341,17 @@ def _rename_files_for_code(main_code: str) -> None:
             )
             new_name = build_filename(rec)
             old_path = Path(vrow['original_file_path'])
+            checkpoint = job.checkpoint() if job and hasattr(job, 'checkpoint') else {}
+            recovered = checkpoint.get('rename_moves', {}).get(str(old_path))
+            if not old_path.exists() and recovered and Path(recovered).exists():
+                old_path = Path(recovered)
+                cur.execute('UPDATE videos SET original_file_path=? WHERE id=?', (str(old_path), vrow['id']))
             new_path = _build_current_library_destination(rec)
             if old_path != new_path and old_path.exists():
+                if job and hasattr(job, 'checkpoint'):
+                    final_conn.commit()
+                    checkpoint.setdefault('rename_moves', {})[str(old_path)] = str(new_path)
+                    job.checkpoint(checkpoint)
                 new_path.parent.mkdir(parents=True, exist_ok=True)
                 old_path.rename(new_path)
                 cur.execute(
@@ -465,8 +378,11 @@ def _build_current_library_destination(record: VideoRecord) -> Path:
     return build_destination(record, dest_root=library_root)
 
 
-def _rescrape_one_code(main_code: str) -> dict:
+def _rescrape_one_code(main_code: str, job=None) -> dict:
     """Re-scrape one existing code: scrape → update metadata → translate → short title → rename."""
+    with sqlite3.connect(DB_PATH) as validation:
+        if not validation.execute('SELECT 1 FROM videos WHERE UPPER(code)=UPPER(?) AND deleted=0 LIMIT 1', (main_code,)).fetchone():
+            return {'ok': False, 'message': '影片已删除或番号已改变，跳过刮削'}
     base_code = re.sub(r'(?i)-(?:uc|u|c)$', '', main_code)
     result_data = _scrape_with_playwright(base_code)
 
@@ -511,7 +427,7 @@ def _rescrape_one_code(main_code: str) -> dict:
         except Exception:
             logging.exception(f'[{main_code}] 计算短标题失败')
 
-    _rename_files_for_code(main_code)
+    _rename_files_for_code(main_code, job=job)
     return {'ok': True, 'message': title_zh or '刮削完成'}
 
 
@@ -521,11 +437,17 @@ def _run_rescrape_pipeline(job: '_Job', codes: list) -> None:
 
     success = 0
     failed = 0
+    checkpoint = job.checkpoint() if hasattr(job, 'checkpoint') else {}
+    completed = checkpoint.get('completed_codes', [])
     try:
         for code in codes:
+            if code in completed:
+                continue
             emit(code, 'running', '刮削中…')
             try:
-                res = _rescrape_one_code(code)
+                res = _rescrape_one_code(code, job=job)
+            except ScrapeInterrupted:
+                raise
             except Exception as exc:
                 logging.exception(f'[{code}] 重新刮削失败')
                 res = {'ok': False, 'message': str(exc)}
@@ -535,28 +457,19 @@ def _run_rescrape_pipeline(job: '_Job', codes: list) -> None:
             else:
                 failed += 1
                 emit(code, 'error', res['message'])
+            completed.append(code)
+            if hasattr(job, 'checkpoint'):
+                checkpoint = job.checkpoint()
+                checkpoint['completed_codes'] = completed
+                job.checkpoint(checkpoint)
+            if _worker_browser is not None:
+                _worker_browser.progress('waiting', '当前影片已完成，准备下一部')
         emit('done', 'done', f'完成：{success} 成功 / {failed} 失败',
              total=len(codes), success=success, failed=failed)
     finally:
         job.status = 'done'
 
 
-def _run_single_rescrape_job(job: '_Job', code: str) -> None:
-    try:
-        job.queue.put({'step': 'scrape', 'status': 'running', 'message': '刮削中…'})
-        try:
-            res = _rescrape_one_code(code)
-        except Exception as exc:
-            logging.exception(f'[{code}] 重新刮削失败')
-            res = {'ok': False, 'message': str(exc)}
-
-        if res['ok']:
-            job.queue.put({'step': 'scrape', 'status': 'done', 'message': res['message']})
-            job.queue.put({'step': 'done', 'status': 'done', 'message': '重新刮削完成', 'code': code})
-        else:
-            job.queue.put({'step': 'error', 'status': 'error', 'message': res['message'], 'code': code})
-    finally:
-        job.status = 'done'
 
 
 def _selected_tags():
@@ -1109,16 +1022,12 @@ def api_add_auto():
             f.save(str(dest))
             saved_paths.append(dest)
 
-    with _jobs_lock:
-        job = _Job(job_id=job_id)
-        _jobs[job_id] = job
-
-    t = threading.Thread(
-        target=_run_auto_pipeline,
-        args=(job, saved_paths, volume_path, uncensored_crack_tag, subtitle_classification, additional_tags),
-        daemon=True,
-    )
-    t.start()
+    scrape_store().submit('pipeline_auto', payload={
+        'file_paths': [str(path) for path in saved_paths], 'volume_path': str(volume_path),
+        'uncensored_crack_tag': uncensored_crack_tag, 'subtitle_classification': subtitle_classification,
+        'additional_tags': additional_tags,
+    }, task_id=job_id)
+    ensure_worker()
     return jsonify({'job_id': job_id})
 
 
@@ -1142,12 +1051,8 @@ def api_rescrape():
         return jsonify({'error': '没有符合条件的影片'}), 400
 
     job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        job = _Job(job_id=job_id)
-        _jobs[job_id] = job
-
-    t = threading.Thread(target=_run_rescrape_pipeline, args=(job, codes), daemon=True)
-    t.start()
+    scrape_store().submit('pipeline_rescrape', payload={'codes': codes}, task_id=job_id)
+    ensure_worker()
     return jsonify({'job_id': job_id, 'codes': codes})
 
 
@@ -1166,17 +1071,142 @@ def api_video_rescrape(code: str):
     main_code = row[0]
 
     job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        job = _Job(job_id=job_id)
-        _jobs[job_id] = job
-
-    t = threading.Thread(target=_run_single_rescrape_job, args=(job, main_code), daemon=True)
-    t.start()
+    scrape_store().submit('pipeline_rescrape', main_code, payload={'codes': [main_code]}, task_id=job_id)
+    ensure_worker()
     return jsonify({'job_id': job_id, 'code': main_code})
+
+
+def _ensure_ltx_scrape_table(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ltx_scrape_results ("
+        "code TEXT PRIMARY KEY COLLATE NOCASE, status TEXT NOT NULL, "
+        "links_json TEXT NOT NULL DEFAULT '[]', downloaded INTEGER NOT NULL DEFAULT 0, "
+        "error TEXT, scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+        "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
+
+
+def _ltx_rows(only_unprocessed=False):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        _ensure_ltx_scrape_table(conn)
+        processed_filter = 'AND r.code IS NULL' if only_unprocessed else ''
+        rows = conn.execute(f"""
+            WITH active AS (
+                SELECT v.*,
+                       UPPER(CASE
+                         WHEN UPPER(v.code) LIKE '%-UC' THEN SUBSTR(v.code, 1, LENGTH(v.code) - 3)
+                         WHEN UPPER(v.code) LIKE '%-U' OR UPPER(v.code) LIKE '%-C'
+                           THEN SUBSTR(v.code, 1, LENGTH(v.code) - 2)
+                         ELSE v.code END) AS base_code
+                FROM videos v
+                WHERE v.deleted = 0
+                  AND UPPER(v.code) NOT LIKE '%VR%'
+            ), blocked AS (
+                SELECT DISTINCT a.base_code
+                FROM active a
+                JOIN video_tag_link vtl ON vtl.video_id = a.id
+                JOIN tags t ON t.id = vtl.tag_id
+                WHERE t.name IN ('LTX 无码破解', '无码流出', '原装无码')
+            ), eligible AS (
+                SELECT a.base_code, MIN(a.id) AS representative_id, MAX(a.score) AS score
+                FROM active a
+                LEFT JOIN blocked b ON b.base_code = a.base_code
+                WHERE b.base_code IS NULL
+                GROUP BY a.base_code
+            ), actor_names AS (
+                SELECT a.base_code,
+                       GROUP_CONCAT(DISTINCT COALESCE(ac.name_zh, ac.name)) AS actresses
+                FROM active a
+                JOIN video_actor_link val ON val.video_id = a.id
+                JOIN actors ac ON ac.id = val.actor_id
+                WHERE COALESCE(ac.is_ignored, 0) = 0
+                GROUP BY a.base_code
+            )
+            SELECT e.base_code AS code,
+                   e.score,
+                   COALESCE(v.title_zh, v.title_jp, '') AS title,
+                   COALESCE(an.actresses, '') AS actresses,
+                   r.status, r.links_json, COALESCE(r.downloaded, 0) AS downloaded,
+                   r.error, r.scraped_at
+            FROM eligible e
+            JOIN videos v ON v.id = e.representative_id
+            LEFT JOIN actor_names an ON an.base_code = e.base_code
+            LEFT JOIN ltx_scrape_results r ON r.code = e.base_code
+            WHERE 1 = 1 {processed_filter}
+            ORDER BY e.score DESC NULLS LAST, e.base_code
+        """).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item['links'] = json.loads(item.pop('links_json') or '[]')
+            except (TypeError, json.JSONDecodeError):
+                item['links'] = []
+            item['downloaded'] = bool(item['downloaded'])
+            item['scraped'] = bool(item['status'])
+            result.append(item)
+        return result
+    finally:
+        conn.close()
+
+
+from web.backend.scrape_api import register_scrape_api
+register_scrape_api(app, _ltx_rows)
+
+
+@app.patch('/api/ltx/results/<string:code>/downloaded')
+def api_ltx_downloaded(code):
+    downloaded = (request.get_json(silent=True) or {}).get('downloaded')
+    if not isinstance(downloaded, bool):
+        return jsonify({'error': 'downloaded must be boolean'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        _ensure_ltx_scrape_table(conn)
+        cursor = conn.execute(
+            'UPDATE ltx_scrape_results SET downloaded = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?',
+            (int(downloaded), code),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return jsonify({'error': 'not found'}), 404
+        return jsonify({'ok': True, 'code': code, 'downloaded': downloaded})
+    finally:
+        conn.close()
 
 
 @app.get('/api/jobs/<string:job_id>/stream')
 def api_job_stream(job_id: str):
+    stored = scrape_store().get(job_id)
+    if stored:
+        try:
+            after = int(request.headers.get('Last-Event-ID') or request.args.get('after') or 0)
+        except ValueError:
+            after = 0
+
+        def durable_events():
+            cursor = after
+            last_ping = time.monotonic()
+            while True:
+                for row in scrape_store().events(job_id, cursor):
+                    cursor = row['id']
+                    yield f"id: {cursor}\ndata: {row['event_json']}\n\n"
+                    if json.loads(row['event_json']).get('step') in ('done', 'error'):
+                        return
+                task = scrape_store().get(job_id)
+                if task['status'] in ('DONE', 'FAILED', 'SKIPPED', 'CANCELLED'):
+                    event = {'step': 'done' if task['status'] == 'DONE' else 'error',
+                             'status': task['status'].lower(), 'message': task['error'] or '任务已完成', 'code': task['code']}
+                    yield 'data: ' + json.dumps(event, ensure_ascii=False) + '\n\n'
+                    return
+                if time.monotonic() - last_ping > 15:
+                    yield 'data: {"step":"ping","status":"running","message":""}\n\n'
+                    last_ping = time.monotonic()
+                time.sleep(0.5)
+
+        return Response(durable_events(), mimetype='text/event-stream',
+                        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
     with _jobs_lock:
         job = _jobs.get(job_id)
     if not job:
@@ -1877,19 +1907,5 @@ def index(path):
     return send_from_directory(_TEMPLATES_DIR, 'index.html')
 
 
-def _autostart_javdb_session() -> None:
-    try:
-        with _javdb_context_lock:
-            _get_javdb_session()
-    except Exception:
-        logging.exception('服务器已启动，但 JavDB 常驻浏览器启动失败')
-
-
-if os.getenv('AVIDEO_JAVDB_AUTOSTART') == '1':
-    _autostart_javdb_session()
-
-
 if __name__ == '__main__':
-    if os.getenv('AVIDEO_JAVDB_AUTOSTART') != '1':
-        _autostart_javdb_session()
     app.run(host='0.0.0.0', port=8000, debug=False)

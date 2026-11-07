@@ -3,8 +3,9 @@ import os
 import random
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 import re
 import requests
 from urllib.parse import urlparse
@@ -19,6 +20,29 @@ if str(project_root) not in sys.path:
 from config import COVERS_DIR, AVATARS_DIR, JAVDB_COOKIES_FILE
 
 logger = logging.getLogger(__name__)
+
+
+class ScrapeInterrupted(Exception):
+    pass
+
+
+_scrape_control = ContextVar('scrape_control', default=None)
+
+
+@contextmanager
+def scrape_control(check, skip_waits):
+    token = _scrape_control.set((check, skip_waits))
+    try:
+        yield
+    finally:
+        _scrape_control.reset(token)
+
+
+def _control_checkpoint():
+    control = _scrape_control.get()
+    if control:
+        control[0]()
+    return bool(control and control[1]())
 
 # Sentinel returned by scrape_video_info when the search returned results but none
 # of them matched the requested code exactly — caller freezes the record for manual
@@ -64,6 +88,7 @@ def load_javdb_cookies(context):
 
 # JavDB 基础域名 (如果国内被墙，后续可配置为镜像站域名如 javdb36.com 等)
 BASE_URL = "https://javdb.com"
+JAVDB_LOCALE = "zh-CN"
 
 # 全局刮削计数器，用于触发周期性的深度防封禁等待
 scrape_count = 0
@@ -140,6 +165,8 @@ def launch_javdb_context(playwright, headless: bool = False):
 
 def simulate_human_behavior(page: Page, min_sec: float, max_sec: float):
     """模拟人类操作：随机移动鼠标、滚动滚轮，最后回到顶部"""
+    if _control_checkpoint():
+        return
     total_sleep = random.uniform(min_sec, max_sec)
     start_time = time.time()
     
@@ -150,6 +177,8 @@ def simulate_human_behavior(page: Page, min_sec: float, max_sec: float):
     
     # 在 80% 的等待时间内进行动作模拟，留一点时间在顶部静默
     while time.time() - start_time < total_sleep * 0.8:
+        if _control_checkpoint():
+            return
         if random.random() > 0.5:
             # 随机平滑移动鼠标
             x = random.randint(0, width)
@@ -176,12 +205,19 @@ def simulate_human_behavior(page: Page, min_sec: float, max_sec: float):
     # 补齐剩下的等待时间
     elapsed = time.time() - start_time
     remaining = total_sleep - elapsed
-    if remaining > 0:
-        time.sleep(remaining)
+    while remaining > 0:
+        if _control_checkpoint():
+            return
+        time.sleep(min(0.25, remaining))
+        remaining = total_sleep - (time.time() - start_time)
 
 def random_sleep(min_sec: float = 3.0, max_sec: float = 7.5):
     """模拟人类的随机停顿"""
-    time.sleep(random.uniform(min_sec, max_sec))
+    end = time.time() + random.uniform(min_sec, max_sec)
+    while time.time() < end:
+        if _control_checkpoint():
+            return
+        time.sleep(min(0.25, end - time.time()))
 
 def bypass_javdb_security(page: Page):
     """统一处理 JavDB 的 18岁弹窗 和 Cloudflare 验证"""
@@ -463,7 +499,7 @@ def parse_detail_page(page: Page, code: str) -> Dict:
 def check_login_status(page: Page) -> bool:
     """Navigate to JavDB home and verify if the session is logged in."""
     try:
-        page.goto(f"{BASE_URL}/?locale=zh", timeout=20000)
+        page.goto(f"{BASE_URL}/?locale={JAVDB_LOCALE}", timeout=20000)
         bypass_javdb_security(page)
         page.wait_for_selector("nav", timeout=10000)
         # Logged in = a "My" / profile link exists in the navbar
@@ -493,6 +529,8 @@ def _is_login_required(page: Page) -> bool:
 def _drop_session_and_reload(page: Page, url: str, wait_selector: str, timeout: int = 25000) -> bool:
     """Cookie 失效时清除 session，以访客模式重新加载同一 URL。
     返回 True 表示重载成功且不在登录页。"""
+    if _scrape_control.get() is not None:
+        raise PermissionError('JavDB 登录已失效，请在 worker 浏览器中手工登录后恢复队列')
     logger.warning("🔑 检测到 Cookie 已失效，清除 session 后切换为访客模式...")
     try:
         page.context.clear_cookies()
@@ -510,7 +548,7 @@ def _drop_session_and_reload(page: Page, url: str, wait_selector: str, timeout: 
 
 def _open_video_search_page(page: Page, search_code: str) -> bool:
     """打开搜索页并完成基础拦截处理。"""
-    search_url = f"{BASE_URL}/search?f=all&q={search_code}&locale=zh"
+    search_url = f"{BASE_URL}/search?f=all&q={search_code}&locale={JAVDB_LOCALE}"
     logger.info(f"正在访问: {search_url}")
     page.goto(search_url, timeout=30000)
     bypass_javdb_security(page)
@@ -528,8 +566,10 @@ def _search_results_are_empty(page: Page) -> bool:
     """判断搜索页是否没有有效影片结果。"""
     return page.locator(".empty-message").count() > 0 or page.locator(".movie-list").count() == 0
 
-def _apply_search_cooldown(page: Page, current_count: int):
+def _apply_search_cooldown(page: Page, current_count: int, on_progress=None):
     """根据当前计数应用防封冷却策略。"""
+    if on_progress:
+        on_progress('cooling_down', '搜索防封冷却中')
     if current_count % 10 == 0:
         logger.info("⏳ 触发周期性深度防机器验证冷却 (5-10秒)...")
         simulate_human_behavior(page, 22.5, 55.0)
@@ -580,7 +620,7 @@ def _open_result_detail(page: Page, code: str, index: int) -> bool:
         return False
     return True
 
-def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
+def scrape_video_info(page: Page, code: str, on_progress=None) -> Optional[Dict]:
     """核心动作：控制浏览器搜索并进入详情页"""
     global scrape_count
     current_count = scrape_count
@@ -598,12 +638,14 @@ def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
         matched_search_code = search_code
         for variant in _search_code_variants(search_code):
             # 1. 打开搜索页
+            if on_progress:
+                on_progress('searching', f'正在搜索 {variant}')
             if not _open_video_search_page(page, variant):
                 logger.error(f"⚠️ {code} 等待页面加载超时 (网络异常或被强力 Cloudflare 拦截)。")
                 return None
 
             # 2. 判断是否被强制要求登录 → 尝试访客模式降级
-            search_url = f"{BASE_URL}/search?f=all&q={variant}&locale=zh"
+            search_url = f"{BASE_URL}/search?f=all&q={variant}&locale={JAVDB_LOCALE}"
             if _is_login_required(page):
                 if not _drop_session_and_reload(
                     page, search_url,
@@ -617,7 +659,10 @@ def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
                 continue
 
             # 4. 搜索页防封冷却
-            _apply_search_cooldown(page, current_count)
+            if on_progress:
+                _apply_search_cooldown(page, current_count, on_progress)
+            else:
+                _apply_search_cooldown(page, current_count)
 
             # 5. 找到与番号精确匹配的搜索结果（第一位不一定是正确的片）
             result_codes = _read_result_codes(page)
@@ -639,6 +684,8 @@ def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
             return FREEZE
 
         # 6. 进入匹配的详情页
+        if on_progress:
+            on_progress('scraping', f'正在进入 {code} 详情页')
         if matched_search_code != search_code:
             logger.info(f"🔁 使用 JavDB 备用搜索词 [{matched_search_code}] 匹配 [{search_code}]。")
         if not _open_result_detail(page, code, match_index):
@@ -656,17 +703,104 @@ def scrape_video_info(page: Page, code: str) -> Optional[Dict]:
                 return None
 
         # 6. 详情页稳定等待
+        if on_progress:
+            on_progress('cooling_down', '详情页稳定等待中')
         simulate_human_behavior(page, 4.5, 18.75)
 
         # 7. 执行页面解析
+        if on_progress:
+            on_progress('scraping', f'正在读取 {code} 详情')
         scraped_data = parse_detail_page(page, code)
         logger.info(f"✅ 刮削成功: {scraped_data['title_jp'][:60]}...")
         
         return scraped_data
 
+    except (ScrapeInterrupted, PermissionError):
+        raise
     except Exception as e:
         logger.error(f"❌ 刮削过程发生严重错误 [{code}]: {e}")
         return None
+
+
+_LTX_MARKER_RE = re.compile(r'(?i)(?:ltx|lxt)')
+_LTX_LINK_RE = re.compile(r'(?i)(?:ed2k://[^\s<>"\']+|magnet:\?[^\s<>"\']+)')
+
+
+def extract_ltx_links_from_reviews(reviews: Iterable[dict]) -> list[str]:
+    """Extract unique download links from reviews explicitly marked LTX/LXT."""
+    links = []
+    seen = set()
+    for review in reviews:
+        text = str(review.get('text') or '')
+        if not _LTX_MARKER_RE.search(text):
+            continue
+        candidates = list(review.get('hrefs') or [])
+        candidates.extend(_LTX_LINK_RE.findall(text))
+        for candidate in candidates:
+            match = _LTX_LINK_RE.search(str(candidate))
+            if not match:
+                continue
+            link = match.group(0).rstrip('.,;!?。，；！？)]}')
+            key = link.lower()
+            if key not in seen:
+                seen.add(key)
+                links.append(link)
+    return links
+
+
+def _read_ltx_reviews(page: Page) -> list[dict]:
+    # Only individual reviews may supply both the marker and its download links.
+    return page.locator('#reviews .review-items > .review-item').evaluate_all("""
+        nodes => nodes.map(node => ({
+          text: node.innerText || '',
+          hrefs: Array.from(node.querySelectorAll('a[href]')).map(a => a.href)
+        }))
+    """)
+
+
+def scrape_ltx_links(page: Page, code: str, on_progress=None) -> list[str]:
+    """Open a video's short reviews and extract LTX/LXT download links."""
+    if on_progress:
+        on_progress('checking_login', '正在检查 JavDB 登录状态')
+    if not check_login_status(page):
+        raise PermissionError('请先在 JavDB 浏览器中手工登录')
+
+    result = scrape_video_info(page, code, on_progress=on_progress)
+    if result is None:
+        raise LookupError(f'JavDB 未找到番号 {code}')
+    if result == FREEZE:
+        raise LookupError(f'JavDB 搜索结果无精确匹配: {code}')
+
+    tab = page.locator('li[data-movie-tab-target="reviewTab"] a.review-tab').first
+    if tab.count() == 0:
+        raise LookupError('详情页上未找到“短评”标签')
+    if re.search(r'短[评評]\s*[（(]\s*0\s*[）)]', tab.inner_text()):
+        logger.info('%s 短评数为 0，跳过 LTX 链接提取', code)
+        return []
+    reviews_url = tab.get_attribute('data-url')
+    if on_progress:
+        on_progress('reading_reviews', f'正在加载 {code} 短评')
+    loaded = page.locator('li[data-movie-tab-target="reviewTab"]').get_attribute('data-loaded')
+    if reviews_url and loaded != 'true':
+        with page.expect_response(lambda response: reviews_url in response.url, timeout=30000) as pending:
+            tab.click()
+        response = pending.value
+        if not response.ok:
+            raise RuntimeError(f'短评加载失败: HTTP {response.status}')
+        response.finished()
+    else:
+        tab.click()
+    if on_progress:
+        on_progress('cooling_down', '短评页面稳定等待中')
+    simulate_human_behavior(page, 3.5, 10.0)
+
+    if on_progress:
+        on_progress('reading_reviews', f'正在提取 {code} LTX 链接')
+    page.locator('#reviews .review-items').wait_for(state='attached', timeout=15000)
+    reviews = _read_ltx_reviews(page)
+    links = extract_ltx_links_from_reviews(reviews)
+    logger.info("🔗 %s 短评中找到 %d 个 LTX 链接", code, len(links))
+    return links
 
 def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optional[str]]:
     """抓取演员头像与中文译名，返回 (avatar_path, name_zh)"""
@@ -682,7 +816,7 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
     
     try:
         # 1. 访问演员搜索接口
-        search_url = f"{BASE_URL}/search?f=actor&q={actor_name}&locale=zh"
+        search_url = f"{BASE_URL}/search?f=actor&q={actor_name}&locale={JAVDB_LOCALE}"
         page.goto(search_url, timeout=30000)
         
         bypass_javdb_security(page)
@@ -693,7 +827,7 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
             logger.error(f"⚠️ {actor_name} 等待页面加载超时。")
             return None, None
 
-        actor_search_url = f"{BASE_URL}/search?f=actor&q={actor_name}&locale=zh"
+        actor_search_url = f"{BASE_URL}/search?f=actor&q={actor_name}&locale={JAVDB_LOCALE}"
         if _is_login_required(page):
             if not _drop_session_and_reload(
                 page, actor_search_url,
@@ -852,6 +986,8 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
             
         return avatar_path, name_zh
 
+    except (ScrapeInterrupted, PermissionError):
+        raise
     except Exception as e:
         logger.error(f"❌ 刮削演员发生异常 [{actor_name}]: {e}")
         return None, None

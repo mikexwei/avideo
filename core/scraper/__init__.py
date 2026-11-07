@@ -1,10 +1,12 @@
-from .video_scraper import scrape_video_info, parse_detail_page, load_javdb_cookies, check_login_status, launch_javdb_browser, launch_javdb_context, javdb_profile_lock, FREEZE
+from .video_scraper import scrape_video_info, scrape_ltx_links, extract_ltx_links_from_reviews, parse_detail_page, load_javdb_cookies, check_login_status, launch_javdb_browser, launch_javdb_context, javdb_profile_lock, FREEZE, BASE_URL, JAVDB_LOCALE
 from .actor_scraper import scrape_actor_info
 from .anti_bot import simulate_human_behavior, random_sleep, bypass_javdb_security
 from .assets import download_cover, download_avatar
 
 __all__ = [
     'scrape_video_info',
+    'scrape_ltx_links',
+    'extract_ltx_links_from_reviews',
     'parse_detail_page',
     'scrape_actor_info',
     'simulate_human_behavior',
@@ -18,4 +20,6 @@ __all__ = [
     'launch_javdb_context',
     'javdb_profile_lock',
     'FREEZE',
+    'BASE_URL',
+    'JAVDB_LOCALE',
 ]

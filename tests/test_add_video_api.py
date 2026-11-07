@@ -7,9 +7,26 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from web.backend.app import app, _Job, _jobs, _jobs_lock
+
+
+_queue_mock = MagicMock()
+_queue_mock.get.return_value = None
+
+
+def setUpModule():
+    global _queue_patch, _worker_patch
+    _queue_patch = patch('web.backend.app.scrape_store', return_value=_queue_mock)
+    _worker_patch = patch('web.backend.app.ensure_worker')
+    _queue_patch.start()
+    _worker_patch.start()
+
+
+def tearDownModule():
+    _queue_patch.stop()
+    _worker_patch.stop()
 
 
 class JobInfraTests(unittest.TestCase):
@@ -551,9 +568,9 @@ class AddAutoEndpointTests(unittest.TestCase):
                 )
 
             self.assertEqual(resp.status_code, 200)
-            pipeline_args = thread_cls.call_args.kwargs['args']
-            self.assertEqual(pipeline_args[4], '机翻中文 V2')
-            self.assertEqual(pipeline_args[5], ['VR'])
+            payload = _queue_mock.submit.call_args.kwargs['payload']
+            self.assertEqual(payload['subtitle_classification'], '机翻中文 V2')
+            self.assertEqual(payload['additional_tags'], ['VR'])
         finally:
             os.unlink(db_path)
 
@@ -629,7 +646,7 @@ class RescrapeEndpointTests(unittest.TestCase):
 
     def test_single_video_rescrape_returns_job_id(self):
         with patch('web.backend.app.DB_PATH', self.db_path), \
-             patch('web.backend.app._run_single_rescrape_job'):
+             patch('web.backend.app.ensure_worker'):
             resp = self.client.post('/api/videos/ABW-1/rescrape')
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
@@ -708,6 +725,30 @@ class AutoPipelineTests(unittest.TestCase):
         conn.commit()
         conn.close()
         return len(scanned), 0
+
+    def test_durable_upload_resumes_after_browser_interruption(self):
+        from core.scrape_queue import QueueStore
+        from core.scrape_worker import StoredJob
+        from core.scraper.video_scraper import ScrapeInterrupted
+        from web.backend.app import _run_auto_pipeline
+        store = QueueStore(self.db_path)
+        task_id = store.submit('pipeline_auto')
+        job = StoredJob(store, task_id)
+        with patch('web.backend.app.DB_PATH', self.db_path), \
+             patch('web.backend.app.batch_insert_scanned_videos', side_effect=self._patched_batch_insert), \
+             patch('web.backend.app.sync_derived_video_tags_for_code'), \
+             patch('web.backend.app.get_video_by_code', return_value={}), \
+             patch('web.backend.app._scrape_with_playwright', side_effect=[ScrapeInterrupted('yield'), None]):
+            with self.assertRaises(ScrapeInterrupted):
+                _run_auto_pipeline(job, [self.fake_file], self.volume)
+            self.assertFalse(self.fake_file.exists())
+            self.assertTrue(store.checkpoint(task_id)['upload_files'])
+            _run_auto_pipeline(job, [self.fake_file], self.volume)
+        self.assertFalse(job.failed)
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute('SELECT original_file_path FROM videos').fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(Path(rows[0][0]).is_file())
 
     def _run(self, file_paths=None):
         from web.backend.app import _Job, _run_auto_pipeline

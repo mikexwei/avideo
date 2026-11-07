@@ -1,83 +1,77 @@
 #!/bin/bash
+set -u
 
-# ================= 配置区 =================
-# 你可以在这里修改你的启动命令、日志文件名和 PID 文件名
-START_CMD="env AVIDEO_JAVDB_AUTOSTART=1 .venv/bin/python -m flask --app web.backend.app run --host 0.0.0.0 --port 8000"
-LOG_FILE="server.log"
-PID_FILE="server.pid"
-# ==========================================
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT" || exit 1
+PID_FILE="$ROOT/server.pid"
+LOG_FILE="$ROOT/server.log"
 
-# 启动服务
+server_pid() {
+    local pid cwd command
+    pid="$(lsof -nP -t -iTCP:8000 -sTCP:LISTEN 2>/dev/null | sort -u | head -n 1)"
+    [ -n "$pid" ] || return 1
+    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+    command="$(ps -p "$pid" -o command=)"
+    if [ "$cwd" != "$ROOT" ] || [[ "$command" != *web.backend.app* ]]; then
+        echo "Port 8000 is owned by another application." >&2
+        return 2
+    fi
+    printf '%s\n' "$pid"
+}
+
 start_server() {
-    # 检查是否已经存在 PID 文件
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        # 检查该 PID 的进程是否真的在运行
-        if ps -p "$PID" > /dev/null 2>&1; then
-            echo "⚠️ 服务已经在运行中 (PID: $PID)，请勿重复启动！"
+    local pid code
+    pid="$(server_pid)"
+    code=$?
+    if [ "$code" -eq 0 ]; then
+        printf '%s\n' "$pid" > "$PID_FILE"
+        echo "Web server is already running (PID $pid)."
+        return
+    fi
+    [ "$code" -ne 2 ] || return 1
+    screen -dmS avideo-server /usr/bin/env PYTHONPATH="$ROOT" /bin/sh -c \
+        'cd "$1" && exec "$2" -m flask --app web.backend.app run --host 0.0.0.0 --port 8000 >> "$3" 2>&1' \
+        avideo-web "$ROOT" "$ROOT/.venv/bin/python" "$LOG_FILE"
+    for _ in {1..15}; do
+        if pid="$(server_pid)"; then
+            printf '%s\n' "$pid" > "$PID_FILE"
+            echo "Web server started (PID $pid). Worker and browser are independent."
             return
-        else
-            echo "⚠️ 发现遗留的 PID 文件，但服务未运行。正在清理..."
-            rm -f "$PID_FILE"
         fi
-    fi
-
-    echo "🚀 正在启动服务..."
-    # 以后台静默方式运行命令，并重定向日志
-    nohup $START_CMD > "$LOG_FILE" 2>&1 &
-    
-    # 记录最新后台进程的 PID
-    echo $! > "$PID_FILE"
-    echo "✅ 服务已成功启动！"
-    echo "📄 日志输出至: $LOG_FILE"
-    echo "🆔 进程 PID: $(cat $PID_FILE)"
+        sleep 1
+    done
+    echo "Web server did not start. See $LOG_FILE." >&2
+    return 1
 }
 
-# 停止服务
-shutdown_server() {
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        if ps -p "$PID" > /dev/null 2>&1; then
-            echo "🛑 正在停止服务 (PID: $PID)..."
-            kill "$PID"
-            
-            # 等待进程完全退出（最多等 5 秒）
-            for i in {1..5}; do
-                if ! ps -p "$PID" > /dev/null 2>&1; then
-                    break
-                fi
-                sleep 1
-            done
-            
-            rm -f "$PID_FILE"
-            echo "✅ 服务已停止。"
-        else
-            echo "⚠️ PID 文件存在 ($PID_FILE)，但服务并没有在运行。已清理残留文件。"
-            rm -f "$PID_FILE"
-        fi
-    else
-        echo "🤷‍♂️ 服务没有在运行 (找不到 PID 文件)。"
+stop_server() {
+    local pid code
+    pid="$(server_pid)"
+    code=$?
+    [ "$code" -ne 2 ] || return 1
+    if [ "$code" -ne 0 ]; then
+        echo "Web server is not running."
+        return
     fi
+    kill "$pid"
+    for _ in {1..10}; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "Web server stopped. Worker and browser were not stopped."
+            return
+        fi
+        sleep 1
+    done
+    echo "Web server is still exiting (PID $pid)." >&2
+    return 1
 }
 
-# 检查命令行参数
+if [ "$#" -eq 0 ]; then
+    echo "Usage: $0 {--start | --shutdown | --restart}" >&2
+    exit 1
+fi
 case "$1" in
-    --start)
-        start_server
-        ;;
-    --shutdown)
-        shutdown_server
-        ;;
-    --restart)
-        shutdown_server
-        echo "⏳ 等待 2 秒以确保端口释放..."
-        sleep 2
-        start_server
-        ;;
-    *)
-        # 如果输入的参数不对，提示正确用法
-        echo "❌ 无效参数: $1"
-        echo "💡 用法: $0 {--start | --shutdown | --restart}"
-        exit 1
-        ;;
+    --start) start_server ;;
+    --shutdown) stop_server ;;
+    --restart) stop_server && start_server ;;
+    *) echo "Usage: $0 {--start | --shutdown | --restart}" >&2; exit 1 ;;
 esac
