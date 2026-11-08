@@ -53,6 +53,20 @@ class PlaybackApiTests(unittest.TestCase):
                 self.assertEqual(data['total'], 3)
                 self.assertEqual(data['items'][0]['code'], expected)
 
+    def test_direct_click_counts_once_without_adding_watch_time(self):
+        endpoint = '/api/videos/DEMO-100/playback'
+        session = endpoint + '/' + str(uuid.uuid4())
+        timestamp = int(time.time() * 1000)
+        data = dict(source='direct', part='part2', started_at=timestamp,
+                    last_played_at=timestamp, watched_ms=0, position_ms=0, sequence=1)
+        for _ in range(2):
+            self.assertEqual(self.client.post(session, json=data).status_code, 204)
+        self.assertEqual(self.client.post(session, json={**data, 'watched_ms': 100}).status_code, 400)
+        self.assertEqual(self.client.post(session, json={**data, 'source': 'web'}).status_code, 400)
+        history = self.client.get(endpoint).get_json()
+        self.assertEqual((history['play_count'], history['watched_ms'], history['last_played_at']), (1, 0, timestamp))
+        self.assertEqual((history['sessions'][0]['source'], history['sessions'][0]['part']), ('direct', 'part2'))
+
     def test_file_reads_do_not_create_a_session(self):
         path = self.path.with_suffix('.mkv')
         path.write_bytes(b'file')

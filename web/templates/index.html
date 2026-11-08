@@ -1349,7 +1349,8 @@
             <option v-for="track in subtitleTracks" :key="track.id" :value="track.id">{{ track.label }}</option>
           </select>
           <button v-if="canPlay && !playing" @click="playVideo" class="ui-button ui-primary">播放</button>
-          <a v-if="canPlay" :href="streamUrl()" target="_blank" rel="noopener" class="ui-button">打开直链</a>
+          <a v-if="canPlay" :href="streamUrl()" target="_blank" rel="noopener"
+            @click="recordDirectPlayback" @auxclick.middle="recordDirectPlayback" class="ui-button">打开直链</a>
           <button v-if="canPlay" @click="copyStreamUrl" class="ui-button">{{ copied ? '已复制' : '复制 URL' }}</button>
           <button v-if="!video.deleted" @click="openReplaceModal" class="ui-button">替换视频</button>
           <button v-if="!video.deleted" @click="triggerCoverUpload" :disabled="coverUploading" class="ui-button">{{ coverUploading ? '上传中…' : '更换封面' }}</button>
@@ -1375,8 +1376,9 @@
                 {{ playbackDate(session.started_at) }}
                 <span v-if="session.part"> · {{ session.part }}</span>
                 <span v-if="session.source === 'iina'"> · IINA</span>
+                <span v-else-if="session.source === 'direct'"> · 打开直链</span>
               </span>
-              <strong>{{ playbackDuration(session.watched_ms) }}</strong>
+              <strong>{{ session.source === 'direct' ? '未计时' : playbackDuration(session.watched_ms) }}</strong>
             </li>
           </ul>
           <p v-else class="film-playback-empty" :class="{ 'text-red-400': playbackHistoryError }" role="status">
@@ -3257,6 +3259,20 @@
           playing.value = true;
           Vue.nextTick(() => document.querySelector('.watch-stage video')?.focus());
         }
+        function recordDirectPlayback() {
+          const timestamp = Date.now();
+          fetch(playbackUrl(video.value.code) + '/' + newPlaybackSessionId(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              source: 'direct', part: selectedPart.value || video.value.part || null,
+              started_at: timestamp, last_played_at: timestamp, watched_ms: 0, position_ms: 0, sequence: 1,
+            }),
+            keepalive: true,
+          }).then(response => {
+            if (response.ok) loadPlaybackHistory();
+          }).catch(() => {});
+        }
         async function copyStreamUrl() {
           const url = streamUrl();
           try {
@@ -3776,7 +3792,7 @@
               copiedPaths.value = next;
             }, 2000);
           },
-          selectedPart, copied, playVideo, copyStreamUrl, streamUrl, playing, playbackError, canPlay, backToLibrary,
+          selectedPart, copied, playVideo, copyStreamUrl, recordDirectPlayback, streamUrl, playing, playbackError, canPlay, backToLibrary,
           player, playbackHistory, playbackHistoryCode, playbackHistoryError, showPlaybackHistory, playbackDate, playbackDuration,
           subtitleTracks, selectedSubtitle, subtitleStatus,
           coverFileInput, coverUploading, coverSrc, triggerCoverUpload, uploadCover,

@@ -1,3 +1,11 @@
+function newPlaybackSessionId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+}
+
 /* Track active viewing time separately from the media timeline. */
 function trackPlayback(video, url, part, onReported) {
   const listeners = new AbortController();
@@ -6,12 +14,7 @@ function trackPlayback(video, url, part, onReported) {
 
   function start() {
     if (!session) {
-      const bytes = crypto.getRandomValues(new Uint8Array(16));
-      bytes[6] = (bytes[6] & 15) | 64;
-      bytes[8] = (bytes[8] & 63) | 128;
-      const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-      const id = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
-      session = { id, started_at: Date.now(), last_played_at: 0, watched_ms: 0, sequence: 0 };
+      session = { id: newPlaybackSessionId(), started_at: Date.now(), last_played_at: 0, watched_ms: 0, sequence: 0 };
     }
     sample = { clock: performance.now(), position: video.currentTime, rate: video.playbackRate };
   }

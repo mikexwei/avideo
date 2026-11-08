@@ -47,7 +47,7 @@ def report(conn, code, session_id, payload):
         raise ValueError('无效的播放数据')
     source = payload.get('source', 'web')
     part = payload.get('part')
-    if source not in ('web', 'iina') or (part is not None and (
+    if source not in ('web', 'iina', 'direct') or (part is not None and (
             not isinstance(part, str) or not re.fullmatch(r'part0*[1-9][0-9]*', part))):
         raise ValueError('无效的播放器来源或分集')
     fields = ('started_at', 'last_played_at', 'watched_ms', 'position_ms', 'sequence')
@@ -55,7 +55,9 @@ def report(conn, code, session_id, payload):
     if any(type(value) is not int or not 0 <= value < 2**53 for value in values):
         raise ValueError('无效的播放数据')
     started, last_played, watched, position, sequence = values
-    if not (0 < started <= last_played <= int(time.time() * 1000) + 60_000) or not 0 < watched <= last_played - started + 1000:
+    valid_duration = (watched == position == 0 if source == 'direct'
+                      else 0 < watched <= last_played - started + 1000)
+    if not (0 < started <= last_played <= int(time.time() * 1000) + 60_000) or not valid_duration:
         raise ValueError('无效的播放时长')
     ensure_schema(conn)
     key = video_key(code)
