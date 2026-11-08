@@ -2,6 +2,9 @@
 
 
 def execute(kind, payload):
+    if kind == 'subtitle_cache':
+        from core.subtitle_cache import extract
+        return extract(payload['path'], payload['fingerprint'])
     if kind == 'series_translate':
         from core.translator.service import translate_series
         return translate_series(payload['raw_name'])

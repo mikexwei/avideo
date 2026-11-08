@@ -16,6 +16,7 @@ server.log
 server.pid
 data/javdb_chrome_profile/
 data/javdb_chrome_profile.lock
+data/subtitle_cache/
 
 
 # Logs and generated reports

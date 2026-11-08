@@ -1,0 +1,12 @@
+{
+  "name": "AVideo Playback History",
+  "identifier": "com.avideo.playback-history",
+  "version": "1.0.0",
+  "description": "Report playback of streams from your configured AVideo server.",
+  "author": { "name": "AVideo" },
+  "entry": "main.js",
+  "permissions": ["network-request"],
+  "allowedDomains": ["*"],
+  "preferencesPage": "preferences.html",
+  "preferenceDefaults": { "server": "http://localhost:8000" }
+}

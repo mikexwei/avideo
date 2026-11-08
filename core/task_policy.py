@@ -21,6 +21,21 @@ def snapshot(store, code, connection=None):
         return result
 
 
+def matches_video_snapshot(store, code, expected, connection=None):
+    def without_actor_avatars(rows):
+        return [
+            {**row, '_actors': [
+                {key: value for key, value in actor.items() if key != 'avatar_path'}
+                for actor in row['_actors']
+            ]}
+            for row in rows
+        ]
+
+    # Actor jobs can update avatars independently. Names and links still matter.
+    current = snapshot(store, code, connection=connection)
+    return without_actor_avatars(current) == without_actor_avatars(expected)
+
+
 def validate_command(store, command):
     current = store.command(command['id'])
     task = store.get(command['task_id'])
@@ -33,6 +48,6 @@ def validate_command(store, command):
         if actor is None or dict(actor) != payload['actor_snapshot']:
             raise TargetChanged('演员在等待期间已改变')
     expected = payload.get('snapshot')
-    if expected is not None and snapshot(store, payload['code']) != expected:
+    if expected is not None and not matches_video_snapshot(store, payload['code'], expected):
         raise TargetChanged('影片在等待期间已改变，结果需重新请求')
     return payload

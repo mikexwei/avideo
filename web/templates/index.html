@@ -151,7 +151,7 @@
             {{ tag }}
           </button>
         </div>
-        <sort-bar :sort="sort" @change="changeSort" />
+        <sort-bar :sort="sort" playback @change="changeSort" />
       </div>
       <div class="film-grid">
         <video-card v-for="v in items" :key="v.id" :video="v" />
@@ -248,7 +248,8 @@
                   </div>
                   <div>
                     <dt>替换后的文件名</dt>
-                    <dd v-for="name in expectedFinalNames(g)" :key="name">{{ name }}</dd>
+                    <dd v-for="name in g.finalNames" :key="name">{{ name }}</dd>
+                    <dd v-if="!g.finalNames?.length">{{ g.previewError || '计算中…' }}</dd>
                   </div>
                 </dl>
               </div>
@@ -1329,8 +1330,12 @@
       </header>
       <div class="film-detail-media">
         <div class="watch-stage">
-          <video v-if="playing && canPlay" :key="streamUrl()" :src="streamUrl()" controls playsinline autoplay preload="metadata"
-            :aria-label="video.title_zh || video.title_jp || video.code" @error="playbackError = true"></video>
+          <video v-if="playing && canPlay" ref="player" :key="streamUrl()" :src="streamUrl()" controls playsinline autoplay preload="metadata"
+            :aria-label="video.title_zh || video.title_jp || video.code" @error="playbackError = true">
+            <track v-for="track in subtitleTracks" :key="track.url" kind="subtitles"
+              :src="track.url" :srclang="track.language" :label="track.label"
+              :data-subtitle-id="track.id" :default="selectedSubtitle === track.id">
+          </video>
           <template v-else>
             <span class="art-fallback" aria-hidden="true">{{ video.code }}</span>
             <img v-if="coverSrc || video.cover_path" :src="coverSrc || ('/static/' + video.cover_path)" alt="" @error="imgErr" />
@@ -1340,10 +1345,15 @@
           </template>
         </div>
         <p v-if="playbackError" role="status" class="playback-message">当前浏览器无法播放此文件。可以尝试打开直链，或复制链接到外部播放器。</p>
+        <p v-if="subtitleStatus" role="status" class="playback-message">{{ subtitleStatus }}</p>
         <div class="watch-actions">
           <select v-if="fileParts.length > 1 && canPlay" v-model="selectedPart" aria-label="播放分集">
             <option value="">默认分集</option>
             <option v-for="f in fileParts" :key="f.part" :value="f.part || ''">{{ f.part || '完整' }}</option>
+          </select>
+          <select v-if="subtitleTracks.length" v-model="selectedSubtitle" aria-label="播放字幕">
+            <option :value="null">关闭字幕</option>
+            <option v-for="track in subtitleTracks" :key="track.id" :value="track.id">{{ track.label }}</option>
           </select>
           <button v-if="canPlay && !playing" @click="playVideo" class="ui-button ui-primary">播放</button>
           <a v-if="canPlay" :href="streamUrl()" target="_blank" rel="noopener" class="ui-button">打开直链</a>
@@ -1353,6 +1363,21 @@
           <input ref="coverFileInput" type="file" accept="image/*" class="hidden" @change="uploadCover" />
         </div>
       </div>
+      <details v-if="canPlay" class="site-card p-4" @toggle="showPlaybackHistory">
+        <summary class="cursor-pointer font-semibold">播放记录</summary>
+        <p v-if="playbackHistory" class="text-sm text-gray-400 mt-2">
+          {{ playbackHistory.play_count }} 次 · 累计 {{ playbackDuration(playbackHistory.watched_ms) }}
+          <span v-if="playbackHistory.last_played_at"> · 最近 {{ new Date(playbackHistory.last_played_at).toLocaleString() }}</span>
+        </p>
+        <ul v-if="playbackHistory?.sessions.length" class="space-y-2 mt-3 text-sm">
+          <li v-for="session in playbackHistory.sessions" :key="session.id">
+            {{ new Date(session.started_at).toLocaleString() }} · {{ playbackDuration(session.watched_ms) }}
+            <span v-if="session.part"> · {{ session.part }}</span>
+            <span v-if="session.source === 'iina'"> · IINA</span>
+          </li>
+        </ul>
+        <p v-if="playbackHistoryError" class="text-sm text-red-400 mt-2" role="status">{{ playbackHistoryError }}</p>
+      </details>
       <div class="film-detail-info">
           <!-- View mode -->
           <template v-if="!editing">
@@ -1658,11 +1683,6 @@
 
               <!-- Filename preview -->
               <div v-if="replaceFile" class="bg-gray-800 rounded-lg px-3 py-3 space-y-2">
-                <div class="flex items-center gap-2">
-                  <span class="text-xs text-gray-500 w-16 flex-shrink-0">目标文件名</span>
-                  <input v-model="replaceDestName" :disabled="replaceUploading"
-                    class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono focus:outline-none focus:border-indigo-500 transition-colors min-w-0" />
-                </div>
                 <div class="flex items-start gap-2">
                   <span class="text-xs text-gray-500 w-16 flex-shrink-0 pt-0.5">最终文件名</span>
                   <span class="text-xs text-indigo-300 font-mono break-all leading-relaxed">{{ replaceFinalName }}</span>
@@ -2102,10 +2122,16 @@
       class="ui-button" :class="{ 'ui-primary': sort === 'mtime' }" :aria-pressed="sort === 'mtime'">
       文件时间
     </button>
+    <template v-if="playback">
+      <button v-for="[key, label] in [['last_played','最后播放时间'],['watched','累计播放时长']]"
+        :key="key" @click="$emit('change', key)" class="ui-button"
+        :class="{ 'ui-primary': sort === key }" :aria-pressed="sort === key">{{ label }}</button>
+    </template>
   </div>
 </script>
 
   <script src="/static/admin.js"></script>
+  <script src="/static/playback.js"></script>
   <script>
     const { createApp, ref, computed, watch, onMounted } = Vue;
     const { createRouter, createWebHashHistory } = VueRouter;
@@ -2158,7 +2184,7 @@
     const SortBar = {
       name: 'SortBar',
       template: '#tpl-sort-bar',
-      props: { sort: { type: String, default: 'date' } },
+      props: { sort: { type: String, default: 'date' }, playback: Boolean },
       emits: ['change'],
     };
 
@@ -2298,14 +2324,10 @@
       }
     };
 
-    // The tag suffix (-C/-U/-UC) belongs on the code, i.e. the first '.'-separated
-    // component of the stem — e.g. ABW-123-C.女优.[标题] — not at the end. Mirrors
-    // the backend's _compute_final_filename.
-    function swapCodeSuffix(stem, hasC, hasU) {
-      const suffix = (hasC && hasU) ? '-UC' : hasC ? '-C' : hasU ? '-U' : '';
-      const parts = stem.split('.');
-      parts[0] = parts[0].replace(/-(?:UC|U|C)$/i, '') + suffix;
-      return parts.join('.');
+    async function replacementPreview(code, files, subtitleZh, uncensored) {
+      return postJson('/api/videos/' + encodeURIComponent(code) + '/replace-preview', {
+        files, subtitle_zh: subtitleZh, uncensored
+      });
     }
 
     // Returns a function that, fed cumulative uploaded bytes, yields a smoothed
@@ -2467,7 +2489,7 @@
                 uncensored_leaked: /(?:-UC|-U)$/i.test(item.code || ''),
                 uncensored_crack_tag: /(?:-UC|-U)$/i.test(item.code || '') ? 'LTX 无码破解' : '',
                 uncensored_native: false,
-                warning: item.error || null,
+                warning: item.error || null, previewRequest: 0, finalNames: [], previewError: '',
               };
             }
             map[key].files.push(item);
@@ -2488,27 +2510,27 @@
           return Object.values(map);
         }
 
-        // Base filename stem the replace writes to (the original on-disk name, sans ext).
-        // The backend swaps the -C/-U/-UC suffix on the code component.
-        function _replaceBaseStem(group) {
-          const origName = group.original_path
-            ? group.original_path.split('/').pop()
-            : (group.files[0] && group.files[0].filename) || '';
-          const dot = origName.lastIndexOf('.');
-          const stem = dot > 0 ? origName.slice(0, dot) : origName;
-          return stem.replace(/\.part\d+$/i, '');
-        }
-        function expectedFinalNames(group) {
-          const hasC = Boolean(group.subtitle_classification);
-          const hasU = Boolean(group.uncensored_crack_tag) || group.uncensored_native;
-          const stem = swapCodeSuffix(_replaceBaseStem(group), hasC, hasU);
-          return group.files.map(file => {
-            const part = file.part ? `.${file.part}` : '';
-            const dot = file.filename.lastIndexOf('.');
-            const ext = dot > 0 ? file.filename.slice(dot) : '';
-            return `${stem}${part}${ext}`;
-          });
-        }
+        watch(() => batchGroups.value.map(group => [group, group.subtitle_classification,
+          group.uncensored_crack_tag, group.uncensored_native]), (groups, previous) => {
+          const earlier = new Map(previous.map(([group, ...options]) => [group, options]));
+          for (const [group, subtitles, crack, native] of groups) {
+            if (!group.exists || group.warning) continue;
+            const old = earlier.get(group);
+            if (old && old[0] === subtitles && old[1] === crack && old[2] === native) continue;
+            const request = ++group.previewRequest;
+            group.previewError = '';
+            group.finalNames = [];
+            replacementPreview(group.db_code || group.code, group.files.map(file => ({
+              filename: file.filename, part: file.part || null
+            })), Boolean(subtitles), Boolean(crack) || native)
+              .then(data => { if (request === group.previewRequest) group.finalNames = data.names; })
+              .catch(error => {
+                if (request !== group.previewRequest) return;
+                group.finalNames = [];
+                group.previewError = error.message;
+              });
+          }
+        });
 
         async function startBatchProcess() {
           batchStep.value = 'batch-progress';
@@ -2603,16 +2625,8 @@
             // uploaded file's suffix, e.g. DB has ABW-123-U but file is ABW-123-C).
             const url = `/api/videos/${encodeURIComponent(requestCode)}/replace${qp}`;
 
-            // Send the suffix-stripped base name; backend's _compute_final_filename
-            // appends the -C/-U/-UC suffix from the toggles (avoids doubling, e.g.
-            // ABW-123-U → ABW-123-U-C). Ext comes from the uploaded file.
-            const fDot = f.name.lastIndexOf('.');
-            const fExt = fDot > 0 ? f.name.slice(fDot) : '';
-            const destName = (_replaceBaseStem(group) + fExt).trim();
-            if (!destName) throw new Error('无效的原始文件路径');
-
             const headers = {
-              'X-Dest-Name': encodeURIComponent(destName),
+              'X-Dest-Name': encodeURIComponent(f.name),
               'X-File-Size': String(f.size),
               'X-Subtitle-Zh': group.subtitle_classification ? '1' : '0',
               'X-Subtitle-Classification': encodeURIComponent(group.subtitle_classification || ''),
@@ -2642,7 +2656,7 @@
           batchGroups, batchVolume, mediaLibraries,
           batchProcessing, batchResults,
           batchStepNum, hasNewGroups, hasWarnings, canStartUpload,
-          onBatchFilesChange, runBatchCheck, buildGroups, expectedFinalNames,
+          onBatchFilesChange, runBatchCheck, buildGroups,
           startBatchProcess, processNewGroup, processReplaceGroup,
         };
       }
@@ -3149,6 +3163,80 @@
         const playing = ref(false), playbackError = ref(false);
         const canPlay = computed(() => Boolean(video.value && !video.value.deleted &&
           (video.value.original_file_path || video.value.parts?.some(part => part.original_file_path))));
+        const player = ref(null), playbackHistory = ref(null), playbackHistoryError = ref('');
+        const subtitleTracks = ref([]), selectedSubtitle = ref(null), subtitleStatus = ref('');
+        let historyOpen = false;
+        function playbackUrl(code) {
+          return '/api/videos/' + encodeURIComponent(baseVideoCode(code)) + '/playback';
+        }
+        async function loadPlaybackHistory() {
+          const code = video.value?.code;
+          if (!code) return;
+          try {
+            const response = await fetch(playbackUrl(code));
+            if (!response.ok) throw new Error('无法加载播放记录');
+            const history = await response.json();
+            if (code === video.value?.code) {
+              playbackHistory.value = history;
+              playbackHistoryError.value = '';
+            }
+          } catch (error) {
+            if (code === video.value?.code) playbackHistoryError.value = error.message;
+          }
+        }
+        function showPlaybackHistory(event) {
+          historyOpen = event.currentTarget.open;
+          if (historyOpen) loadPlaybackHistory();
+        }
+        function playbackDuration(milliseconds) {
+          const seconds = Math.floor(milliseconds / 1000);
+          return seconds >= 3600
+            ? `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds / 60) % 60} 分`
+            : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+        }
+        watch(player, (element, _, onCleanup) => {
+          if (!element || !video.value) return;
+          const part = selectedPart.value || video.value.part || null;
+          onCleanup(trackPlayback(element, playbackUrl(video.value.code), part, () => {
+            if (historyOpen) loadPlaybackHistory();
+          }));
+        }, { flush: 'post' });
+        watch(player, (element, _, onCleanup) => {
+          subtitleTracks.value = [];
+          selectedSubtitle.value = null;
+          subtitleStatus.value = '';
+          if (!element || !new URL(element.src).pathname.toLowerCase().endsWith('.mkv')) return;
+          const stream = new URL(element.src);
+          const url = stream.pathname.replace(/\/stream\.mkv$/i, '/subtitles') + stream.search;
+          const controller = new AbortController();
+          let timer;
+          onCleanup(() => { controller.abort(); clearTimeout(timer); });
+          async function loadSubtitles(method) {
+            try {
+              const response = await fetch(url, { method, signal: controller.signal, cache: 'no-store' });
+              const data = await response.json();
+              if (controller.signal.aborted) return;
+              if (response.status === 202) {
+                subtitleStatus.value = '正在准备内嵌字幕…';
+                timer = setTimeout(() => loadSubtitles('GET'), 3000);
+                return;
+              }
+              if (!response.ok) throw new Error(data.error || '无法加载字幕');
+              subtitleTracks.value = data.tracks;
+              selectedSubtitle.value = (data.tracks.find(track => track.language.startsWith('zh'))
+                || data.tracks.find(track => track.default))?.id ?? null;
+              subtitleStatus.value = '';
+            } catch (error) {
+              if (!controller.signal.aborted) subtitleStatus.value = error.message;
+            }
+          }
+          loadSubtitles('POST');
+        }, { flush: 'post' });
+        watch([subtitleTracks, selectedSubtitle], () => {
+          for (const element of player.value?.querySelectorAll('track') || []) {
+            element.track.mode = Number(element.dataset.subtitleId) === selectedSubtitle.value ? 'showing' : 'disabled';
+          }
+        }, { flush: 'post' });
         function backToLibrary() {
           if (router.options.history.state.back) router.back();
           else router.push('/videos');
@@ -3204,7 +3292,7 @@
         const showReplaceModal = ref(false);
         const replaceOriginalPart = ref('');
         const replaceFile = ref(null);
-        const replaceDestName = ref('');
+        const replaceFinalName = ref('');
         const replaceSubtitleZh = ref(false);
         const replaceUncensoredCrackTag = ref('LTX 无码破解');
         const replaceUncensoredNative = ref(false);
@@ -3219,18 +3307,20 @@
         const replaceRemaining = ref('');
         const replaceError = ref('');
 
-        const replaceFinalName = computed(() => {
-          if (!replaceDestName.value) return '';
-          const name = replaceDestName.value;
-          const dot = name.lastIndexOf('.');
-          const stem = dot > 0 ? name.slice(0, dot) : name;
-          const ext  = dot > 0 ? name.slice(dot) : '';
-          const hasC = replaceSubtitleZh.value;
-          const hasU = Boolean(replaceUncensoredCrackTag.value) || replaceUncensoredNative.value;
-          const cleanStem = replaceWhole.value ? stem.replace(/\.part\d+$/i, '') : stem;
-          const newStem = swapCodeSuffix(cleanStem, hasC, hasU);
-          const partSeg = !replaceWhole.value && replacePartOn.value && replacePartNum.value ? `.part${replacePartNum.value}` : '';
-          return `${newStem}${partSeg}${ext}`;
+        watch([replaceFile, replaceSubtitleZh, replaceUncensoredCrackTag, replaceUncensoredNative,
+          replaceWhole, replacePartOn, replacePartNum, replaceOriginalPart], async (_, __, onCleanup) => {
+          if (!replaceFile.value) return;
+          let current = true;
+          onCleanup(() => { current = false; });
+          replaceFinalName.value = '计算中…';
+          const part = replaceWhole.value ? null : replacePartOn.value ? String(replacePartNum.value) : replaceOriginalPart.value || null;
+          try {
+            const data = await replacementPreview(video.value.code, [{filename: replaceFile.value.name, part}],
+              replaceSubtitleZh.value, Boolean(replaceUncensoredCrackTag.value) || replaceUncensoredNative.value);
+            if (current) replaceFinalName.value = data.names[0];
+          } catch (error) {
+            if (current) replaceFinalName.value = error.message;
+          }
         });
 
         function _fmtTime(secs) {
@@ -3238,18 +3328,9 @@
           return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
         }
 
-        function _getOriginalPathForPart(part) {
-          const v = video.value;
-          if (v.parts && v.parts.length > 1) {
-            const found = v.parts.find(p => (p.part || '') === part);
-            return found ? found.original_file_path : v.original_file_path;
-          }
-          return v.original_file_path;
-        }
-
         function openReplaceModal() {
           replaceFile.value = null;
-          replaceDestName.value = '';
+          replaceFinalName.value = '';
           replaceSubtitleZh.value = false;
           replaceUncensoredCrackTag.value = 'LTX 无码破解';
           replaceUncensoredNative.value = false;
@@ -3283,22 +3364,6 @@
           // Auto-detect tags from the uploaded filename's code component.
           const upCode = file.name.replace(/\.[^.]+$/, '').split('.')[0];
           replaceSubtitleZh.value = /(?:-UC|-C)$/i.test(upCode);
-          const origPath = _getOriginalPathForPart(replaceOriginalPart.value);
-          if (origPath) {
-            const origFilename = origPath.split('/').pop();
-            const dot = origFilename.lastIndexOf('.');
-            const origStem = dot > 0 ? origFilename.slice(0, dot) : origFilename;
-            // Strip the existing tag suffix from the code component (first segment).
-            const baseParts = origStem.split('.');
-            baseParts[0] = baseParts[0].replace(/-(?:UC|U|C)$/i, '');
-            let baseStem = baseParts.join('.');
-            if (replaceWhole.value) baseStem = baseStem.replace(/\.part\d+$/i, '');
-            const uploadDot = file.name.lastIndexOf('.');
-            const uploadExt = uploadDot > 0 ? file.name.slice(uploadDot) : '';
-            replaceDestName.value = baseStem + uploadExt;
-          } else {
-            replaceDestName.value = file.name;
-          }
         }
 
         function startReplaceUpload() {
@@ -3337,6 +3402,7 @@
           xhr.addEventListener('load', () => {
             replaceUploading.value = false;
             if (xhr.status === 200) {
+              playing.value = false;
               try { video.value = JSON.parse(xhr.responseText); } catch (_) {}
               showReplaceModal.value = false;
             } else {
@@ -3352,10 +3418,10 @@
           });
 
           xhr.open('POST', '/api/videos/' + video.value.code + '/replace' + qs);
-          xhr.setRequestHeader('X-Dest-Name', encodeURIComponent(replaceDestName.value));
+          xhr.setRequestHeader('X-Dest-Name', encodeURIComponent(replaceFile.value.name));
           xhr.setRequestHeader('X-File-Size', String(replaceFile.value.size));
           xhr.setRequestHeader('X-Subtitle-Zh', replaceSubtitleZh.value ? '1' : '0');
-          xhr.setRequestHeader('X-Uncensored-Leaked', '1');
+          xhr.setRequestHeader('X-Uncensored-Leaked', replaceUncensoredCrackTag.value ? '1' : '0');
           xhr.setRequestHeader('X-Uncensored-Crack-Tag', encodeURIComponent(replaceUncensoredCrackTag.value));
           xhr.setRequestHeader('X-Uncensored-Native', replaceUncensoredNative.value ? '1' : '0');
           if (replaceWhole.value) xhr.setRequestHeader('X-Replace-Whole', '1');
@@ -3366,16 +3432,7 @@
         watch(replaceOriginalPart, () => {
           if (replaceFile.value) {
             replaceFile.value = null;
-            replaceDestName.value = '';
-          }
-        });
-
-        watch(replaceWhole, () => {
-          if (replaceWhole.value && replaceDestName.value) {
-            const dot = replaceDestName.value.lastIndexOf('.');
-            const stem = dot > 0 ? replaceDestName.value.slice(0, dot) : replaceDestName.value;
-            const ext = dot > 0 ? replaceDestName.value.slice(dot) : '';
-            replaceDestName.value = stem.replace(/\.part\d+$/i, '') + ext;
+            replaceFinalName.value = '';
           }
         });
 
@@ -3673,6 +3730,10 @@
         }
 
         watch(() => route.params.code, () => {
+          playing.value = false;
+          selectedPart.value = '';
+          playbackHistory.value = null;
+          playbackHistoryError.value = '';
           rescraping.value = false;
           rescrapeMessage.value = '';
           rescrapeError.value = false;
@@ -3702,11 +3763,13 @@
             }, 2000);
           },
           selectedPart, copied, playVideo, copyStreamUrl, streamUrl, playing, playbackError, canPlay, backToLibrary,
+          player, playbackHistory, playbackHistoryError, showPlaybackHistory, playbackDuration,
+          subtitleTracks, selectedSubtitle, subtitleStatus,
           coverFileInput, coverUploading, coverSrc, triggerCoverUpload, uploadCover,
           editingCode, codeDraft, startEditCode, cancelEditCode, saveCode,
           confirmDelete,
           showReplaceModal, replaceOriginalPart,
-          replaceFile, replaceDestName, replaceFinalName,
+          replaceFile, replaceFinalName,
           replaceSubtitleZh, replaceUncensoredCrackTag, replaceUncensoredNative,
           replaceWhole, replacePartOn, replacePartNum, replacePartOther,
           replaceUploading, replaceProgress, replaceSpeed, replaceElapsed, replaceRemaining,

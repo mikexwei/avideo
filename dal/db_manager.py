@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from config import DB_PATH
+from dal.playback import VIDEO_KEY_SQL, ensure_schema as ensure_playback_schema
 
 logger = logging.getLogger(__name__)
 
@@ -594,12 +595,22 @@ def list_videos(
             params,
         )
         total = int(cursor.fetchone()["total"])
+        playback_join = playback_fields = ''
+        order = _order_clause(sort)
+        if sort in ('last_played', 'watched'):
+            ensure_playback_schema(conn)
+            playback_fields = ', p.last_played_at, p.watched_ms'
+            playback_join = f"""LEFT JOIN (
+                SELECT video_key, MAX(last_played_at) AS last_played_at, SUM(watched_ms) AS watched_ms
+                FROM playback_sessions GROUP BY video_key
+            ) p ON p.video_key=({VIDEO_KEY_SQL})"""
+            order = ('p.last_played_at' if sort == 'last_played' else 'p.watched_ms') + ' DESC, v.id DESC'
         cursor.execute(
             f"""
-            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status, deleted
-            FROM videos v
+            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status, deleted{playback_fields}
+            FROM videos v {playback_join}
             WHERE v.id IN (SELECT MIN(v2.id) FROM videos v2 WHERE {representative_where} GROUP BY v2.code)
-            ORDER BY {_order_clause(sort)}
+            ORDER BY {order}
             LIMIT ? OFFSET ?
             """,
             params + [limit, offset],
@@ -625,7 +636,7 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
 
         cursor.execute(
             """
-            SELECT id, code, part, title_jp, title_zh, release_date, duration, maker, publisher,
+            SELECT id, code, part, title_jp, title_zh, title_zh_short, release_date, duration, maker, publisher,
                    series, score, cover_path, original_file_path, scrape_status,
                    file_size, file_mtime, file_birthtime, deleted
             FROM videos
@@ -1498,6 +1509,7 @@ def replace_video_file(
     file_meta: Optional[Dict[str, Any]] = None,
     uncensored_crack_tag: Optional[str] = None,
     subtitle_classification: Optional[str] = None,
+    *, before_commit=None, expected_path=None, new_part=None,
 ) -> Dict[str, Any]:
     """Update file path and sync 中文字幕/无码破解分类/原装无码 tags after a file replacement.
 
@@ -1514,6 +1526,8 @@ def replace_video_file(
     conn = None
     try:
         conn = _get_conn()
+        if before_commit is not None:
+            conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         resolved_code = _resolve_video_code(cursor, code)
         if not resolved_code:
@@ -1521,18 +1535,26 @@ def replace_video_file(
 
         if original_part:
             cursor.execute(
-                'SELECT id, code FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1',
+                'SELECT id, code, original_file_path FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1',
                 (resolved_code, original_part),
             )
         else:
             cursor.execute(
-                'SELECT id, code FROM videos WHERE code = ? AND (part IS NULL OR part = "") ORDER BY id ASC LIMIT 1',
+                'SELECT id, code, original_file_path FROM videos WHERE code = ? AND (part IS NULL OR part = "") ORDER BY id ASC LIMIT 1',
                 (resolved_code,),
             )
         row = cursor.fetchone()
         if not row:
             return {'ok': False, 'error': 'part not found' if original_part else 'not found'}
+        if expected_path is not None and row['original_file_path'] != expected_path:
+            raise FileExistsError('原文件路径已改变，请重新选择')
         video_id = row['id']
+        if new_part is not None:
+            conflict = cursor.execute('SELECT 1 FROM videos WHERE code=? AND part=? AND id<>?',
+                                      (resolved_code, new_part, video_id)).fetchone()
+            if conflict:
+                raise FileExistsError('目标分集已存在')
+            cursor.execute('UPDATE videos SET part=? WHERE id=?', (new_part, video_id))
 
         # Keep the code column's version suffix (-C/-U/-UC) in sync with the new
         # file. Otherwise a -C record replaced by a -UC file keeps a stale -C code.
@@ -1601,6 +1623,8 @@ def replace_video_file(
                 (dest_path, new_code, video_id),
             )
 
+        if before_commit is not None:
+            before_commit()
         conn.commit()
         logger.info(f'🔄 replace_video_file [{code}]: {dest_path}')
         return {'ok': True, 'original_file_path': dest_path, 'new_code': new_code}
@@ -1622,6 +1646,7 @@ def replace_multipart_with_single_file(
     keep_part: Optional[str] = None,
     uncensored_crack_tag: Optional[str] = None,
     subtitle_classification: Optional[str] = None,
+    *, before_commit=None, expected_path=None,
 ) -> Dict[str, Any]:
     """Collapse all rows for a code into one non-part row pointing at dest_path."""
     crack_tag = uncensored_crack_tag if uncensored_crack_tag in _UNCENSORED_CRACK_TAGS else _uncensored_crack_tag(
@@ -1634,6 +1659,8 @@ def replace_multipart_with_single_file(
     conn = None
     try:
         conn = _get_conn()
+        if before_commit is not None:
+            conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         resolved_code = _resolve_video_code(cursor, code)
         if not resolved_code:
@@ -1655,6 +1682,8 @@ def replace_multipart_with_single_file(
         else:
             keep_row = rows[0]
 
+        if expected_path is not None and keep_row['original_file_path'] != expected_path:
+            raise FileExistsError('原文件路径已改变，请重新选择')
         keep_id = keep_row['id']
         all_ids = [r['id'] for r in rows]
         remove_ids = [vid for vid in all_ids if vid != keep_id]
@@ -1725,6 +1754,8 @@ def replace_multipart_with_single_file(
                 (dest_path, new_code, keep_id),
             )
 
+        if before_commit is not None:
+            before_commit()
         conn.commit()
         logger.info(f'🔄 replace_multipart_with_single_file [{code}]: {dest_path}')
         return {'ok': True, 'original_file_path': dest_path, 'new_code': new_code, 'old_paths': old_paths}

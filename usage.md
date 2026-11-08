@@ -105,6 +105,16 @@ playwright install chromium
 
 访问 `http://localhost:8000`
 
+### 播放记录和 MKV 字幕
+
+影片详情的「播放记录」显示播放次数、最近播放时间、累计时长和最近 30 次的单次时长。影片库可按最后播放时间或累计播放时长排序。暂停和缓冲期间不计时。以 2× 播放 30 秒时，记录 30 秒观看时间。下载和普通文件直链读取不增加播放次数。
+
+播放 MKV 时，Consumer 会用 `ffprobe` 和 `ffmpeg` 提取内嵌 SRT、ASS 等文本字幕。首次播放时等待提取完成，随后可通过「播放字幕」选择字幕或关闭。Mac 上可用 `brew install ffmpeg` 安装依赖。缓存位于 `data/subtitle_cache/`，同一文件的不同分集和替换后的文件使用各自的缓存。
+
+### IINA 回传播放记录
+
+使用支持正式插件系统的 IINA 1.4 或更高版本。用 IINA 自带的 `iina-plugin link integrations/iina-avideo` 从项目目录加载插件，然后重启 IINA 并在插件设置中启用。插件的「AVideo 地址」应与复制的播放直链的源地址一致，默认是 `http://localhost:8000`。用 IINA 打开该地址下的 AVideo 播放直链后，播放会话会回传到同一份影片历史。插件只向配置的 AVideo 地址发送记录。
+
 ---
 
 ## 高级工具

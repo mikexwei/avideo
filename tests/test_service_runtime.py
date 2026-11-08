@@ -451,6 +451,46 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(Path(row['original_file_path']).exists())
         self.assertIn('短标题', row['original_file_path'])
 
+    def test_upload_translation_survives_concurrent_actor_avatar_update(self):
+        from dal.db_manager import update_actor_avatar
+
+        self.browser.scrape.return_value = {'title_jp': '作品', 'actors': 'New Actor', 'categories': ''}
+        task_id, _ = self.dispatch('pipeline_auto', 'RBD-001', main_code='RBD-001', file_paths=[])
+        self.service.tick()
+        self.consumer.tick()  # Save the scraped data and enqueue the actor.
+        self.consumer.tick()  # Submit metadata assets.
+        self.complete_dependency({})
+        self.consumer.tick()  # Submit translation with the original actor snapshot.
+        with self.store.connect(write=True) as conn:
+            actor_id = conn.execute("SELECT id FROM actors WHERE name='New Actor'").fetchone()[0]
+            update_actor_avatar(actor_id, None, connection=conn)
+            self.assertEqual(conn.execute('SELECT avatar_path FROM actors WHERE id=?', (actor_id,)).fetchone()[0], 'no_avatar')
+        command = self.complete_dependency('翻译标题')
+        self.assertEqual(command['kind'], 'translate')
+        self.assertEqual(self.store.get(task_id)['status'], 'PENDING')
+        self.consumer.tick()  # Submit short title.
+        self.complete_dependency('短标题')
+        self.consumer.tick()  # Rename and finish.
+        self.assertEqual(self.store.get(task_id)['status'], 'DONE')
+        with self.store.connect() as conn:
+            row = conn.execute('SELECT title_zh,title_zh_short FROM videos').fetchone()
+        self.assertEqual(tuple(row), ('翻译标题', '短标题'))
+
+    def test_upload_translation_does_not_overwrite_concurrent_title_edit(self):
+        task_id, _ = self.dispatch('pipeline_auto', 'RBD-001', main_code='RBD-001', file_paths=[])
+        self.service.tick()
+        self.consumer.tick()
+        self.consumer.tick()
+        self.complete_dependency({})
+        self.consumer.tick()
+        with self.store.connect(write=True) as conn:
+            conn.execute("UPDATE videos SET title_zh='手工修改' WHERE code='RBD-001'")
+        command = self.complete_dependency('旧译文')
+        self.assertEqual(command['kind'], 'translate')
+        self.assertEqual(self.store.get(task_id)['status'], 'SKIPPED')
+        with self.store.connect() as conn:
+            self.assertEqual(conn.execute("SELECT title_zh FROM videos WHERE code='RBD-001'").fetchone()[0], '手工修改')
+
     def test_metadata_commit_and_stage_roll_back_together(self):
         task_id, _ = self.dispatch('video', 'RBD-001')
         self.service.tick()

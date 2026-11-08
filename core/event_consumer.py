@@ -9,7 +9,7 @@ from pathlib import Path
 
 from core import series_catalog, workflows
 from core.scrape_queue import StoredJob
-from core.task_policy import TargetChanged, snapshot
+from core.task_policy import TargetChanged, matches_video_snapshot, snapshot
 
 
 def execute_dependency(command):
@@ -74,10 +74,9 @@ class Consumer:
                 command = conn.execute('SELECT payload_json FROM dependency_commands WHERE execution_id=? AND id=?',
                                        (task['execution_id'], old['response']['command_id'])).fetchone()
                 payload = json.loads(command['payload_json']) if command else {}
-                if payload.get('snapshot') is not None:
-                    rows = snapshot(self.store, payload['code'], connection=conn)
-                    if rows != payload['snapshot']:
-                        raise TargetChanged('影片已改变，拒绝提交旧结果')
+                expected = payload.get('snapshot')
+                if expected is not None and not matches_video_snapshot(self.store, payload['code'], expected, connection=conn):
+                    raise TargetChanged('影片已改变，拒绝提交旧结果')
             if payload.get('actor_snapshot') is not None:
                 actor = conn.execute('SELECT * FROM actors WHERE id=?', (payload['actor_snapshot']['id'],)).fetchone()
                 if actor is None or dict(actor) != payload['actor_snapshot']:
@@ -117,7 +116,7 @@ class Consumer:
         if kind == 'pipeline_rescrape':
             codes = payload['codes']
             target_code = codes[state.get('index', 0)] if state.get('index', 0) < len(codes) else ''
-        if target_code and kind not in ('login_status', 'open_login', 'series_translate', 'series_report'):
+        if target_code and kind not in ('login_status', 'open_login', 'series_translate', 'series_report', 'subtitle_cache'):
             from core.scrape_queue import base_code
             target = ('actor:' if kind == 'actor' else 'video:') + base_code(target_code)
             if not self.store.acquire_target(task['id'], target):
@@ -139,6 +138,10 @@ class Consumer:
                 self.emit(task, state['code'], 'running', '刮削中…')
             elif kind == 'video':
                 state['code'] = task['code']
+            elif kind == 'subtitle_cache':
+                state['phase'] = 'direct'
+                self.request(task, state, 'subtitle', kind, payload)
+                return
             elif kind in ('actor', 'login_status', 'open_login', 'translate', 'series_translate', 'series_report'):
                 state['phase'] = 'direct'
                 service = 'dependency' if kind in ('translate', 'series_translate', 'series_report') else 'browser'
@@ -312,7 +315,8 @@ class Consumer:
                                    (task['execution_id'], state['response']['command_id'])).fetchone()
         if command:
             payload = json.loads(command['payload_json'])
-            if payload.get('snapshot') is not None and snapshot(self.store, payload['code']) != payload['snapshot']:
+            expected = payload.get('snapshot')
+            if expected is not None and not matches_video_snapshot(self.store, payload['code'], expected):
                 raise TargetChanged('影片在外部调用期间已改变，结果已保留在历史')
 
     def recover_uploads(self):
@@ -340,6 +344,8 @@ class Consumer:
         progressed = self.store.consume_result()
         if len(self.futures) < 2:
             command = self.store.claim_command('dependency', self.owner)
+            if command is None and not any(job['service'] == 'subtitle' for job in self.futures.values()):
+                command = self.store.claim_command('subtitle', self.owner)
             if command:
                 self.futures[self.pool.submit(execute_dependency, command)] = command
                 progressed = True
@@ -373,6 +379,7 @@ class Consumer:
     def run(self):
         self.store.recover_service('consumer')
         self.store.recover_service('dependency')
+        self.store.recover_service('subtitle')
         while not self.terminate.is_set():
             control = self.store.service('consumer')
             if control['desired'] != 'run' or control['restart_token'] != control['generation']:

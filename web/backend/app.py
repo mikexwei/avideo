@@ -3,8 +3,10 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -12,7 +14,8 @@ from flask import Flask, Response, jsonify, request, send_file, send_from_direct
 from werkzeug.utils import secure_filename
 
 from config import DB_PATH, MEDIA_LIBRARIES
-from core.scanner import extract_video_code
+from core import subtitle_cache
+from core.scanner import VIDEO_EXTENSIONS, extract_video_code
 from core.worker_client import ensure_worker
 from core.browser_queue import RuntimeStore
 from core.scrape_queue import StoredJob
@@ -24,6 +27,7 @@ from utils.rename_and_move_videos import (
     sanitize_component,
 )
 
+from dal import playback
 from dal.db_manager import (
     add_existing_tags_to_video,
     get_actor_with_videos,
@@ -1019,6 +1023,41 @@ def api_video_file_path_patch(code: str):
     return jsonify(result)
 
 
+def _replacement_filename(video, source_name, subtitle_zh, uncensored, part):
+    extension = Path(source_name).suffix.lower()
+    if extension not in VIDEO_EXTENSIONS:
+        raise ValueError('不支持的影片扩展名')
+    if part and not re.fullmatch(r'(?:part)?0*[1-9][0-9]*', part, re.IGNORECASE):
+        raise ValueError('无效的分集编号')
+    suffix = '-UC' if subtitle_zh and uncensored else '-C' if subtitle_zh else '-U' if uncensored else ''
+    code = re.sub(r'(?i)-(?:uc|u|c)$', '', video['code']) + suffix
+    actors = sorted(video.get('actors', []), key=lambda actor: actor.get('id', 0))
+    record = VideoRecord(
+        id=video.get('id', 0), code=code, part='part' + re.sub(r'(?i)^part', '', part) if part else None,
+        original_file_path=Path('upload' + extension), title_zh_short=video.get('title_zh_short'),
+        title_zh=video.get('title_zh'), title_jp=video.get('title_jp'),
+        actors=[actor.get('name_zh') or actor['name'] for actor in actors],
+    )
+    return build_filename(record)
+
+
+@app.post('/api/videos/<string:code>/replace-preview')
+def api_video_replace_preview(code: str):
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get('files'), list):
+        return jsonify(error='缺少预览文件'), 400
+    video = get_video_by_code(code)
+    if not video or video.get('deleted'):
+        return jsonify(error='video not found'), 404
+    try:
+        names = [_replacement_filename(
+            video, item['filename'], payload.get('subtitle_zh') is True,
+            payload.get('uncensored') is True, item.get('part')) for item in payload['files']]
+    except (ValueError, TypeError, KeyError) as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(names=names)
+
+
 @app.post('/api/videos/<string:code>/replace')
 def api_video_replace(code: str):
     original_part = request.args.get('part') or None
@@ -1080,27 +1119,52 @@ def api_video_replace(code: str):
         return jsonify({'error': 'missing dest_name'}), 400
     if not expected_size:
         return jsonify({'error': 'file_size must be positive'}), 400
-    if replace_whole:
-        dest_part = None
-        p = Path(dest_name)
-        dest_name = re.sub(r'(?i)\.part\d+$', '', p.stem) + p.suffix
-
     original_path = get_video_file_path(code, original_part)
     if not original_path:
         return jsonify({'error': 'video not found'}), 404
+    original = Path(original_path)
+    video = get_video_by_code(code)
+    if not video or video.get('deleted'):
+        return jsonify({'error': 'video not found'}), 404
+    part = None if replace_whole else dest_part or original_part
+    try:
+        final_name = _replacement_filename(video, dest_name, subtitle_zh, uncensored_leaked or uncensored_native, part)
+        identity = original.stat()
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except FileNotFoundError:
+        return jsonify(error='file not found'), 404
+    dest_path = original.parent / final_name
+    if dest_path != original and (dest_path.exists() or dest_path.is_symlink()):
+        return jsonify(error='目标文件已存在，已保留原文件'), 409
 
-    final_name = _compute_final_filename(dest_name, subtitle_zh, uncensored_leaked, uncensored_native, dest_part)
-    dest_path = Path(original_path).parent / final_name
-    temp_path = Path(str(dest_path) + '.temp')
+    temp_path = backup = None
+    installed = False
+
+    def install_file():
+        nonlocal installed, backup
+        current = original.stat()
+        if (current.st_ino, current.st_size, current.st_mtime_ns) != (identity.st_ino, identity.st_size, identity.st_mtime_ns):
+            raise FileExistsError('原文件已改变，请重新选择')
+        if dest_path == original:
+            backup_path = temp_path.with_suffix('.backup')
+            original.rename(backup_path)
+            backup = backup_path
+        else:
+            # Reserve the destination without clobbering an existing file, including on exFAT.
+            with dest_path.open('xb'):
+                installed = True
+        temp_path.replace(dest_path)
+        installed = True
 
     try:
         written = 0
-        with open(str(temp_path), 'wb') as dst:
+        with tempfile.NamedTemporaryFile(dir=original.parent, suffix='.temp', delete=False) as dst:
+            temp_path = Path(dst.name)
             while chunk := body_stream.read(4 * 1024 * 1024):
                 dst.write(chunk)
                 written += len(chunk)
         if written != expected_size:
-            temp_path.unlink(missing_ok=True)
             return jsonify({'error': f'size mismatch: expected {expected_size}, got {written}'}), 400
         # Stat the just-written file so the DB tracks the replacement's actual
         # size/mtime/birthtime (rename preserves the inode, so these stay valid).
@@ -1112,7 +1176,6 @@ def api_video_replace(code: str):
                 getattr(st, 'st_birthtime', st.st_mtime)
             ).isoformat(),
         }
-        # DB update first — filesystem still intact if this fails
         crack_kwargs = (
             {'uncensored_crack_tag': uncensored_crack_tag}
             if uncensored_crack_tag is not None else {}
@@ -1123,28 +1186,33 @@ def api_video_replace(code: str):
             result = replace_multipart_with_single_file(
                 code, str(dest_path), subtitle_zh, uncensored_leaked,
                 uncensored_native, file_meta=file_meta, keep_part=original_part,
-                **crack_kwargs,
+                before_commit=install_file, expected_path=original_path, **crack_kwargs,
             )
         else:
             result = replace_video_file(
                 code, original_part, str(dest_path), subtitle_zh, uncensored_leaked,
-                uncensored_native, file_meta=file_meta, **crack_kwargs,
+                uncensored_native, file_meta=file_meta, before_commit=install_file, expected_path=original_path,
+                new_part='part' + re.sub(r'(?i)^part', '', part) if part else None, **crack_kwargs,
             )
-        if not result['ok']:
+        if not result['ok'] or not installed:
+            raise RuntimeError(result.get('error') or 'db update failed')
+    except (OSError, RuntimeError) as exc:
+        if backup is not None:
+            backup.replace(original)
+        elif installed:
+            dest_path.unlink(missing_ok=True)
+        return jsonify(error=str(exc)), 409 if isinstance(exc, FileExistsError) else 500
+    finally:
+        if temp_path is not None:
             temp_path.unlink(missing_ok=True)
-            return jsonify({'error': result.get('error', 'db update failed')}), 500
-        # Filesystem swap — DB already points to new path
-        if replace_whole:
-            for old_path in result.get('old_paths', []):
-                old = Path(old_path)
-                if old != dest_path:
-                    old.unlink(missing_ok=True)
-        elif Path(original_path) != dest_path:
-            Path(original_path).unlink(missing_ok=True)
-        temp_path.rename(dest_path)
-    except Exception as e:
-        temp_path.unlink(missing_ok=True)
-        return jsonify({'error': str(e)}), 500
+
+    old_paths = result.get('old_paths', [original_path])
+    for old_path in [*map(Path, old_paths), backup]:
+        if old_path is not None and old_path != dest_path:
+            try:
+                old_path.unlink(missing_ok=True)
+            except OSError:
+                logging.exception('替换已完成，旧文件清理失败：%s', old_path)
 
     # replace_video_file may re-suffix the code (e.g. -C → -UC), so fetch the
     # detail by the new code, not the original request code.
@@ -1249,6 +1317,78 @@ def api_video_stream_options(code: str, **kwargs):
     resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
     resp.headers['Access-Control-Allow-Headers'] = 'Range'
     return resp
+
+
+def _subtitle_identity(code, part):
+    path = get_video_file_path(code, part)
+    if not path or Path(path).suffix.lower() != '.mkv':
+        return None, None
+    try:
+        return path, subtitle_cache.fingerprint(path)
+    except OSError:
+        return None, None
+
+
+@app.route('/api/videos/<string:code>/subtitles', methods=['GET', 'POST'])
+def api_video_subtitles(code: str):
+    part = request.args.get('part') or None
+    path, key = _subtitle_identity(code, part)
+    if not key:
+        return jsonify(tracks=[])
+    tracks = subtitle_cache.manifest(key)
+    if tracks is not None:
+        return jsonify(tracks=[{**track, 'url': url_for('api_video_subtitle_track',
+            code=code, key=key, track_id=track['id'], part=part)} for track in tracks])
+    runtime = scrape_store()
+    task_id = 'subtitle-' + key
+    task = runtime.get(task_id)
+    if task and task['status'] in ('FAILED', 'SKIPPED', 'CANCELLED', 'DONE'):
+        return jsonify(error=task['error'] or '字幕缓存不可用'), 503
+    if request.method == 'POST':
+        if not task:
+            runtime.submit('subtitle_cache', code, {'path': path, 'fingerprint': key},
+                           task_id=task_id, priority=-1500)
+        from core.service_manager import ensure_service
+        ensure_service('consumer')
+    return jsonify(status='pending'), 202
+
+
+@app.get('/api/videos/<string:code>/subtitles/<string:key>/<int:track_id>.vtt')
+def api_video_subtitle_track(code: str, key: str, track_id: int):
+    _, current = _subtitle_identity(code, request.args.get('part') or None)
+    if key != current:
+        return jsonify(error='字幕已失效'), 404
+    tracks = subtitle_cache.manifest(key)
+    if tracks is None or not any(track['id'] == track_id for track in tracks):
+        return jsonify(error='未找到字幕轨'), 404
+    return send_file(subtitle_cache.CACHE_ROOT / key / f'{track_id}.vtt', mimetype='text/vtt',
+                     conditional=True, max_age=3600)
+
+
+@app.get('/api/videos/<string:code>/playback')
+def api_playback_history(code: str):
+    if not get_video_file_path(code):
+        return jsonify(error='video not found'), 404
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        return jsonify(playback.history(conn, code))
+
+
+@app.post('/api/videos/<string:code>/playback/<string:session_id>')
+def api_playback_report(code: str, session_id: str):
+    if not get_video_file_path(code):
+        return jsonify(error='video not found'), 404
+    try:
+        payload = request.get_json(silent=True)
+        if payload is None and request.form.get('source') == 'iina':
+            payload = {'source': 'iina', 'part': request.form.get('part') or None}
+            for name in ('started_at', 'last_played_at', 'watched_ms', 'position_ms', 'sequence'):
+                payload[name] = int(request.form.get(name, ''))
+        with closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
+            playback.report(conn, code, session_id, payload)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return '', 204
 
 
 @app.delete('/api/videos/<string:code>')

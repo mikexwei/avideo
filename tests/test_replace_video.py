@@ -317,7 +317,8 @@ class ReplaceEndpointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             orig = Path(tmpdir) / 'SSIS-001.mp4'
             orig.write_bytes(b'original')
-            with patch('web.backend.app.get_video_file_path', return_value=str(orig)):
+            with patch('web.backend.app.get_video_file_path', return_value=str(orig)), \
+                 patch('web.backend.app.get_video_by_code', return_value={'code': 'SSIS-001'}):
                 resp = self.client.post(
                     '/api/videos/SSIS-001/replace',
                     data={'file': (io.BytesIO(b'data'), 'u.mp4'), 'file_size': '9999', 'dest_name': 'SSIS-001.mp4'},
@@ -330,10 +331,14 @@ class ReplaceEndpointTests(unittest.TestCase):
 
     def test_happy_path_returns_200(self):
         video_bytes = b'new video content'
+
+        def replace(*args, before_commit, **kwargs):
+            before_commit()
+            return {'ok': True}
         with tempfile.TemporaryDirectory() as tmpdir:
             orig = Path(tmpdir) / 'SSIS-001.mp4'
             orig.write_bytes(b'original content')
-            with patch('web.backend.app.replace_video_file', return_value={'ok': True}), \
+            with patch('web.backend.app.replace_video_file', side_effect=replace), \
                  patch('web.backend.app.get_video_by_code', return_value={'code': 'SSIS-001', 'tags': [], 'actors': []}), \
                  patch('web.backend.app.get_video_file_path', return_value=str(orig)):
                 resp = self.client.post(
@@ -358,13 +363,17 @@ class ReplaceEndpointTests(unittest.TestCase):
         video_bytes = b'x'
 
         def fake_detail(c):
-            return {'code': 'SSIS-001-UC'} if c == 'SSIS-001-UC' else None
+            return {'code': c} if c in ('SSIS-001-C', 'SSIS-001-UC') else None
+
+        def replace(*args, before_commit, **kwargs):
+            before_commit()
+            return {'ok': True, 'new_code': 'SSIS-001-UC'}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             orig = Path(tmpdir) / 'SSIS-001-C.mp4'
             orig.write_bytes(b'old')
             with patch('web.backend.app.replace_video_file',
-                       return_value={'ok': True, 'new_code': 'SSIS-001-UC'}), \
+                       side_effect=replace), \
                  patch('web.backend.app.get_video_by_code', side_effect=fake_detail), \
                  patch('web.backend.app.get_video_file_path', return_value=str(orig)):
                 resp = self.client.post(
@@ -380,6 +389,55 @@ class ReplaceEndpointTests(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.get_json()['code'], 'SSIS-001-UC')
 
+    def test_star_409_api_upload_uses_database_name_and_keeps_original_on_conflict(self):
+        from tests.test_add_video_api import _init_full_schema
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = root / 'test.db'
+            original = root / 'star-409-ltx-UC.mkv'
+            expected = root / 'STAR-409-UC.橘梨纱.[橘梨纱首次出演].mkv'
+            original.write_bytes(b'old')
+            expected.write_bytes(b'unrelated')
+            with sqlite3.connect(db) as conn:
+                _init_full_schema(conn)
+                for column in ('release_date', 'duration', 'maker', 'publisher', 'series', 'score', 'cover_path'):
+                    conn.execute(f'ALTER TABLE videos ADD COLUMN {column} TEXT')
+                conn.execute("INSERT INTO videos(code,original_file_path,title_zh_short) VALUES ('STAR-409-UC',?,'橘梨纱首次出演')",
+                             (str(original),))
+                conn.execute("INSERT INTO actors(name) VALUES ('橘梨纱')")
+                conn.execute("INSERT INTO video_actor_link(video_id,actor_id) VALUES (1,1)")
+            headers = {'X-Dest-Name': 'star-409-ltx.mkv', 'X-File-Size': '3',
+                       'X-Subtitle-Zh': '1', 'X-Uncensored-Leaked': '1'}
+            route = '/api/videos/STAR-409/replace'
+            with patch('web.backend.app.DB_PATH', db), patch('dal.db_manager.DB_PATH', db):
+                preview = self.client.post('/api/videos/STAR-409/replace-preview', json={
+                    'files': [{'filename': 'star-409-ltx.mkv'}], 'subtitle_zh': True, 'uncensored': True,
+                })
+                self.assertEqual(preview.get_json()['names'], [expected.name])
+                self.assertEqual(self.client.post(route, data=b'new', headers=headers).status_code, 409)
+                self.assertEqual(original.read_bytes(), b'old')
+                self.assertEqual(expected.read_bytes(), b'unrelated')
+                expected.unlink()
+                response = self.client.post(route, data=b'new', headers=headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json()['original_file_path'], str(expected))
+                self.assertFalse(original.exists())
+                self.assertEqual(expected.read_bytes(), b'new')
+                # On an already canonical path, a failed install restores the original.
+                with patch('pathlib.Path.replace', autospec=True) as move:
+                    real_move = Path.rename
+                    def fail_temp(source, target):
+                        if source.suffix == '.temp':
+                            raise OSError('install failed')
+                        return real_move(source, target)
+                    move.side_effect = fail_temp
+                    self.assertEqual(self.client.post(route, data=b'bad', headers=headers).status_code, 500)
+                self.assertEqual(expected.read_bytes(), b'new')
+                self.assertFalse(list(root.glob('*.backup')))
+                with sqlite3.connect(db) as conn:
+                    self.assertEqual(conn.execute('SELECT original_file_path FROM videos').fetchone()[0], str(expected))
+
     def test_replace_whole_removes_old_part_files(self):
         video_bytes = b'whole video'
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -388,10 +446,12 @@ class ReplaceEndpointTests(unittest.TestCase):
             part1.write_bytes(b'old1')
             part2.write_bytes(b'old2')
 
-            def fake_replace(code, dest, sub_zh, leaked, native, file_meta=None, keep_part=None):
+            def fake_replace(code, dest, sub_zh, leaked, native, file_meta=None, keep_part=None, *, before_commit, expected_path):
                 self.assertEqual(code, 'ABW-123')
                 self.assertEqual(Path(dest).name, 'ABW-123-C.mp4')
                 self.assertEqual(keep_part, 'part1')
+                self.assertEqual(expected_path, str(part1))
+                before_commit()
                 return {
                     'ok': True,
                     'new_code': 'ABW-123-C',

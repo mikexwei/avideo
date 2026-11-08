@@ -12,7 +12,7 @@ class VideoDetailPartsTests(unittest.TestCase):
         self.conn.executescript(
             """
             CREATE TABLE videos (
-                id INTEGER PRIMARY KEY, code TEXT, part TEXT, title_jp TEXT, title_zh TEXT,
+                id INTEGER PRIMARY KEY, code TEXT, part TEXT, title_jp TEXT, title_zh TEXT, title_zh_short TEXT,
                 release_date TEXT, duration INTEGER, maker TEXT, publisher TEXT, series TEXT,
                 score REAL, cover_path TEXT, original_file_path TEXT, scrape_status TEXT,
                 file_size INTEGER, file_mtime TEXT, file_birthtime TEXT, deleted INTEGER
