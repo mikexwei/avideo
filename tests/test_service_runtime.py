@@ -84,7 +84,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.store.get(second)['status'], 'WAITING')
         self.browser.scrape.assert_not_called()
 
-    def test_series_translation_is_durable_and_reused_without_merging_sources(self):
+    def test_series_translation_is_durable_and_shared_by_name_across_makers(self):
         raw = '時間・停止'
         self.browser.scrape.return_value = {'title_jp': '作品', 'series': raw, 'maker': '片商甲'}
         video, _ = self.dispatch('video', 'RBD-001')
@@ -92,12 +92,10 @@ class RuntimeTests(unittest.TestCase):
         self.consumer.tick()
         with self.store.connect(write=True) as conn:
             conn.execute("INSERT INTO videos(code,original_file_path,series,maker) VALUES ('RBD-002','two.mp4',?,'片商乙')", (raw,))
-            series_catalog.attach(conn, self.store, 'RBD-002', raw, '片商乙')
+            series_catalog.attach(conn, self.store, 'RBD-002', raw)
             entries = conn.execute('SELECT id_jp,name,status,task_id FROM series_cn ORDER BY id').fetchall()
-        self.assertEqual(len(entries), 2)
-        self.assertNotEqual(entries[0]['id_jp'], entries[1]['id_jp'])
-        self.assertEqual([(row['name'], row['status']) for row in entries], [(None, 'TRANSLATING')] * 2)
-        self.assertEqual(entries[0]['task_id'], entries[1]['task_id'])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual((entries[0]['name'], entries[0]['status']), (None, 'TRANSLATING'))
         translation = entries[0]['task_id']
         self.consumer.tick()
         self.complete_dependency({})
@@ -118,13 +116,19 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(get_video_by_code('RBD-001')['series'], raw)
         self.assertEqual(get_video_by_code('RBD-001')['series_zh'], '时间停止')
         self.assertEqual(get_video_by_code('RBD-002')['series_zh'], '时间停止')
-        self.assertEqual(len(list_all_series_with_count()), 2)
+        entry, = list_all_series_with_count()
+        self.assertEqual(entry['count'], 2)
 
     def test_series_report_publication_is_explicit_idempotent_and_detects_conflicts(self):
         with self.store.connect(write=True) as conn:
             conn.execute("UPDATE videos SET series='一号',maker='甲' WHERE code='RBD-001'")
             conn.execute("INSERT INTO videos(code,original_file_path,series,maker) VALUES ('RBD-002','two.mp4','二号','乙')")
-        series_catalog.backfill(self.store)
+            conn.execute("INSERT INTO videos(code,original_file_path,series) VALUES ('RBD-003','three.mp4','三号')")
+        with self.store.connect(write=True) as conn:
+            for code, raw in (('RBD-001', '一号'), ('RBD-002', '二号'), ('RBD-003', '三号')):
+                series_catalog.attach(conn, self.store, code, raw)
+            self.assertEqual(series_catalog.report_snapshot(conn), [])
+            conn.execute("UPDATE series_cn SET name='简体译名',status='DONE'")
         app = importlib.import_module('web.backend.app').app
         with patch('web.backend.admin_api.store', return_value=self.store), patch('web.backend.admin_api.ensure_worker'):
             client = app.test_client()
@@ -136,19 +140,164 @@ class RuntimeTests(unittest.TestCase):
                 self.consumer.tick()
                 with self.store.connect() as conn:
                     members = series_catalog.report_snapshot(conn)
-                self.complete_dependency({'members': members, 'groups': []})
+                self.complete_dependency({'version': series_catalog.REPORT_VERSION, 'members': members, 'groups': []})
                 self.assertEqual(client.get(f'{base}/{task_id}').get_json()['status'], 'DONE')
                 ids.append(task_id)
-            self.assertEqual(len(list_all_series_with_count()), 2)
-            groups = [{'name': '审核系列', 'member_ids': [row['id'] for row in members], 'final_id': None}]
+            self.assertEqual(len(list_all_series_with_count()), 3)
+            member_ids = [row['id'] for row in members]
+            groups = [{'name': 'A-B', 'member_ids': member_ids, 'final_id': None}]
             url = f'{base}/{ids[0]}/publish'
+            overlap = [{'name': 'A-B', 'member_ids': member_ids[:2]}, {'name': 'B-C', 'member_ids': member_ids[1:]}]
+            response = client.post(url, json={'groups': overlap})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(client.get(f'{base}/{ids[0]}').get_json()['published_groups'], groups)
+            self.assertEqual(client.post(url, json={'groups': overlap}).status_code, 200)
             self.assertEqual(client.post(url, json={'groups': groups}).status_code, 200)
             self.assertEqual(client.post(url, json={'groups': groups}).status_code, 200)
             self.assertEqual(client.post(f'{base}/{ids[1]}/publish', json={'groups': groups}).status_code, 409)
             entry, = list_all_series_with_count()
-            self.assertEqual((entry['series'], entry['count']), ('审核系列', 2))
-            self.assertEqual(get_videos_by_series(final_id=entry['final_id'])['total'], 2)
+            self.assertEqual((entry['series'], entry['count']), ('A-B', 3))
+            self.assertEqual(get_videos_by_series(final_id=entry['final_id'])['total'], 3)
             self.assertEqual(get_video_by_code('RBD-002')['series'], '二号')
+
+    def test_series_review_merges_transitive_links_and_rejects_conflicting_targets(self):
+        groups = [
+            {'name': 'A-B', 'member_ids': [1, 2], 'final_id': 10},
+            {'name': 'C-D', 'member_ids': [3, 4], 'final_id': None},
+            {'name': 'B-C', 'member_ids': [2, 3], 'final_id': None},
+            {'name': 'E-F', 'member_ids': [5, 6], 'final_id': None},
+        ]
+        self.assertEqual(series_catalog.combine_review_groups(groups), [
+            {'name': 'A-B', 'member_ids': [1, 2, 3, 4], 'final_id': 10},
+            {'name': 'E-F', 'member_ids': [5, 6], 'final_id': None},
+        ])
+        groups[1]['final_id'] = 20
+        with self.assertRaisesRegex(ValueError, '不同的发布目标'):
+            series_catalog.combine_review_groups(groups)
+
+    def test_series_report_embeds_only_normalized_simplified_translations(self):
+        members = [
+            {'id': 1, 'raw_name': '時間ストップ', 'name_zh': ' 時間・停止 ', 'id_final': None, 'final_name': None},
+            {'id': 2, 'raw_name': '女捜査官', 'name_zh': '女搜查官', 'id_final': None, 'final_name': None},
+            {'id': 3, 'raw_name': '未翻訳の名前', 'name_zh': None, 'id_final': None, 'final_name': None},
+        ]
+        with patch('ollama.Client') as client:
+            embed = client.return_value.embed
+            embed.return_value = {'embeddings': [[1, 0], [0, 1]]}
+            report = series_catalog.generate_report(members)
+            embed.assert_called_once_with(model='bge-m3', input=['时间停止', '女搜查官'])
+        self.assertEqual([row['raw_name'] for row in report['members']], ['時間ストップ', '女捜査官'])
+        self.assertEqual(report['groups'][0]['member_ids'], [1, 2])
+
+    def test_series_report_automatically_selects_only_scores_above_threshold(self):
+        from math import sqrt
+        members = [{'id': index, 'raw_name': f'原名{index}', 'name_zh': f'译名{index}',
+                    'id_final': None, 'final_name': None} for index in range(1, 5)]
+        boundary = series_catalog.AUTO_GROUP_THRESHOLD
+        with patch('ollama.Client') as model:
+            model.return_value.embed.return_value = {
+                'embeddings': [[1, 0], [1, 0], [1, 0], [boundary, sqrt(1 - boundary ** 2)]]
+            }
+            report = series_catalog.generate_report(members)
+        automatic = [row for row in report['groups'] if row['automatic']]
+        self.assertEqual([row['member_ids'] for row in automatic], [[1, 2], [1, 3]])
+        self.assertTrue(any(row['score'] == boundary and not row['automatic'] for row in report['groups']))
+
+    def test_series_review_next_round_uses_draft_name_and_publishes_only_on_request(self):
+        with self.store.connect(write=True) as conn:
+            for index, raw in enumerate(('甲原名', '乙原名', '丙原名', '丁原名'), 1):
+                code = f'RBD-{index:03}'
+                if index != 1:
+                    conn.execute('INSERT INTO videos(code,original_file_path) VALUES (?,?)', (code, f'{code}.mp4'))
+                conn.execute('UPDATE videos SET series=? WHERE code=?', (raw, code))
+                series_catalog.attach(conn, self.store, code, raw)
+            for index, name in enumerate(('甲译名', '乙译名', '丙译名', '丁译名'), 1):
+                conn.execute("""UPDATE scrape_tasks SET status='DONE',result_json=?
+                    WHERE id=(SELECT task_id FROM series_cn WHERE id=?)""", (json.dumps(name), index))
+            members = series_catalog.report_snapshot(conn)
+
+        app = importlib.import_module('web.backend.app').app
+        with patch('web.backend.admin_api.store', return_value=self.store), patch('web.backend.admin_api.ensure_worker'):
+            client = app.test_client()
+            base = '/api/admin/series/reports'
+            first = client.post(base).get_json()['id']
+            self.consumer.tick()
+            self.complete_dependency({'version': series_catalog.REPORT_VERSION, 'members': members, 'groups': []})
+            groups = [{'name': 'X', 'member_ids': [1, 2], 'final_id': None},
+                      {'name': 'Y', 'member_ids': [3, 4], 'final_id': None}]
+            next_url = f'{base}/{first}/next'
+            response = client.post(next_url, json={'groups': groups})
+            self.assertEqual(response.status_code, 202)
+            second = response.get_json()['id']
+            self.assertEqual(client.post(next_url, json={'groups': groups}).get_json()['id'], second)
+            self.consumer.tick()  # Dispatch the second round.
+            self.consumer.tick()  # Start its model call.
+            future, command = self.executor.calls[-1]
+            from core.event_consumer import execute_dependency
+            with patch('ollama.Client') as model:
+                embed = model.return_value.embed
+                embed.return_value = {'embeddings': [[1, 0], [1, 0]]}
+                future.set_result(execute_dependency(command))
+                embed.assert_called_once_with(model='bge-m3', input=['X', 'Y'])
+            self.consumer.tick()
+            report = client.get(f'{base}/{second}').get_json()['result']
+            self.assertEqual(report['round'], 2)
+            self.assertNotIn('members', report)
+            self.assertEqual([(unit['name'], unit['member_ids']) for unit in report['units']],
+                             [('X', [1, 2]), ('Y', [3, 4])])
+            self.assertEqual(report['groups'][0]['member_ids'], [1, 2, 3, 4])
+            self.assertEqual(report['groups'][0]['comparison_names'], ['X', 'Y'])
+            self.assertTrue(report['groups'][0]['automatic'])
+            self.assertEqual(client.post(next_url, json={'groups': groups}).get_json()['id'], second)
+
+            next_url = f'{base}/{second}/next'
+            for invalid in (groups[:1], [{'name': '拆组', 'member_ids': [1, 3, 4]}]):
+                self.assertEqual(client.post(next_url, json={'groups': invalid}).status_code, 400)
+            merged = [{'name': 'E', 'member_ids': [1, 2, 3, 4], 'final_id': None}]
+            response = client.post(next_url, json={'groups': merged})
+            self.assertEqual(response.status_code, 202)
+            third = response.get_json()['id']
+            self.consumer.tick()
+            self.consumer.tick()
+            future, command = self.executor.calls[-1]
+            with patch('ollama.Client') as model:
+                embed = model.return_value.embed
+                embed.return_value = {'embeddings': [[1, 0]]}
+                future.set_result(execute_dependency(command))
+                embed.assert_called_once_with(model='bge-m3', input=['E'])
+            self.consumer.tick()
+            report = client.get(f'{base}/{third}').get_json()['result']
+            self.assertEqual(report['round'], 3)
+            self.assertNotIn('members', report)
+            self.assertEqual([unit['name'] for unit in report['units']], ['E'])
+            self.assertEqual(report['groups'], [])
+            self.assertEqual(len(list_all_series_with_count()), 4)
+            self.assertEqual(client.post(f'{base}/{third}/publish', json={'groups': merged}).status_code, 200)
+            entry, = list_all_series_with_count()
+            self.assertEqual((entry['series'], entry['count']), ('E', 4))
+
+    def test_series_name_migration_retains_links_translation_and_reviewed_group(self):
+        path = self.root / 'legacy.db'
+        with sqlite3.connect(path) as conn:
+            conn.executescript("""
+                CREATE TABLE series_jp(id INTEGER PRIMARY KEY, raw_name TEXT, scope TEXT,
+                    maker TEXT, source_ref TEXT, UNIQUE(raw_name,scope));
+                CREATE TABLE series_final(id INTEGER PRIMARY KEY, name TEXT, revision INTEGER DEFAULT 0);
+                CREATE TABLE series_cn(id INTEGER PRIMARY KEY, id_jp INTEGER UNIQUE REFERENCES series_jp(id),
+                    name TEXT, status TEXT, task_id TEXT, id_final INTEGER REFERENCES series_final(id));
+                CREATE TABLE videos(id INTEGER PRIMARY KEY, series_jp_id INTEGER REFERENCES series_jp(id));
+                INSERT INTO series_jp VALUES (1,'同名','maker:a','A',''), (2,'同名','maker:b','B','');
+                INSERT INTO series_final(id,name) VALUES (1,'已审核名称');
+                INSERT INTO series_cn VALUES (1,1,'简体译名','DONE',NULL,NULL), (2,2,NULL,'FAILED',NULL,1);
+                INSERT INTO videos VALUES (1,1), (2,2);
+            """)
+        store = RuntimeStore(path)
+        with store.connect() as conn:
+            self.assertEqual([tuple(row) for row in conn.execute('SELECT * FROM series_jp')], [(2, '同名')])
+            self.assertEqual([tuple(row) for row in conn.execute('SELECT id_jp,name,status,id_final FROM series_cn')],
+                             [(2, '简体译名', 'DONE', 1)])
+            self.assertEqual([row[0] for row in conn.execute('SELECT series_jp_id FROM videos ORDER BY id')], [2, 2])
+            self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
 
     def test_published_result_survives_consumer_stop_and_duplicate_publish(self):
         task_id, command = self.dispatch()

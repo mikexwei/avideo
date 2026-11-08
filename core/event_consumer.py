@@ -145,7 +145,12 @@ class Consumer:
                 args = dict(payload, code=task['code'])
                 if kind == 'series_report':
                     with self.store.connect() as conn:
-                        args['members'] = series_catalog.report_snapshot(conn)
+                        if payload.get('parent_id'):
+                            parent = series_catalog.completed_report(conn, payload['parent_id'])
+                            series_catalog.validate_review_groups(conn, parent, payload['draft_groups'])
+                            args['members'] = parent['members']
+                        else:
+                            args['members'] = series_catalog.report_snapshot(conn)
                 if kind == 'translate' and task['code']:
                     args['snapshot'] = snapshot(self.store, task['code'])
                 if kind == 'actor' and payload.get('actor_id'):
@@ -174,8 +179,7 @@ class Consumer:
                     expected[0]['id'], 'FREEZE' if result == 'FREEZE' else 'SUCCESS' if result else 'FAILED',
                     result if isinstance(result, dict) else None, connection=conn))
                 if isinstance(result, dict):
-                    series_catalog.attach(conn, self.store, state['code'], result.get('series'),
-                                          result.get('maker'), result.get('series_source_ref', ''))
+                    series_catalog.attach(conn, self.store, state['code'], result.get('series'))
                 for actor_id, name in new_actors:
                     self.store.submit_actor(name, actor_id, source_code=state['code'], connection=conn)
             self.commit_phase(task, state, apply_metadata)
@@ -369,7 +373,6 @@ class Consumer:
     def run(self):
         self.store.recover_service('consumer')
         self.store.recover_service('dependency')
-        series_catalog.backfill(self.store)
         while not self.terminate.is_set():
             control = self.store.service('consumer')
             if control['desired'] != 'run' or control['restart_token'] != control['generation']:

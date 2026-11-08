@@ -117,3 +117,25 @@
 .admin-view .series-review-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 8px; }
 .admin-view .series-review-fields label { display: grid; gap: 4px; min-width: 0; }
 .admin-view .series-review-fields input, .admin-view .series-review-fields select { width: 100%; min-width: 0; }
+
+.admin-view .series-review-table-wrap { padding: 0; }
+.admin-view .series-review-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.admin-view .series-check-col { width: 52px; }
+.admin-view .series-name-col { width: 23%; }
+.admin-view .series-score-col { width: 88px; }
+.admin-view .series-review-table th, .admin-view .series-review-table td { padding: 12px; text-align: start; vertical-align: top; overflow-wrap: anywhere; }
+.admin-view .series-review-table thead { background: var(--subtle); color: var(--muted); font-size: var(--text-small); }
+.admin-view .series-review-table tbody tr { border-top: 1px solid var(--line); }
+.admin-view .series-group-check { display: grid; place-items: center; min-height: 30px; cursor: pointer; }
+.admin-view .series-score { color: var(--muted); font-size: var(--text-small); font-variant-numeric: tabular-nums; }
+.admin-view .series-member-list { display: grid; gap: 10px; }
+.admin-view .series-member { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 6px 12px; }
+.admin-view .series-member > div { flex: 1 1 160px; }
+.admin-view .series-raw-name { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+.admin-view .series-group-selected, .admin-view .series-review-edit { background: var(--subtle); }
+@media (max-width: 600px) {
+  .admin-view .series-review-table th, .admin-view .series-review-table td { padding: 8px 5px; font-size: 13px; }
+  .admin-view .series-check-col { width: 40px; }
+  .admin-view .series-score-col { width: 58px; }
+  .admin-view .series-member .hint { font-size: 12px; }
+}

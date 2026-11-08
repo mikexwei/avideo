@@ -7,7 +7,7 @@ def execute(kind, payload):
         return translate_series(payload['raw_name'])
     if kind == 'series_report':
         from core.series_catalog import generate_report
-        return generate_report(payload['members'])
+        return generate_report(payload['members'], payload.get('draft_groups', ()), payload.get('round', 1))
     if kind == 'translate':
         from core.translator.service import translate_title
         return translate_title(payload['title'], payload.get('codes', []),

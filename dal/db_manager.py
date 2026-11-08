@@ -1273,7 +1273,6 @@ def _series_entries(conn):
         CASE WHEN f.id IS NULL THEN j.id END AS jp_id,
         COALESCE(f.name,MAX(c.name),MAX(v.series)) AS series,
         CASE WHEN f.id IS NULL THEN MAX(v.series) END AS raw_name,
-        CASE WHEN f.id IS NULL THEN MAX(j.maker) END AS maker,
         CASE WHEN f.id IS NULL THEN MAX(c.status) END AS translation_status,
         COUNT(DISTINCT v.code) AS count
         FROM videos v LEFT JOIN series_jp j ON j.id=v.series_jp_id
@@ -1930,8 +1929,8 @@ def patch_video(code: str, fields: Dict[str, Any], *, series_store=None) -> bool
         changed = cursor.rowcount > 0
         if changed and series_store is not None:
             from core.series_catalog import attach
-            row = conn.execute('SELECT series,maker FROM videos WHERE code=? ORDER BY id LIMIT 1', (code,)).fetchone()
-            attach(conn, series_store, code, row['series'], row['maker'])
+            row = conn.execute('SELECT series FROM videos WHERE code=? ORDER BY id LIMIT 1', (code,)).fetchone()
+            attach(conn, series_store, code, row['series'])
         conn.commit()
         logger.info(f"✏️ patch_video [{code}]: {list(allowed.keys())}")
         return changed

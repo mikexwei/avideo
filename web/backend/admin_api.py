@@ -7,7 +7,10 @@ from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, redirect, request
 from core.browser_queue import BROWSER_TIMEZONE
-from core.series_catalog import ReviewConflict, publish as publish_series
+from core.series_catalog import (
+    REPORT_VERSION, ReviewConflict, combine_review_groups, completed_report, normalize_input,
+    publish as publish_series, report_units, validate_review_groups,
+)
 from core.worker_client import ensure_worker, store
 from core.service_manager import control_service
 
@@ -45,7 +48,9 @@ def register_admin_api(app):
             ensure_worker()
             return jsonify(id=task_id), 202
         with runtime.connect() as conn:
-            rows = conn.execute("""SELECT t.id,t.status,t.created_at,t.error,p.published_at
+            rows = conn.execute("""SELECT t.id,t.status,t.created_at,t.error,p.published_at,
+                json_extract(t.result_json,'$.version') AS version,
+                COALESCE(json_extract(t.payload_json,'$.round'),1) AS round
                 FROM scrape_tasks t LEFT JOIN series_publications p ON p.report_id=t.id
                 WHERE t.kind='series_report' AND t.deleted=0 ORDER BY t.created_at DESC LIMIT 20""").fetchall()
         return jsonify([dict(row) for row in rows])
@@ -58,8 +63,49 @@ def register_admin_api(app):
                 WHERE t.id=? AND t.kind='series_report' AND t.deleted=0""", (report_id,)).fetchone()
         if not row:
             return jsonify(error='报告不存在'), 404
-        return jsonify(status=row['status'], error=row['error'], result=json.loads(row['result_json'] or 'null'),
+        result = json.loads(row['result_json'] or 'null')
+        if result and result.get('version') == REPORT_VERSION and result.get('round', 1) > 1:
+            members = result.pop('members')
+            units = report_units(members, result['draft_groups'])
+            final_ids = {member['id']: member['id_final'] for member in members if member['id_final'] is not None}
+            for unit in units:
+                unit['final_ids'] = sorted({final_ids[i] for i in unit['member_ids'] if i in final_ids})
+            result['units'] = units
+            result['final_names'] = {member['id_final']: member['final_name'] for member in members
+                                     if member['id_final'] is not None}
+        return jsonify(status=row['status'], error=row['error'], result=result,
                        published_at=row['published_at'], published_groups=json.loads(row['groups_json'] or 'null'))
+
+    @api.post('/api/admin/series/reports/<report_id>/next')
+    def series_report_next(report_id):
+        data = request.get_json(silent=True)
+        groups = data.get('groups') if isinstance(data, dict) else None
+        if not isinstance(groups, list) or not groups:
+            raise ValueError('请先确认至少一组审核草稿')
+        groups = combine_review_groups(groups)
+        if any(not normalize_input(group['name']) for group in groups):
+            raise ValueError('草稿名称须包含可用于比较的文字或数字')
+        runtime = store()
+        try:
+            with runtime.connect(write=True) as conn:
+                parent = completed_report(conn, report_id)
+                if conn.execute('SELECT 1 FROM series_publications WHERE report_id=?', (report_id,)).fetchone():
+                    raise ReviewConflict('本轮已发布，请生成新报告')
+                payload = {'parent_id': report_id, 'draft_groups': groups, 'round': parent.get('round', 1) + 1}
+                active = conn.execute("""SELECT id,payload_json FROM scrape_tasks WHERE kind='series_report'
+                    AND status IN ('PENDING','RUNNING','WAITING') AND deleted=0 AND cancel_requested=0 LIMIT 1""").fetchone()
+                if active and json.loads(active['payload_json']) != payload:
+                    raise ReviewConflict('已有系列报告正在生成，请稍后重试')
+                validate_review_groups(conn, parent, groups)
+                existing = active or conn.execute("""SELECT id FROM scrape_tasks
+                    WHERE kind='series_report' AND status='DONE' AND deleted=0 AND payload_json=?
+                    ORDER BY created_at DESC LIMIT 1""", (json.dumps(payload, ensure_ascii=False),)).fetchone()
+                task_id = existing['id'] if existing else runtime.submit(
+                    'series_report', '系列聚合报告', payload, priority=-100, connection=conn)
+        except ReviewConflict as exc:
+            return jsonify(error=str(exc)), 409
+        ensure_worker()
+        return jsonify(id=task_id), 202
 
     @api.post('/api/admin/series/reports/<report_id>/publish')
     def series_report_publish(report_id):

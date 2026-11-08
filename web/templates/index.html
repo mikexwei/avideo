@@ -165,9 +165,11 @@
   <!-- ========== BatchModal ========== -->
   <script type="text/x-template" id="tpl-batch-modal">
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80" @click.self="!batchProcessing && $emit('close')">
-    <div class="bg-gray-900 rounded-xl w-full max-w-4xl mx-4 shadow-2xl" style="max-height:90vh;overflow-y:auto">
-      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
-        <h2>批量添加/替换</h2>
+    <div class="batch-upload bg-gray-900 rounded-xl w-full max-w-4xl mx-4 shadow-2xl"
+      role="dialog" aria-modal="true" aria-labelledby="batch-upload-title"
+      @keydown.tab="keepBatchFocus" @keydown.esc.stop="!batchProcessing && $emit('close')">
+      <div class="batch-upload-bar flex items-center justify-between gap-2 border-b border-gray-800">
+        <h2 id="batch-upload-title" ref="batchTitle" tabindex="-1">批量添加 / 替换</h2>
         <div class="flex items-center gap-3">
           <span class="text-xs text-gray-500" v-if="batchStep !== 'batch-progress' || batchProcessing">
             步骤 {{ batchStepNum }} / 3
@@ -179,19 +181,19 @@
 
       <!-- Step 1: batch-select -->
       <template v-if="batchStep === 'batch-select'">
-        <div class="p-5 flex flex-col gap-4">
+        <div class="batch-upload-body flex flex-col gap-4">
           <div>
-            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">选择视频文件</div>
+            <h3 class="font-semibold mb-2">选择视频文件</h3>
             <div class="flex flex-col gap-2">
               <div v-if="batchFiles.length" class="flex flex-col gap-1">
-                <div v-for="(f, i) in batchFiles" :key="i"
+                <div v-for="(f, i) in batchFiles" :key="f.name"
                   class="flex items-center gap-2 px-3 py-1.5 bg-gray-800 rounded text-sm">
-                  <span class="text-indigo-400 text-xs">🎬</span>
-                  <span class="flex-1 truncate text-gray-300 font-mono text-xs">{{ f.name }}</span>
+                  <span class="batch-upload-filename flex-1 min-w-0">{{ f.name }}</span>
+                  <button class="ui-button" :aria-label="'移除 ' + f.name" @click="batchFiles.splice(i, 1); $refs.batchFilePicker.focus()">移除</button>
                 </div>
               </div>
-              <button @click="$refs.batchFileInput.click()"
-                class="px-4 py-2.5 border border-dashed border-gray-700 rounded-lg text-sm text-gray-400 hover:border-gray-500 hover:text-gray-300 text-center transition-colors">
+              <button ref="batchFilePicker" @click="$refs.batchFileInput.click()"
+                class="upload-picker text-sm text-gray-300">
                 {{ batchFiles.length ? '+ 添加更多文件' : '点击选择视频文件…' }}
               </button>
               <input ref="batchFileInput" type="file" class="hidden" multiple
@@ -203,134 +205,108 @@
             {{ batchCheckError }}
           </div>
         </div>
-        <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-800">
+        <div class="batch-upload-bar flex justify-end gap-2 border-t border-gray-800">
           <button @click="$emit('close')"
             class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">取消</button>
           <button @click="runBatchCheck" :disabled="!batchFiles.length || batchChecking"
             class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
             <span v-if="batchChecking">检测中…</span>
-            <span v-else>下一步 →</span>
+            <span v-else>检测并确认</span>
           </button>
         </div>
       </template>
 
       <!-- Step 2: batch-review -->
       <template v-if="batchStep === 'batch-review'">
-        <div class="p-5 flex flex-col gap-4">
+        <div class="batch-upload-body flex flex-col gap-4">
           <div class="text-sm text-gray-400">
             检测到 {{ batchGroups.length }} 个番号 —
             <span class="text-green-400">{{ batchGroups.filter(g => !g.exists && !g.warning).length }} 新增</span>，
             <span class="text-yellow-400">{{ batchGroups.filter(g => g.exists && !g.warning).length }} 替换</span>
-            <span v-if="batchGroups.filter(g => g.warning).length" class="text-orange-400">
+            <span v-if="hasWarnings" class="text-yellow-400">
               ，{{ batchGroups.filter(g => g.warning).length }} 需要处理
             </span>
           </div>
 
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm border-collapse">
-              <thead>
-                <tr class="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
-                  <th class="text-left py-2 px-2">番号</th>
-                  <th class="text-left py-2 px-2">文件</th>
-                  <th class="text-left py-2 px-2">操作</th>
-                  <th class="text-left py-2 px-2">标签确认</th>
-                  <th class="text-left py-2 px-2">目标文件名</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="g in batchGroups" :key="g.code || g.files[0].filename"
-                  :class="['border-b border-gray-800', g.warning ? 'bg-orange-900 bg-opacity-10' : g.exists ? 'bg-yellow-900 bg-opacity-5' : '']">
-                  <td class="py-2 px-2 font-mono text-indigo-400 text-xs whitespace-nowrap">{{ g.code || '?' }}</td>
-                  <td class="py-2 px-2 align-top">
-                    <div style="max-width:14rem">
-                      <div v-for="f in g.files" :key="f.filename"
-                        class="text-xs text-gray-400 truncate font-mono">{{ f.filename }}</div>
-                      <div v-if="g.exists && g.original_path"
-                        class="text-xs text-gray-600 truncate mt-0.5">→ {{ g.original_path }}</div>
-                    </div>
-                  </td>
-                  <td class="py-2 px-2 whitespace-nowrap">
-                    <span v-if="g.warning"
-                      class="px-1.5 py-0.5 rounded text-xs font-bold bg-orange-900 bg-opacity-40 text-orange-400">⚠ 警告</span>
-                    <template v-else-if="g.exists">
-                      <span class="px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-900 bg-opacity-40 text-yellow-400">替换</span>
-                    </template>
-                    <template v-else>
-                      <span class="px-1.5 py-0.5 rounded text-xs font-bold bg-green-900 bg-opacity-40 text-green-400">新增</span>
-                      <span v-if="g.files.length > 1"
-                        class="ml-1 px-1.5 py-0.5 rounded text-xs font-bold bg-indigo-900 bg-opacity-40 text-indigo-400">
-                        {{ g.files.length }} parts
-                      </span>
-                    </template>
-                  </td>
-                  <td class="py-2 px-2 whitespace-nowrap align-top">
-                    <div v-if="g.warning" class="text-xs text-orange-400 max-w-xs leading-snug whitespace-normal">{{ g.warning }}</div>
-                    <div v-else class="flex flex-col gap-1.5">
-                      <label v-for="[key, label] in [['uncensored_native','原装无码']]"
-                        :key="key" class="flex items-center gap-1.5 cursor-pointer">
-                        <button @click="toggleGroupTag(g, key)"
-                          class="w-7 h-4 rounded-full transition-colors flex-shrink-0 relative"
-                          :class="g[key] ? 'bg-indigo-600' : 'bg-gray-700'">
-                          <span class="absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all"
-                            :class="g[key] ? 'left-3.5' : 'left-0.5'"></span>
-                        </button>
-                        <span class="text-xs text-gray-400 whitespace-nowrap">{{ label }}</span>
-                      </label>
-                      <div class="flex flex-wrap gap-2">
-                        <button v-for="[value,label] in [['','无中文'],['机翻中文','机翻中文'],['中文字幕','中文字幕']]"
-                          :key="label" @click="g.subtitle_classification = value"
-                          class="tag-pill" :aria-pressed="g.subtitle_classification === value">
-                          {{ label }}
-                        </button>
-                      </div>
-                      <div class="flex flex-wrap gap-2 pt-1">
-                        <button @click="g.uncensored_crack_tag = ''"
-                          class="tag-pill" :aria-pressed="!g.uncensored_crack_tag">
-                          有码
-                        </button>
-                        <button v-for="tag in ['JAV 无码破解','LADA 无码破解','LTX 无码破解']" :key="tag"
-                          @click="g.uncensored_crack_tag = tag"
-                          class="tag-pill" :aria-pressed="g.uncensored_crack_tag === tag">
-                          {{ tag.replace(' 无码破解', '') }}
-                        </button>
-                      </div>
-                    </div>
-                  </td>
-                  <td class="py-2 px-2 align-top">
-                    <div v-if="g.exists && !g.warning" style="max-width:16rem"
-                      class="text-xs text-indigo-300 font-mono break-all leading-relaxed">
-                      <div v-for="name in expectedFinalNames(g)" :key="name">{{ name }}</div>
-                    </div>
-                    <div v-else class="text-xs text-gray-600">—</div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <ul class="batch-review-list" aria-label="待上传影片">
+            <li v-for="g in batchGroups" :key="g.code || g.files[0].filename"
+              class="batch-review-card" :class="{ 'border-amber-900': g.warning }">
+              <div class="batch-review-file">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h3 class="batch-review-code">{{ g.code || '番号未识别' }}</h3>
+                  <span class="batch-review-badge" :class="g.warning || g.exists ? 'bg-yellow-900 text-yellow-400' : 'bg-green-900 text-green-400'">
+                    {{ g.warning ? '需要处理' : g.exists ? '替换' : '新增' }}
+                  </span>
+                  <span v-if="g.files.length > 1" class="text-xs text-gray-400">{{ g.files.length }} 个文件</span>
+                </div>
+                <ul class="mt-2">
+                  <li v-for="f in g.files" :key="f.filename" class="batch-upload-filename">{{ f.filename }}</li>
+                </ul>
+                <dl v-if="g.exists && !g.warning" class="batch-review-destination">
+                  <div v-if="g.original_path">
+                    <dt>当前文件</dt><dd>{{ g.original_path }}</dd>
+                  </div>
+                  <div>
+                    <dt>替换后的文件名</dt>
+                    <dd v-for="name in expectedFinalNames(g)" :key="name">{{ name }}</dd>
+                  </div>
+                </dl>
+              </div>
+              <p v-if="g.warning" class="batch-review-settings text-yellow-400 text-sm">{{ g.warning }}</p>
+              <div v-else class="batch-review-settings">
+                <div role="group" aria-label="字幕" class="batch-review-options">
+                  <span class="batch-review-label">字幕</span>
+                  <div class="flex flex-wrap gap-2">
+                    <button v-for="[value, label] in [['','无中文'],['机翻中文','机翻中文'],['中文字幕','中文字幕']]"
+                      :key="label" @click="g.subtitle_classification = value"
+                      class="tag-pill" :aria-pressed="g.subtitle_classification === value">
+                      {{ label }}
+                    </button>
+                  </div>
+                </div>
+                <div role="group" aria-label="破解标签" class="batch-review-options">
+                  <span class="batch-review-label">破解标签</span>
+                  <div class="flex flex-wrap gap-2">
+                    <button @click="g.uncensored_crack_tag = ''" class="tag-pill" :aria-pressed="!g.uncensored_crack_tag">
+                      未标记
+                    </button>
+                    <button v-for="tag in ['JAV 无码破解','LADA 无码破解','LTX 无码破解']" :key="tag"
+                      @click="g.uncensored_crack_tag = tag" class="tag-pill" :aria-pressed="g.uncensored_crack_tag === tag">
+                      {{ tag.replace(' 无码破解', '') }}
+                    </button>
+                  </div>
+                </div>
+                <label v-if="g.exists" class="batch-native-check">
+                  <input type="checkbox" v-model="g.uncensored_native">
+                  原装无码
+                </label>
+              </div>
+            </li>
+          </ul>
 
           <!-- Volume picker — only for new files -->
-          <div v-if="hasNewGroups" class="border-t border-gray-800 pt-4">
-            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">新增文件存放位置</div>
+          <fieldset v-if="hasNewGroups" class="min-w-0">
+            <legend class="font-semibold mb-2">新增文件存放位置</legend>
             <div class="flex flex-col gap-2">
               <label v-for="v in mediaLibraries" :key="v.path"
                 class="flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors"
                 :class="batchVolume === v.path ? 'border-indigo-500 bg-indigo-950' : 'border-gray-700 bg-gray-800 hover:border-gray-600'">
                 <input type="radio" :value="v.path" v-model="batchVolume" class="accent-indigo-500" />
-                <span class="flex-1 text-sm text-gray-200 truncate">{{ v.path }}</span>
+                <span class="flex-1 min-w-0 text-sm text-gray-200 break-all">{{ v.path }}</span>
                 <span v-if="v.free_gb !== null" class="text-xs flex-shrink-0"
                   :class="v.free_gb < 10 ? 'text-red-400' : 'text-gray-400'">
                   {{ v.free_gb }} GB 可用
                 </span>
               </label>
             </div>
-          </div>
-          <div v-else class="text-xs text-gray-500 text-center py-1">
-            替换文件将上传至原视频所在目录，无需选择 Volume
-          </div>
+          </fieldset>
+          <p v-else-if="!hasWarnings" class="text-sm text-gray-400">替换文件将保存在原视频所在目录。</p>
         </div>
-        <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-800">
+        <div class="batch-upload-bar flex flex-wrap items-center justify-end gap-2 border-t border-gray-800">
+          <p v-if="hasWarnings" class="batch-upload-hint text-sm text-yellow-400">请返回移除有问题的文件，或改名后重新选择。</p>
+          <p v-else-if="hasNewGroups && !batchVolume" class="batch-upload-hint text-sm text-gray-400">请选择新增文件的存放位置。</p>
           <button @click="batchStep = 'batch-select'"
-            class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">← 返回</button>
+            class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">返回选文件</button>
           <button @click="startBatchProcess" :disabled="!canStartUpload"
             class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
             开始上传
@@ -340,7 +316,7 @@
 
       <!-- Step 3: batch-progress -->
       <template v-if="batchStep === 'batch-progress'">
-        <div class="p-5 flex flex-col gap-3" style="max-height:65vh;overflow-y:auto">
+        <div class="batch-upload-body flex flex-col gap-3">
           <div v-for="(r, i) in batchResults" :key="r.code || i"
             :class="['rounded-lg p-3 transition-colors', r.status === 'running' ? 'border border-indigo-600 bg-indigo-950 bg-opacity-50' : 'bg-gray-800']">
             <!-- Row header -->
@@ -398,7 +374,7 @@
             / {{ batchResults.length }} 已处理
           </div>
         </div>
-        <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-800">
+        <div class="batch-upload-bar flex flex-wrap items-center justify-end gap-2 border-t border-gray-800">
           <router-link v-if="!batchProcessing && batchResults.some(r => r.type === 'new' && r.status === 'done')" to="/scrape-progress"
             class="px-4 py-2 text-sm text-indigo-300">查看刮削进度</router-link>
           <button @click="$emit('close')" :disabled="batchProcessing"
@@ -875,11 +851,11 @@
         <div>
           <p class="section-kicker">OPERATIONS / SERIES</p>
           <h1>系列聚合审核</h1>
-          <p>模型生成候选。审核发布后，所选成员才会合并显示。</p>
+          <p>模型只比较已完成的简体译名。审核发布后，所选成员才会合并显示。</p>
         </div>
         <div class="flex flex-wrap gap-2">
           <router-link to="/admin" class="ui-button">返回管理</router-link>
-          <button class="primary" @click="generate" :disabled="busy || hasActive">生成系列聚合报告</button>
+          <button class="primary" @click="generate" :disabled="busy || hasActive">{{ report?.result ? '从第一轮重新生成' : '生成系列聚合报告' }}</button>
         </div>
       </header>
 
@@ -889,7 +865,7 @@
           <select id="series-report" v-model="reportId" @change="loadReport" class="min-w-0 max-w-full">
             <option value="">选择报告</option>
             <option v-for="item in reports" :key="item.id" :value="item.id">
-              {{ formatDate(item.created_at) }} · {{ reportStatus(item) }}
+              第 {{ item.round || 1 }} 轮 · {{ formatDate(item.created_at) }} · {{ reportStatus(item) }}
             </option>
           </select>
           <button @click="refresh" :disabled="busy">刷新</button>
@@ -902,63 +878,123 @@
         <div v-if="report.published_at" class="card mt-4">
           <h2>已发布</h2>
           <p class="hint">本报告已发布 {{ report.published_groups.length }} 组。继续调整时请生成新报告。</p>
-          <ul class="mt-3 space-y-2">
-            <li v-for="(group, i) in report.published_groups" :key="i">
-              <strong>{{ group.name }}</strong> · {{ group.member_ids.map(id => members[id].raw_name).join('、') }}
-            </li>
-          </ul>
+          <table class="series-review-table mt-3" aria-label="已发布的系列">
+            <thead><tr><th scope="col">最终名称</th><th scope="col">成员</th></tr></thead>
+            <tbody>
+              <tr v-for="(group, i) in report.published_groups" :key="i">
+                <th scope="row">{{ group.name }}</th>
+                <td>
+                  <ul class="series-member-list">
+                    <li v-for="unit in unitsFor(group.member_ids)" :key="unit.key">
+                      <strong>{{ unit.name }}</strong>
+                      <small v-if="unit.raw" class="series-raw-name">原文：{{ unit.raw }}</small>
+                    </li>
+                  </ul>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
+        <p v-else-if="report.result.version !== 3" class="card mt-4">此报告使用旧的系列规则，请重新生成报告。</p>
         <template v-else>
           <div class="library-heading mt-6">
-            <div><h2>聚合候选</h2><p class="hint">{{ report.result.members.length }} 个来源条目 · {{ report.result.groups.length }} 组模型候选</p></div>
+            <div><h2>聚合候选</h2><p class="hint">第 {{ report.result.round || 1 }} 轮 · {{ reviewUnits.length }} 个比较对象 · {{ report.result.groups.length }} 组模型候选</p></div>
             <div class="flex flex-wrap gap-2">
-              <button @click="addGroup">手工新建组</button>
-              <button class="primary" @click="publish" :disabled="busy || !selectedCount">发布审核结果（{{ selectedCount }} 组）</button>
+              <button v-if="reviewUnits.length > 1 || reviewUnits.some(unit => unit.finalIds.length)" @click="addGroup">手工新建组</button>
+              <button @click="nextRound" :disabled="busy || hasActive || !publishGroups.length || conflictingTargets">用已选草稿生成下一轮</button>
+              <button class="primary" @click="publish" :disabled="busy || !publishGroups.length || conflictingTargets">发布审核结果（{{ publishGroups.length }} 组）</button>
             </div>
           </div>
-          <p v-if="!drafts.length" class="card">暂无模型候选。可以手工建立审核组。</p>
-          <div class="space-y-3">
-            <article class="card" v-for="(group, index) in drafts.slice(0, visible)" :key="group.key">
-              <label class="flex gap-2 items-center" :for="'review-group-' + index">
-                <input :id="'review-group-' + index" type="checkbox" v-model="group.accept">
-                <strong>{{ group.name || '手工审核组' }}</strong>
-              </label>
-              <p class="hint">{{ group.score == null ? '手工添加' : 'BGE-M3 ' + group.score.toFixed(4) + ' · ' + group.reason }}</p>
-              <ul class="mt-3 space-y-2">
-                <li v-for="id in group.ids" :key="id" class="flex flex-wrap items-center justify-between gap-2">
-                  <div class="min-w-0">
-                    <div>{{ members[id].raw_name }} <span v-if="members[id].name_zh" class="text-indigo-300">· {{ members[id].name_zh }}</span></div>
-                    <p class="hint">{{ members[id].maker || '片商未知' }} · {{ members[id].films }} 部 ·
-                      <router-link :to="'/video/' + encodeURIComponent(members[id].sample)" class="text-indigo-300">{{ members[id].sample }}</router-link>
-                      <span v-if="members[id].source_ref"> · {{ members[id].source_ref }}</span>
-                      <span v-if="members[id].final_name"> · 已归入 {{ members[id].final_name }}</span>
-                    </p>
-                  </div>
-                  <button v-if="group.accept" @click="removeMember(group, id)" :aria-label="'移除 ' + members[id].raw_name">移除</button>
-                </li>
-              </ul>
-              <div v-if="group.accept" class="series-review-fields mt-4">
-                <label>最终名称 <input v-model.trim="group.name" maxlength="300"></label>
-                <label>发布到
-                  <select v-model="group.finalId">
-                    <option :value="null">新建最终系列</option>
-                    <option v-for="id in existingGroups(group)" :key="id" :value="id">{{ finalNames[id] }}</option>
-                  </select>
-                </label>
-                <label>搜索可添加的成员 <input v-model.trim="group.query" placeholder="原名、译名、片商或番号"></label>
-                <label v-if="group.query">匹配的成员
-                  <select :value="''" @change="addMember(group, $event)">
-                    <option value="">选择后加入此组</option>
-                    <option v-for="row in availableMembers(group)" :key="row.id" :value="row.id">
-                      {{ row.raw_name }} · {{ row.maker || '片商未知' }} · {{ row.sample }}
-                    </option>
-                  </select>
-                </label>
+          <section v-if="reviewUnits.length" class="card mb-4" aria-label="本轮比较对象">
+            <h3>本轮比较对象</h3>
+            <ul class="flex flex-wrap gap-2 mt-2">
+              <li v-for="unit in reviewUnits.slice(0, unitLimit)" :key="unit.key" class="tag-pill break-all">{{ unit.name }}</li>
+            </ul>
+            <button v-if="unitLimit < reviewUnits.length" class="mt-2" @click="unitLimit += 30">查看更多比较对象</button>
+          </section>
+          <p v-if="report.result.groups.some(group => group.automatic)" class="hint mb-3">相似度大于 0.95 的候选已自动加入草稿，可以取消勾选。</p>
+          <section v-if="mergedGroups.length" class="card mb-4" aria-label="合并预览">
+            <h3>合并预览</h3>
+            <p class="hint">含有共同成员的已选候选会发布为一组。取消某条候选可以调整合并范围。</p>
+            <div v-for="group in mergedGroups" :key="group.first.key" class="series-review-fields mt-3">
+              <label>合并后的最终名称 <input v-model.trim="group.first.name" maxlength="300"></label>
+              <div>
+                <p>{{ unitsFor(group.ids).map(unit => unit.name).join('、') }}</p>
+                <p v-if="group.targets.size > 1" class="record-error" role="status">选中了不同的发布目标，请在下方候选中只保留一个。</p>
+                <p v-else-if="group.targets.size" class="hint">发布到 {{ finalNames[[...group.targets][0]] }}</p>
               </div>
-            </article>
+            </div>
+          </section>
+          <p v-if="!candidateDrafts.length" class="card">
+            {{ reviewUnits.length === 0
+              ? '暂无可用于比较的已翻译系列。新刮到的系列名翻译完成后，可以重新生成报告。'
+              : reviewUnits.length === 1
+                ? (publishGroups.length ? '本轮只有一个比较对象，可以直接发布审核结果。' : '本轮只有一个比较对象。至少需要两个系列才能比较。')
+                : '本轮暂无模型候选。可以手工建立审核组。' }}
+          </p>
+          <div v-else class="card series-review-table-wrap">
+            <table class="series-review-table" aria-label="系列聚合候选">
+              <colgroup><col class="series-check-col"><col class="series-name-col"><col class="series-score-col"><col></colgroup>
+              <thead>
+                <tr><th scope="col">选择</th><th scope="col">建议最终名</th><th scope="col">相似度</th><th scope="col">比较对象</th></tr>
+              </thead>
+              <tbody v-for="group in candidateDrafts.slice(0, visible)" :key="group.key">
+                <tr :class="{ 'series-group-selected': group.accept }">
+                  <td><label class="series-group-check">
+                    <input type="checkbox" v-model="group.accept" :aria-label="'选择 ' + (group.name || '手工审核组')">
+                  </label></td>
+                  <th scope="row">{{ group.name || '手工审核组' }}
+                    <small v-if="group.automatic" class="series-raw-name">已自动加入草稿</small>
+                  </th>
+                  <td class="series-score">{{ group.score == null ? '—' : group.score.toFixed(4) }}</td>
+                  <td>
+                    <ul class="series-member-list">
+                      <li v-for="unit in unitsFor(group.ids)" :key="unit.key" class="series-member">
+                        <div class="min-w-0">
+                          <strong>{{ unit.name }}</strong>
+                          <small v-if="unit.raw" class="series-raw-name">原文：{{ unit.raw }}</small>
+                          <p v-if="unit.sample" class="hint">{{ unit.films }} 部 ·
+                            <router-link :to="'/video/' + encodeURIComponent(unit.sample)" class="text-indigo-300">{{ unit.sample }}</router-link>
+                            <span v-if="unit.finalName"> · 已归入 {{ unit.finalName }}</span>
+                          </p>
+                        </div>
+                        <button v-if="group.accept" @click="removeUnit(group, unit)" :aria-label="'移除 ' + unit.name">移除</button>
+                      </li>
+                    </ul>
+                  </td>
+                </tr>
+                <tr v-if="group.accept" class="series-review-edit">
+                  <td colspan="4">
+                    <div class="series-review-fields">
+                      <label v-if="!mergedGroups.some(merged => group.ids.some(id => merged.ids.has(id)))">
+                        最终名称 <input v-model.trim="group.name" maxlength="300">
+                      </label>
+                      <label>发布到
+                        <select v-model="group.finalId">
+                          <option :value="null">新建最终系列</option>
+                          <option v-for="id in existingGroups(group)" :key="id" :value="id">{{ finalNames[id] }}</option>
+                        </select>
+                      </label>
+                      <label>搜索可添加的成员 <input v-model.trim="group.query" :placeholder="report.result.units ? '本轮比较名称' : '原名、译名或番号'"></label>
+                      <label v-if="group.query">匹配的成员
+                        <select :value="''" @change="addMember(group, $event)">
+                          <option value="">选择后加入此组</option>
+                          <option v-for="unit in availableMembers(group)" :key="unit.key" :value="unit.key">
+                            {{ unit.name }}{{ unit.sample ? ' · ' + unit.sample : '' }}
+                          </option>
+                        </select>
+                      </label>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-          <button class="mt-4" v-if="visible < drafts.length" @click="visible += 30">查看更多候选</button>
-          <button class="primary mt-4" v-if="selectedCount" @click="publish" :disabled="busy">发布审核结果（{{ selectedCount }} 组）</button>
+          <button class="mt-4" v-if="visible < candidateDrafts.length" @click="visible += 30">查看更多候选</button>
+          <div v-if="publishGroups.length" class="mt-4 flex flex-wrap gap-2">
+            <button @click="nextRound" :disabled="busy || hasActive || conflictingTargets">用已选草稿生成下一轮</button>
+            <button class="primary" @click="publish" :disabled="busy || conflictingTargets">发布审核结果（{{ publishGroups.length }} 组）</button>
+          </div>
         </template>
       </template>
     </section>
@@ -1814,7 +1850,6 @@
         class="flex items-center justify-between bg-gray-900 hover:bg-gray-800 rounded px-4 py-3 transition">
         <span class="min-w-0 break-words">
           <span class="text-sm text-gray-200">{{ s.series }}</span>
-          <small v-if="s.maker" class="block text-gray-500">{{ s.maker }}</small>
           <small v-if="s.translation_status === 'TRANSLATING'" class="block text-gray-500">翻译中</small>
           <small v-else-if="s.translation_status === 'FAILED'" class="block text-gray-500">翻译失败</small>
         </span>
@@ -2349,6 +2384,8 @@
       template: '#tpl-batch-modal',
       emits: ['close'],
       setup(props, { emit }) {
+        const batchTitle = ref(null);
+        const opener = document.activeElement;
         const batchStep       = ref('batch-select');
         const batchFiles      = ref([]);
         const batchChecking   = ref(false);
@@ -2370,14 +2407,27 @@
         );
 
         onMounted(async () => {
+          batchTitle.value.focus();
           const libs = await apiFetch('/api/config/media-libraries');
           if (libs) mediaLibraries.value = libs;
         });
+        watch(batchStep, () => batchTitle.value.focus(), { flush: 'post' });
+        Vue.onUnmounted(() => { if (opener?.isConnected) opener.focus(); });
+
+        function keepBatchFocus(event) {
+          const controls = [...event.currentTarget.querySelectorAll('button:enabled, input:enabled:not([type=file]), a[href]')];
+          const index = controls.indexOf(document.activeElement);
+          if (index < 0 || index === (event.shiftKey ? 0 : controls.length - 1)) {
+            event.preventDefault();
+            (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
+          }
+        }
 
         function onBatchFilesChange(e) {
           const newFiles = Array.from(e.target.files || []);
           const existingNames = new Set(batchFiles.value.map(f => f.name));
           batchFiles.value = [...batchFiles.value, ...newFiles.filter(f => !existingNames.has(f.name))];
+          e.target.value = '';
         }
 
         async function runBatchCheck() {
@@ -2436,13 +2486,6 @@
             }
           }
           return Object.values(map);
-        }
-
-        function toggleGroupTag(g, key) {
-          const idx = batchGroups.value.indexOf(g);
-          if (idx >= 0) {
-            batchGroups.value[idx] = { ...g, [key]: !g[key] };
-          }
         }
 
         // Base filename stem the replace writes to (the original on-disk name, sans ext).
@@ -2595,11 +2638,11 @@
         }
 
         return {
-          batchStep, batchFiles, batchChecking, batchCheckError,
+          batchTitle, keepBatchFocus, batchStep, batchFiles, batchChecking, batchCheckError,
           batchGroups, batchVolume, mediaLibraries,
           batchProcessing, batchResults,
           batchStepNum, hasNewGroups, hasWarnings, canStartUpload,
-          onBatchFilesChange, runBatchCheck, buildGroups, toggleGroupTag, expectedFinalNames,
+          onBatchFilesChange, runBatchCheck, buildGroups, expectedFinalNames,
           startBatchProcess, processNewGroup, processReplaceGroup,
         };
       }
@@ -4245,21 +4288,64 @@
       setup() {
         const reports = ref([]), reportId = ref(''), report = ref(null), drafts = ref([]);
         const busy = ref(false), error = ref(''), message = ref(''), visible = ref(30);
+        const unitLimit = ref(30);
         const activeStates = ['PENDING', 'RUNNING', 'WAITING'];
         const hasActive = computed(() => reports.value.some(item => activeStates.includes(item.status)));
         const members = computed(() => Object.fromEntries((report.value?.result?.members || []).map(row => [row.id, row])));
-        const finalNames = computed(() => Object.fromEntries(Object.values(members.value)
+        const finalNames = computed(() => report.value?.result?.final_names || Object.fromEntries(Object.values(members.value)
           .filter(row => row.id_final).map(row => [row.id_final, row.final_name])));
-        const selectedCount = computed(() => drafts.value.filter(group => group.accept).length);
+        const reviewUnits = computed(() => {
+          const units = report.value?.result?.units;
+          if (units) return units.map(unit => ({key: String(unit.member_ids[0]), ids: unit.member_ids,
+            name: unit.name, finalIds: unit.final_ids}));
+          return Object.values(members.value).map(row => ({
+            key: String(row.id), ids: [row.id], name: row.name_zh || row.raw_name,
+            raw: row.raw_name, sample: row.sample, films: row.films, finalName: row.final_name,
+            finalIds: row.id_final ? [row.id_final] : []
+          }));
+        });
+        const candidateDrafts = computed(() => drafts.value.filter(group => !group.carried));
+        function unitsFor(ids) {
+          const selected = ids instanceof Set ? ids : new Set(ids);
+          return reviewUnits.value.filter(unit => unit.ids.some(id => selected.has(id)));
+        }
+        const publishGroups = computed(() => {
+          const groups = [];
+          for (const draft of drafts.value) {
+            if (!draft.accept) continue;
+            const matching = groups.filter(group => draft.ids.some(id => group.ids.has(id)));
+            if (!matching.length) {
+              groups.push({first: draft, count: 1, ids: new Set(draft.ids),
+                targets: new Set(draft.finalId == null ? [] : [draft.finalId])});
+              continue;
+            }
+            const first = matching[0];
+            for (const other of matching.slice(1)) {
+              for (const id of other.ids) first.ids.add(id);
+              for (const target of other.targets) first.targets.add(target);
+              first.count += other.count;
+              groups.splice(groups.indexOf(other), 1);
+            }
+            for (const id of draft.ids) first.ids.add(id);
+            if (draft.finalId != null) first.targets.add(draft.finalId);
+            first.count++;
+          }
+          return groups;
+        });
+        const mergedGroups = computed(() => publishGroups.value.filter(group => group.count > 1));
+        const conflictingTargets = computed(() => mergedGroups.value.some(group => group.targets.size > 1));
         const base = '/api/admin/series/reports';
         let sequence = 0, nextKey = 0;
         const formatDate = value => new Date(value * 1000).toLocaleString('zh-CN');
-        const reportStatus = item => item.published_at ? '已发布' : ({
-          PENDING: '待执行', RUNNING: '生成中', WAITING: '等待模型', DONE: '待审核',
-          FAILED: '生成失败', CANCELLED: '已取消', SKIPPED: '已跳过'
-        }[item.status] || item.status);
-        const createDraft = group => ({
-          ...group, key: nextKey++, ids: [...group.member_ids], accept: false, finalId: null, query: ''
+        function reportStatus(item) {
+          if (item.published_at) return '已发布';
+          if (item.status === 'DONE') return (item.result?.version ?? item.version) === 3 ? '待审核' : '需重新生成';
+          return ({PENDING: '待执行', RUNNING: '生成中', WAITING: '等待模型',
+            FAILED: '生成失败', CANCELLED: '已取消', SKIPPED: '已跳过'})[item.status] || item.status;
+        }
+        const createDraft = (group, carried = false) => ({
+          ...group, key: nextKey++, ids: [...group.member_ids], accept: carried || Boolean(group.automatic),
+          finalId: group.final_id ?? null, query: '', carried
         });
         async function request(url, options) {
           const response = await fetch(url, options);
@@ -4273,6 +4359,7 @@
           report.value = null;
           drafts.value = [];
           visible.value = 30;
+          unitLimit.value = 30;
           error.value = '';
           if (!id) return;
           try {
@@ -4281,7 +4368,10 @@
             report.value = data;
             message.value = reportStatus(data);
             error.value = data.error || '';
-            drafts.value = (data.result?.groups || []).map(createDraft);
+            drafts.value = [
+              ...(data.result?.draft_groups || []).map(group => createDraft(group, true)),
+              ...(data.result?.groups || []).map(group => createDraft(group))
+            ];
           } catch (err) { if (version === sequence) error.value = err.message; }
         }
         async function refresh() {
@@ -4298,45 +4388,60 @@
             }
           } catch (err) { error.value = err.message; }
         }
-        async function generate() {
+        async function startReport(url, options) {
           busy.value = true;
           error.value = '';
           try {
-            const result = await request(base, {method: 'POST'});
+            const result = await request(url, options);
             reportId.value = result.id;
             await loadReport();
             await refresh();
           } catch (err) { error.value = err.message; }
           finally { busy.value = false; }
         }
+        function generate() { return startReport(base, {method: 'POST'}); }
+        function nextRound() {
+          const groups = selectedGroups();
+          if (!groups?.length) return;
+          return startReport(base + '/' + encodeURIComponent(reportId.value) + '/next', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({groups})
+          });
+        }
         function addGroup() {
           drafts.value.unshift({...createDraft({member_ids: [], name: ''}), accept: true});
         }
         function existingGroups(group) {
-          return [...new Set(group.ids.map(id => members.value[id].id_final).filter(Boolean))];
+          return [...new Set(unitsFor(group.ids).flatMap(unit => unit.finalIds))];
         }
-        function removeMember(group, id) {
-          group.ids = group.ids.filter(value => value !== id);
+        function removeUnit(group, unit) {
+          group.ids = group.ids.filter(id => !unit.ids.includes(id));
           if (!existingGroups(group).includes(group.finalId)) group.finalId = null;
         }
         function availableMembers(group) {
           const query = group.query.toLowerCase();
-          return Object.values(members.value).filter(row => !group.ids.includes(row.id) &&
-            [row.raw_name, row.name_zh, row.maker, row.sample].some(value => value?.toLowerCase().includes(query))).slice(0, 30);
+          return reviewUnits.value.filter(unit => !unit.ids.some(id => group.ids.includes(id)) &&
+            [unit.name, unit.raw, unit.sample].some(value => value?.toLowerCase().includes(query))).slice(0, 30);
         }
         function addMember(group, event) {
-          const id = Number(event.target.value);
-          if (id && !group.ids.includes(id)) group.ids.push(id);
+          const unit = reviewUnits.value.find(item => item.key === event.target.value);
+          if (unit) group.ids = [...new Set([...group.ids, ...unit.ids])];
           event.target.value = '';
           group.query = '';
         }
-        async function publish() {
-          const groups = drafts.value.filter(group => group.accept)
-            .map(group => ({name: group.name, member_ids: group.ids, final_id: group.finalId}));
+        function selectedGroups() {
+          if (conflictingTargets.value) return null;
+          const groups = publishGroups.value.map(group => ({
+            name: group.first.name, member_ids: [...group.ids], final_id: group.targets.values().next().value ?? null
+          }));
           if (groups.some(group => !group.name || !group.member_ids.length)) {
             error.value = '请为每个选中的组填写名称并选择成员。';
-            return;
+            return null;
           }
+          return groups;
+        }
+        async function publish() {
+          const groups = selectedGroups();
+          if (!groups?.length) return;
           if (!window.confirm(`发布 ${groups.length} 组审核结果？系列页面将立即按新归属显示。`)) return;
           busy.value = true;
           error.value = '';
@@ -4355,9 +4460,10 @@
           timer = setInterval(() => { if (!busy.value && !document.hidden) refresh(); }, 5000);
         });
         Vue.onUnmounted(() => clearInterval(timer));
-        return {reports, reportId, report, drafts, busy, error, message, visible, hasActive, members, finalNames,
-          selectedCount, formatDate, reportStatus, loadReport, refresh, generate, addGroup, existingGroups,
-          removeMember, availableMembers, addMember, publish};
+        return {reports, reportId, report, candidateDrafts, reviewUnits, unitLimit, busy, error, message, visible, hasActive, finalNames,
+          publishGroups, mergedGroups, conflictingTargets, formatDate, reportStatus, loadReport, refresh,
+          generate, nextRound, addGroup, existingGroups,
+          unitsFor, removeUnit, availableMembers, addMember, publish};
       }
     };
 

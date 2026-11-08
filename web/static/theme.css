@@ -249,6 +249,76 @@ button.ui-icon-button { min-width: var(--control-height); }
 }
 .upload-picker:hover { border-color: var(--primary); }
 
+.batch-upload {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  max-height: 90dvh;
+  overflow: hidden;
+}
+.batch-upload-bar {
+  flex-shrink: 0;
+  padding: 12px clamp(12px, 3vw, 20px);
+}
+.batch-upload-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: clamp(12px, 3vw, 20px);
+}
+.batch-upload-hint { margin-inline-end: auto; }
+.batch-review-list { display: grid; gap: 12px; }
+.batch-review-card {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--canvas);
+}
+.batch-review-card.border-amber-900 { border-color: #75593d; }
+.batch-review-code { color: var(--primary); font-weight: 700; overflow-wrap: anywhere; }
+.batch-review-badge { padding: 2px 8px; border-radius: 999px; font-size: var(--text-small); font-weight: 600; }
+.batch-upload-filename, .batch-review-destination dd {
+  color: var(--muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.batch-review-destination { display: grid; gap: 6px; margin-top: 10px; }
+.batch-review-destination dt, .batch-review-label {
+  color: var(--ink);
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+.batch-review-settings {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border-inline-start: 1px solid var(--line);
+  padding-inline-start: 14px;
+  overflow-wrap: anywhere;
+}
+.batch-review-options { display: grid; gap: 6px; }
+.batch-native-check {
+  display: flex;
+  align-items: center;
+  justify-self: start;
+  gap: 8px;
+  min-height: var(--control-height);
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.batch-native-check input { width: 16px; height: 16px; }
+@media (pointer: coarse) {
+  .batch-upload { --control-height: 44px; }
+}
+@media (max-width: 680px) {
+  .batch-review-card { grid-template-columns: minmax(0, 1fr); padding: 12px; gap: 10px; }
+  .batch-review-settings { border-inline-start: 0; border-top: 1px solid var(--line); padding: 10px 0 0; }
+  .batch-upload-hint { flex-basis: 100%; }
+}
+
 .fade-enter-active, .fade-leave-active { transition: opacity .15s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 @media (max-width: 600px) {

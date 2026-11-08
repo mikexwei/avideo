@@ -7,7 +7,6 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 import re
-from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
 
 # 动态引入 config
@@ -399,15 +398,6 @@ def parse_detail_page(page: Page, code: str) -> Dict:
             label = re.split(r'[:：]', block.inner_text(), maxsplit=1)[0].strip()
             if label in text_fields:
                 data[text_fields[label]] = block.locator("span.value").inner_text().strip()
-                if label == "系列":
-                    for link in block.locator("span.value a[href]").all():
-                        try:
-                            href = urlsplit(link.get_attribute("href") or "")
-                        except ValueError:
-                            continue
-                        if href.netloc in ("", "javdb.com", "www.javdb.com") and re.fullmatch(r"/series/[^/]+/?", href.path):
-                            data['series_source_ref'] = href.path.rstrip("/")
-                            break
             elif label in ('評分', '评分'):
                 score_text = block.locator("span.value").inner_text().strip()
                 # 提取评分数字，如 "4.5分, 由..." -> "4.5"

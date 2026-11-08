@@ -33,18 +33,12 @@ class DetailLocaleTests(unittest.TestCase):
                     block.inner_text.return_value = f'{label}{separator}\n{value}'
                     block.locator.return_value.inner_text.return_value = value
                     block.locator.return_value.all_inner_texts.return_value = [value]
-                    if label == '系列':
-                        untrusted, series_link = MagicMock(), MagicMock()
-                        untrusted.get_attribute.return_value = 'https://example.com/series/other'
-                        series_link.get_attribute.return_value = '/series/verified?locale=zh-CN'
-                        block.locator.return_value.all.return_value = [untrusted, series_link]
                     items.append(block)
                 blocks.count.return_value = len(items)
                 blocks.nth.side_effect = items.__getitem__
                 with patch('core.scraper.video_scraper._female_actor_names_from_block', return_value=['Actor A']) as extract_actors:
                     result = parse_detail_page(page, 'TEST-001')
                 extract_actors.assert_called_once_with(items[-1])
-                self.assertEqual(result['series_source_ref'], '/series/verified')
                 self.assertEqual(
                     tuple(result[key] for key in ('release_date', 'duration', 'maker', 'publisher', 'series', 'score', 'categories', 'actors')),
                     (*values[:5], 4.5, *values[6:]),
