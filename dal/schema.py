@@ -62,18 +62,6 @@ def init_database() -> None:
     );
     """
 
-    sql_series_clusters = """
-    CREATE TABLE IF NOT EXISTS series_clusters (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        canonical_name TEXT UNIQUE NOT NULL,
-        canonical_name_zh TEXT,
-        variations_json TEXT,
-        is_reviewed INTEGER DEFAULT 0 NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """
-
     sql_video_actor = """
     CREATE TABLE IF NOT EXISTS video_actor_link (
         video_id INTEGER,
@@ -98,7 +86,6 @@ def init_database() -> None:
     CREATE INDEX IF NOT EXISTS idx_video_actor_actor_id ON video_actor_link(actor_id);
     CREATE INDEX IF NOT EXISTS idx_video_tag_tag_id ON video_tag_link(tag_id);
     CREATE INDEX IF NOT EXISTS idx_videos_release_date ON videos(release_date);
-    CREATE INDEX IF NOT EXISTS idx_series_clusters_is_reviewed ON series_clusters(is_reviewed);
     """
 
     conn = None
@@ -111,7 +98,6 @@ def init_database() -> None:
         cursor.execute(sql_tags)
         cursor.execute(sql_video_actor)
         cursor.execute(sql_video_tag)
-        cursor.execute(sql_series_clusters)
         cursor.executescript(sql_indexes)
 
         sample_males = [('清水健', 1), ('森林原人', 1), ('田渊正浩', 1), ('解禁男', 1)]

@@ -7,7 +7,7 @@ from core.translator.service import (
     is_likely_japanese,
     select_short_title,
     shorten_chinese_title,
-    translate_series_if_japanese,
+    translate_series,
 )
 
 
@@ -19,9 +19,12 @@ class TranslatorServiceTests(unittest.TestCase):
         self.assertTrue(is_likely_japanese('美少女シリーズ まじカル'))
         self.assertFalse(is_likely_japanese('Classic Collection'))
 
-    def test_translate_series_skips_non_japanese(self):
-        series = 'Classic Collection'
-        self.assertEqual(translate_series_if_japanese(series), series)
+    def test_translate_series_sends_normalized_text_and_returns_simplified_chinese(self):
+        with patch('ollama.Client') as client:
+            chat = client.return_value.chat
+            chat.return_value = {'message': {'content': '時間停止'}}
+            self.assertEqual(translate_series(' 時間・停止　！✨ '), '时间停止')
+            self.assertTrue(chat.call_args.kwargs['messages'][0]['content'].endswith('時間停止'))
 
     def test_select_short_title_removes_actor_name(self):
         result = select_short_title(

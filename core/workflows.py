@@ -1,0 +1,166 @@
+"""Local workflow stages. External work is submitted by the Consumer."""
+import re
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from config import DB_PATH
+from core.scanner import extract_video_code
+from dal.db_manager import (batch_insert_scanned_videos, sync_derived_video_tags_for_code,
+                            add_existing_tags_to_video, get_video_by_code, update_video_metadata)
+from utils.rename_and_move_videos import VideoRecord, build_destination, build_filename
+
+
+def prepare_upload(job, file_paths, volume_path, uncensored_crack_tag='LTX 无码破解',
+                   subtitle_classification=None, additional_tags=None):
+    def emit(step, status, message, **extra):
+        job.put({'step': step, 'status': status, 'message': message, **extra})
+    # ── Step 1: Parse codes ──────────────────────────────────
+    sorted_paths = sorted(file_paths, key=lambda p: p.name)
+    codes_parts = []
+    for i, fpath in enumerate(sorted_paths):
+        code, part = extract_video_code(fpath.stem)
+        if not code:
+            raise ValueError(f'无法解析番号: {fpath.name}，请改用手动模式')
+        if subtitle_classification is not None:
+            base = re.sub(r'(?i)-(?:uc|u|c)$', '', code)
+            has_u = bool(uncensored_crack_tag) or code.upper().endswith(('-U', '-UC'))
+            has_c = bool(subtitle_classification)
+            code = base + ('-UC' if has_u and has_c else '-U' if has_u else '-C' if has_c else '')
+        if len(sorted_paths) > 1 and not part:
+            part = f'part{i + 1}'
+        codes_parts.append((code, part, fpath))
+    main_code = codes_parts[0][0]
+    emit('parse_code', 'done', f'番号: {main_code}')
+
+    # ── Steps 2-3: Move to destination ──────────────────────
+    dest_dir = None
+    scanned = []
+    checkpoint = job.checkpoint() if hasattr(job, 'checkpoint') else {}
+    planned = checkpoint.get('upload_files')
+    if planned is None:
+        planned = []
+        for code, part, tmp_path in codes_parts:
+            record = VideoRecord(id=0, code=code, part=part, original_file_path=tmp_path,
+                                 title_zh_short=None, title_zh=None, title_jp=None, actors=[])
+            target = build_destination(record, dest_root=volume_path)
+            st = tmp_path.stat()
+            planned.append({'code': code, 'part': part, 'source': str(tmp_path), 'original_path': str(target),
+                            'file_size': st.st_size, 'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
+                            'file_birthtime': datetime.fromtimestamp(getattr(st, 'st_birthtime', st.st_mtime)).isoformat()})
+        if hasattr(job, 'checkpoint'):
+            checkpoint['upload_files'] = planned
+            job.checkpoint(checkpoint)
+    for item in planned:
+        code, part, tmp_path = item['code'], item['part'], Path(item['source'])
+        dest_path = Path(item['original_path'])
+        dest_dir = dest_path.parent
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        if tmp_path.exists():
+            if dest_path.exists() and tmp_path != dest_path:
+                raise ValueError(f'目标文件已存在，保留上传文件: {dest_path}')
+            tmp_path.rename(dest_path)
+        elif not dest_path.exists():
+            with sqlite3.connect(DB_PATH) as recovery:
+                row = recovery.execute('SELECT original_file_path FROM videos WHERE UPPER(code)=UPPER(?) AND COALESCE(part,\'\')=COALESCE(?,\'\') AND deleted=0 LIMIT 1', (code, part)).fetchone()
+            if not row or not Path(row[0]).exists():
+                raise FileNotFoundError(f'上传文件和目标文件均不存在: {tmp_path}')
+            dest_path = Path(row[0])
+        st = dest_path.stat()
+        scanned.append({
+            'code': code, 'part': part, 'original_path': dest_path,
+            'file_size': st.st_size,
+            'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
+            'file_birthtime': datetime.fromtimestamp(
+                getattr(st, 'st_birthtime', st.st_mtime)
+            ).isoformat(),
+        })
+    emit('calc_dir', 'done', f'目标目录: {dest_dir}')
+    emit('upload', 'done', '文件已就位')
+
+    # ── Steps 4-5: Insert DB + sync derived tags ─────────────
+    batch_insert_scanned_videos(scanned)
+    sync_derived_video_tags_for_code(main_code, uncensored_crack_tag, subtitle_classification)
+    if additional_tags and not add_existing_tags_to_video(main_code, additional_tags):
+        raise ValueError('添加标签失败')
+    suffix_upper = main_code.upper()
+    if suffix_upper.endswith('-UC'):
+        tag_msg = '标签: 中文字幕、无码破解'
+    elif suffix_upper.endswith('-C'):
+        tag_msg = '标签: 中文字幕'
+    elif suffix_upper.endswith('-U'):
+        tag_msg = '标签: 无码破解'
+    else:
+        tag_msg = '无特殊标签'
+    emit('db_insert', 'done', f'已写入数据库，{tag_msg}')
+    emit('tags', 'done', '标签同步完成')
+
+    return main_code
+
+
+def _rename_files_for_code(main_code: str, job=None) -> None:
+    """Journal each move before touching files, then serialize local DB changes."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute('SELECT * FROM videos WHERE UPPER(code)=UPPER(?) AND deleted=0 ORDER BY id', (main_code,)).fetchall()
+        for row in rows:
+            actors = [item[0] for item in conn.execute(
+                'SELECT COALESCE(a.name_zh,a.name) FROM actors a JOIN video_actor_link l ON l.actor_id=a.id '
+                'WHERE l.video_id=? ORDER BY a.id', (row['id'],)) if item[0]]
+            record = VideoRecord(id=row['id'], code=row['code'], part=row['part'],
+                original_file_path=Path(row['original_file_path']), title_zh_short=row['title_zh_short'],
+                title_zh=row['title_zh'], title_jp=row['title_jp'], actors=actors)
+            source = record.original_file_path
+            target = _build_current_library_destination(record)
+            checkpoint = job.checkpoint() if job else {}
+            recovery = checkpoint.get('rename_moves', {}).get(str(source))
+            identity = checkpoint.get('rename_identity', {}).get(str(source))
+            actual = source
+            if not source.exists() and recovery and Path(recovery).exists():
+                actual = Path(recovery)
+                stat = actual.stat()
+                if identity and [stat.st_ino, stat.st_size, stat.st_mtime_ns] != identity:
+                    raise ValueError(f'恢复目标与原文件不一致 {actual}')
+            if not actual.exists():
+                raise FileNotFoundError(str(source))
+            if actual != target and target.exists():
+                raise FileExistsError(f'目标文件已存在，保留原文件 {target}')
+            stat = actual.stat()
+            if actual != target and job:
+                checkpoint.setdefault('rename_moves', {})[str(source)] = str(target)
+                checkpoint.setdefault('rename_identity', {})[str(source)] = [stat.st_ino, stat.st_size, stat.st_mtime_ns]
+                job.checkpoint(checkpoint)
+            conn.execute('BEGIN IMMEDIATE')
+            current = conn.execute('SELECT * FROM videos WHERE id=? AND deleted=0', (row['id'],)).fetchone()
+            if current is None or dict(current) != dict(row):
+                raise ValueError('影片在文件重命名前已改变')
+            if job:
+                task = conn.execute('SELECT status,cancel_requested,execution_id FROM scrape_tasks WHERE id=?', (job.job_id,)).fetchone()
+                if task is None or task['cancel_requested'] or task['status'] == 'CANCELLED' or (job.execution_id is not None and task['execution_id'] != job.execution_id):
+                    raise ValueError('任务已取消')
+            if actual != target:
+                if target.exists():
+                    raise FileExistsError(str(target))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                actual.rename(target)
+            conn.execute('UPDATE videos SET original_file_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                         (str(target), row['id']))
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def _library_root_for_path(path: Path) -> Optional[Path]:
+    for parent in path.parents:
+        if parent.name.lower() == 'avideo':
+            return parent
+    return None
+
+
+def _build_current_library_destination(record: VideoRecord) -> Path:
+    library_root = _library_root_for_path(record.original_file_path)
+    if library_root is None:
+        return record.original_file_path.parent / build_filename(record)
+    return build_destination(record, dest_root=library_root)

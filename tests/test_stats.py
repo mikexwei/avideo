@@ -20,6 +20,7 @@ class StatsTests(unittest.TestCase):
                 title_zh TEXT,
                 release_date TEXT,
                 maker TEXT,
+                series TEXT,
                 score REAL,
                 cover_path TEXT,
                 scrape_status TEXT,
@@ -44,7 +45,6 @@ class StatsTests(unittest.TestCase):
                 tag_id INTEGER NOT NULL,
                 PRIMARY KEY (video_id, tag_id)
             );
-            CREATE TABLE series_clusters (id INTEGER PRIMARY KEY);
 
             INSERT INTO actors (id, name, name_zh, is_ignored) VALUES
                 (1, 'Actor A', '演员A', 0),

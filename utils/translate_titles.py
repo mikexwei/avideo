@@ -1,5 +1,4 @@
 import sqlite3
-import time
 import sys
 from pathlib import Path
 
@@ -9,7 +8,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from config import DB_PATH
-from core.translator.service import translate_title, DEFAULT_HOST, DEFAULT_MODEL
+from core.translator.service import DEFAULT_HOST, DEFAULT_MODEL
 
 
 def batch_translate_titles(host: str = DEFAULT_HOST, model: str = DEFAULT_MODEL, retranslate: bool = False):
@@ -37,44 +36,29 @@ def batch_translate_titles(host: str = DEFAULT_HOST, model: str = DEFAULT_MODEL,
         conn.close()
         return
 
-    SEP = '-' * 72
-    print(f"=== 开始翻译 (共 {len(pending)} 条, model={model}) ===")
-
-    success_count = 0
-    for idx, (title_jp, codes, actor_pairs) in enumerate(pending, 1):
-        code_list = [c.strip() for c in (codes or '').split(',') if c.strip()]
-
-        # 构建日文名->中文名映射（只保留有中文名的演员）
-        actor_name_map: dict = {}
+    from core.worker_client import WorkerClient, store
+    client = WorkerClient()
+    active = {(task['kind'], task['code']) for task in store().active_tasks()}
+    tasks = []
+    for title_jp, codes, actor_pairs in pending:
+        code_list = [code.strip() for code in (codes or '').split(',') if code.strip()]
+        actor_name_map = {}
         for pair in (actor_pairs or '').split(','):
-            pair = pair.strip()
             if '|' in pair:
                 jp, zh = pair.split('|', 1)
-                jp, zh = jp.strip(), zh.strip()
-                if jp and zh:
-                    actor_name_map[jp] = zh
-
-        try:
-            start = time.time()
-            title_zh = translate_title(title_jp, codes=code_list, actor_name_map=actor_name_map, host=host, model=model)
-            elapsed = time.time() - start
-        except Exception as e:
-            print(f"\n[{idx}/{len(pending)}] ERROR: {e}")
-            print(SEP)
-            continue
-
-        label_w = 4
-        print(f"\n[{idx}/{len(pending)}]")
-        print(f"  {'JP':<{label_w}} {title_jp}")
-        print(f"  {'ZH':<{label_w}} {title_zh}  ({elapsed:.1f}s)")
-        print(SEP)
-
-        cursor.execute("UPDATE videos SET title_zh = ? WHERE title_jp = ?", (title_zh, title_jp))
-        conn.commit()
-        success_count += cursor.rowcount
-
+                if jp.strip() and zh.strip():
+                    actor_name_map[jp.strip()] = zh.strip()
+        for code in code_list:
+            if ('translate', code) in active:
+                continue
+            previous = conn.execute("SELECT COALESCE(title_zh,'') FROM videos WHERE code=? LIMIT 1", (code,)).fetchone()
+            tasks.append(client.call('translate', code, {'title': title_jp, 'codes': [code],
+                'actor_name_map': actor_name_map, 'previous_titles': {code: previous[0] if previous else ''},
+                'options': {'host': host, 'model': model}}))
+            active.add(('translate', code))
     conn.close()
-    print(f"\n完成: 翻译 {len(pending)} 条，更新 {success_count} 条记录。")
+    print(f'已提交 {len(tasks)} 个翻译任务，可在 /admin 查看进度。')
+    return tasks
 
 
 if __name__ == "__main__":

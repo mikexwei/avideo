@@ -12,7 +12,6 @@ from core.scraper.video_scraper import extract_ltx_links_from_reviews
 from core.scraper import video_scraper
 from core.ltx_scheduler import DAILY_LIMIT, HOURLY_LIMITS, TIMEZONE, quota
 from core.scrape_queue import QueueStore, QueueConflict
-from core.scrape_worker import Worker
 
 app_module = importlib.import_module('web.backend.app')
 
@@ -113,7 +112,6 @@ class DurableQueueTests(unittest.TestCase):
         self.browser = MagicMock()
         self.browser.scrape_ltx.return_value = ['magnet:?xt=urn:btih:GOOD']
         self.browser.scrape.return_value = {'title_jp':'Title'}
-        self.worker = Worker(self.store, self.browser)
 
     def add(self, code='RBD-918', **kwargs):
         return self.store.enqueue([code], **kwargs)['ids'][0]
@@ -124,85 +122,11 @@ class DurableQueueTests(unittest.TestCase):
         self.assertEqual([row['code'] for row in reopened.list_tasks()], ['RBD-918','RBD-243'])
         self.assertEqual(reopened.enqueue(['RBD-918'])['added'],0)
 
-    def test_history_and_previous_success_survive_rescrape_failure(self):
-        task_id = self.add()
-        with patch('core.scrape_worker.quota',return_value={'allowed':True}):
-            self.worker.run_one()
-        with self.assertRaises(QueueConflict):
-            self.store.enqueue(['RBD-918'])
-        self.store.enqueue(['RBD-918'],confirm=True)
-        self.assertIn('GOOD',self.store.get(task_id)['result_json'])
-        self.browser.scrape_ltx.side_effect = LookupError('not found')
-        with patch('core.scrape_worker.quota',return_value={'allowed':True}):
-            self.worker.run_one()
-        self.assertEqual(self.store.get(task_id)['status'],'FAILED')
-        self.assertIn('GOOD',self.store.get(task_id)['result_json'])
-        self.assertEqual(len(self.store.history(task_id)),2)
 
-    def test_latest_video_tag_is_rechecked_before_quota_or_browser(self):
-        task_id=self.add()
-        with self.store.connect() as conn:
-            conn.execute("INSERT INTO tags VALUES (1,'LTX 无码破解')")
-            conn.execute('INSERT INTO video_tag_link VALUES (1,1)')
-        with patch('core.scrape_worker.quota') as quota:
-            self.worker.run_one()
-        self.assertEqual(self.store.get(task_id)['status'],'SKIPPED')
-        quota.assert_not_called()
-        self.browser.scrape_ltx.assert_not_called()
 
-    def test_deleted_video_is_skipped_without_consuming_quota(self):
-        task_id=self.add()
-        with self.store.connect() as conn:
-            conn.execute('UPDATE videos SET deleted=1 WHERE id=1')
-        with patch('core.scrape_worker.quota') as quota:
-            self.worker.run_one()
-        self.assertEqual(self.store.get(task_id)['status'],'SKIPPED')
-        quota.assert_not_called()
 
-    def test_forced_task_bypasses_pause_filter_quota_and_human_waits(self):
-        self.store.set_settings('control',{'paused':True})
-        task_id=self.add('DSVR-123',forced=True)
-        def scrape(code):
-            video_scraper.simulate_human_behavior(MagicMock(),60,60)
-            return ['magnet:?xt=urn:btih:FORCE']
-        self.browser.scrape_ltx.side_effect=scrape
-        with patch('core.scrape_worker.quota',return_value={'allowed':True}) as quota, \
-             patch.object(video_scraper.time,'sleep') as sleep:
-            self.worker.run_one()
-        self.assertEqual(self.store.get(task_id)['status'],'DONE')
-        self.assertTrue(quota.call_args.kwargs['force'])
-        sleep.assert_not_called()
-        self.assertTrue(self.store.settings('control')['paused'])
 
-    def test_immediate_task_interrupts_normal_task_at_safe_checkpoint(self):
-        first=self.add()
-        calls=[]
-        def scrape(code):
-            calls.append(code)
-            if len(calls)==1:
-                self.add('RBD-243',forced=True)
-                self.worker.check_control(force=True)
-            return []
-        self.browser.scrape_ltx.side_effect=scrape
-        with patch('core.scrape_worker.quota',return_value={'allowed':True}):
-            self.worker.run_one()
-            self.assertEqual(self.store.get(first)['status'],'PENDING')
-            self.worker.run_one()
-            self.worker.run_one()
-        self.assertEqual(calls,['RBD-918','RBD-243','RBD-918'])
-        self.assertEqual(self.store.history(first)[-1]['status'],'INTERRUPTED')
 
-    def test_web_tasks_are_not_blocked_by_ltx_quota(self):
-        self.add()
-        future=datetime.now(TIMEZONE)+timedelta(hours=1)
-        with patch('core.scrape_worker.quota',return_value={'allowed':False,'reason':'hourly_limit','next_at':future.isoformat()}):
-            self.worker.run_one()
-        video=self.store.submit('video','RBD-243')
-        with patch('core.scrape_worker.quota') as quota:
-            self.worker.run_one()
-        quota.assert_not_called()
-        self.assertEqual(self.store.get(video)['status'],'DONE')
-        self.browser.scrape.assert_called_once_with('RBD-243')
 
     def test_priority_bulk_order_and_cancel(self):
         first=self.add()
@@ -243,39 +167,7 @@ class DurableQueueTests(unittest.TestCase):
         self.assertEqual(self.store.get(task_id)['status'],'CANCELLED')
         self.assertEqual(self.store.history(task_id)[0]['status'],'CANCELLED')
 
-    def test_changed_links_reset_download_marker(self):
-        task_id=self.add()
-        with patch('core.scrape_worker.quota',return_value={'allowed':True}):
-            self.worker.run_one()
-            with self.store.connect() as conn:
-                conn.execute('UPDATE ltx_scrape_results SET downloaded=1')
-            self.store.enqueue(['RBD-918'],confirm=True)
-            self.browser.scrape_ltx.return_value=['magnet:?xt=urn:btih:NEW']
-            self.worker.run_one()
-        with self.store.connect() as conn:
-            downloaded=conn.execute('SELECT downloaded FROM ltx_scrape_results').fetchone()[0]
-        self.assertFalse(downloaded)
-        self.assertEqual(len(self.store.history(task_id)),2)
 
-    def test_api_confirms_rescrape_and_persists_bulk_changes(self):
-        task_id=self.add()
-        with patch('core.scrape_worker.quota',return_value={'allowed':True}):
-            self.worker.run_one()
-        with patch('web.backend.scrape_api.store',return_value=self.store), \
-             patch('web.backend.scrape_api.ensure_worker'), \
-             patch.object(app_module,'DB_PATH',self.path):
-            client=app_module.app.test_client()
-            conflict=client.post('/api/ltx/scrape/enqueue',json={'codes':['RBD-918']})
-            self.assertEqual(conflict.status_code,409)
-            self.assertTrue(conflict.get_json()['confirm_required'])
-            confirmed=client.post('/api/ltx/scrape/enqueue',json={'codes':['RBD-918'],'confirm_rescrape':True})
-            self.assertEqual(confirmed.status_code,200)
-            self.assertEqual(client.post('/api/ltx/queue/bulk',json={'codes':['RBD-918'],'action':'priority','priority':123}).status_code,200)
-            self.assertEqual(self.store.get(task_id)['priority'],123)
-            self.assertEqual(client.get('/api/ltx/queue').get_json()[0]['queue_status'],'PENDING')
-            self.assertEqual(len(client.get('/api/ltx/queue/'+task_id+'/history').get_json()),1)
-            self.assertEqual(client.post('/api/worker/control',json={'action':'stop'},headers={'Origin':'https://other.example'}).status_code,403)
-            self.assertEqual(client.post('/api/ltx/queue/bulk',json={'codes':['RBD-918'],'action':'cancel','priority':''}).status_code,200)
 
     def test_quota_adjustment_and_forced_overspend_are_persistent(self):
         now=datetime(2026,11,5,17,0,tzinfo=TIMEZONE)

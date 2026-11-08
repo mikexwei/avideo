@@ -1,19 +1,18 @@
 import io
 import json
 import os
-import queue
 import sqlite3
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from web.backend.app import app, _Job, _jobs, _jobs_lock
+from web.backend.app import app
 
 
 _queue_mock = MagicMock()
 _queue_mock.get.return_value = None
+_queue_mock.connect.return_value.__enter__.return_value.execute.return_value.rowcount = 1
 
 
 def setUpModule():
@@ -22,27 +21,15 @@ def setUpModule():
     _worker_patch = patch('web.backend.app.ensure_worker')
     _queue_patch.start()
     _worker_patch.start()
+    global _prepare_patch
+    _prepare_patch = patch('web.backend.app.prepare_upload', return_value='SSIS-001')
+    _prepare_patch.start()
 
 
 def tearDownModule():
     _queue_patch.stop()
     _worker_patch.stop()
-
-
-class JobInfraTests(unittest.TestCase):
-    def setUp(self):
-        app.config['TESTING'] = True
-        self.client = app.test_client()
-
-    def test_job_dataclass_has_queue_and_status(self):
-        j = _Job(job_id='test-123')
-        self.assertEqual(j.job_id, 'test-123')
-        self.assertIsInstance(j.queue, queue.Queue)
-        self.assertEqual(j.status, 'running')
-
-    def test_jobs_dict_is_module_level(self):
-        self.assertIsInstance(_jobs, dict)
-        self.assertIsInstance(_jobs_lock, type(threading.Lock()))
+    _prepare_patch.stop()
 
 
 class MediaLibrariesEndpointTests(unittest.TestCase):
@@ -364,11 +351,11 @@ class StreamingUploadTests(unittest.TestCase):
         uid = '44444444-4444-4444-8444-444444444444'
         self.assertEqual(self._upload_part(uid, 'SSIS-001.mp4', b'v').status_code, 200)
         with patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]), \
-             patch('web.backend.app._run_auto_pipeline'):
+             patch('web.backend.app.prepare_upload', return_value='SSIS-001'):
             resp = self.client.post('/api/videos/add-auto', json={
                 'upload_id': uid, 'volume_path': self.tmpdir,
             })
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 202)
         self.assertEqual(resp.get_json()['job_id'], uid)
 
     def test_add_auto_via_upload_id_no_files_returns_400(self):
@@ -510,7 +497,7 @@ class AddAutoEndpointTests(unittest.TestCase):
 
     def test_returns_job_id(self):
         with patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]), \
-             patch('web.backend.app._run_auto_pipeline'):
+             patch('web.backend.app.prepare_upload', return_value='SSIS-001'):
             resp = self.client.post(
                 '/api/videos/add-auto',
                 data={
@@ -519,7 +506,7 @@ class AddAutoEndpointTests(unittest.TestCase):
                 },
                 content_type='multipart/form-data',
             )
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 202)
         data = resp.get_json()
         self.assertIn('job_id', data)
         self.assertIsInstance(data['job_id'], str)
@@ -554,8 +541,7 @@ class AddAutoEndpointTests(unittest.TestCase):
         conn.close()
         try:
             with patch('web.backend.app.DB_PATH', Path(db_path)), \
-                 patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]), \
-                 patch('web.backend.app.threading.Thread') as thread_cls:
+                 patch('web.backend.app.MEDIA_LIBRARIES', [Path(self.tmpdir)]):
                 resp = self.client.post(
                     '/api/videos/add-auto',
                     data={
@@ -567,8 +553,8 @@ class AddAutoEndpointTests(unittest.TestCase):
                     content_type='multipart/form-data',
                 )
 
-            self.assertEqual(resp.status_code, 200)
-            payload = _queue_mock.submit.call_args.kwargs['payload']
+            self.assertEqual(resp.status_code, 202)
+            payload = json.loads(_queue_mock.connect.return_value.__enter__.return_value.execute.call_args.args[1][1])
             self.assertEqual(payload['subtitle_classification'], '机翻中文 V2')
             self.assertEqual(payload['additional_tags'], ['VR'])
         finally:
@@ -627,11 +613,11 @@ class RescrapeEndpointTests(unittest.TestCase):
 
     def test_returns_distinct_matching_codes_and_job_id(self):
         with patch('web.backend.app.DB_PATH', self.db_path), \
-             patch('web.backend.app._run_rescrape_pipeline'):
+             patch('web.backend.app.ensure_worker'):
             resp = self.client.post('/api/videos/rescrape',
                                     data=json.dumps({'scrape_status': 'FAILED'}),
                                     content_type='application/json')
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 202)
         data = resp.get_json()
         self.assertIn('job_id', data)
         # ABW-1, ABW-2 match; ABW-3 is SUCCESS, ABW-4 is deleted
@@ -648,7 +634,7 @@ class RescrapeEndpointTests(unittest.TestCase):
         with patch('web.backend.app.DB_PATH', self.db_path), \
              patch('web.backend.app.ensure_worker'):
             resp = self.client.post('/api/videos/ABW-1/rescrape')
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 202)
         data = resp.get_json()
         self.assertIn('job_id', data)
         self.assertEqual(data['code'], 'ABW-1')
@@ -673,139 +659,17 @@ class JobStreamEndpointTests(unittest.TestCase):
         resp = self.client.get('/api/jobs/nonexistent-id/stream')
         self.assertEqual(resp.status_code, 404)
 
-    def test_streams_events_from_job_queue(self):
-        from web.backend.app import _Job, _jobs, _jobs_lock
-        job = _Job(job_id='test-stream')
-        job.queue.put({'step': 'parse_code', 'status': 'done', 'message': 'ok'})
-        job.queue.put({'step': 'done', 'status': 'done', 'message': 'complete', 'code': 'TEST-001'})
-        with _jobs_lock:
-            _jobs['test-stream'] = job
-
-        resp = self.client.get('/api/jobs/test-stream/stream')
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.content_type, 'text/event-stream')
-        body = resp.data.decode()
-        self.assertIn('"step": "done"', body)
-        # Cleanup
-        with _jobs_lock:
-            _jobs.pop('test-stream', None)
+    def test_streams_events_from_durable_job(self):
+        from core.browser_queue import RuntimeStore
+        with tempfile.TemporaryDirectory() as directory:
+            store = RuntimeStore(Path(directory) / 'queue.db')
+            task_id = store.submit('login_status')
+            store.event(task_id, {'step': 'done', 'status': 'done', 'message': 'complete'})
+            with patch('web.backend.app.scrape_store', return_value=store):
+                response = self.client.get('/api/jobs/' + task_id + '/stream')
+                self.assertEqual(response.status_code, 200)
+                self.assertIn('"step": "done"', response.get_data(as_text=True))
 
 
-class AutoPipelineTests(unittest.TestCase):
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        fd, self.db_path = tempfile.mkstemp(suffix='.db')
-        os.close(fd)
-        conn = sqlite3.connect(self.db_path)
-        _init_full_schema(conn)
-        conn.close()
-        # Create a fake video file in a tmp job dir
-        self.volume = Path(self.tmpdir)
-        tmp_job_dir = self.volume / '.upload_tmp' / 'test-job'
-        tmp_job_dir.mkdir(parents=True)
-        self.fake_file = tmp_job_dir / 'SSIS-100-C.mp4'
-        self.fake_file.write_bytes(b'fake')
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-        os.unlink(self.db_path)
-
-    def _patched_batch_insert(self, scanned):
-        conn = sqlite3.connect(self.db_path)
-        for item in scanned:
-            try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO videos (code, part, original_file_path, scrape_status) "
-                    "VALUES (?,?,?,'PENDING')",
-                    (item['code'], item.get('part'), str(item['original_path']))
-                )
-            except Exception:
-                pass
-        conn.commit()
-        conn.close()
-        return len(scanned), 0
-
-    def test_durable_upload_resumes_after_browser_interruption(self):
-        from core.scrape_queue import QueueStore
-        from core.scrape_worker import StoredJob
-        from core.scraper.video_scraper import ScrapeInterrupted
-        from web.backend.app import _run_auto_pipeline
-        store = QueueStore(self.db_path)
-        task_id = store.submit('pipeline_auto')
-        job = StoredJob(store, task_id)
-        with patch('web.backend.app.DB_PATH', self.db_path), \
-             patch('web.backend.app.batch_insert_scanned_videos', side_effect=self._patched_batch_insert), \
-             patch('web.backend.app.sync_derived_video_tags_for_code'), \
-             patch('web.backend.app.get_video_by_code', return_value={}), \
-             patch('web.backend.app._scrape_with_playwright', side_effect=[ScrapeInterrupted('yield'), None]):
-            with self.assertRaises(ScrapeInterrupted):
-                _run_auto_pipeline(job, [self.fake_file], self.volume)
-            self.assertFalse(self.fake_file.exists())
-            self.assertTrue(store.checkpoint(task_id)['upload_files'])
-            _run_auto_pipeline(job, [self.fake_file], self.volume)
-        self.assertFalse(job.failed)
-        with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute('SELECT original_file_path FROM videos').fetchall()
-        self.assertEqual(len(rows), 1)
-        self.assertTrue(Path(rows[0][0]).is_file())
-
-    def _run(self, file_paths=None):
-        from web.backend.app import _Job, _run_auto_pipeline
-        job = _Job(job_id='test-pipeline')
-        fps = file_paths or [self.fake_file]
-
-        fake_scrape_data = {
-            'title_jp': 'テスト作品', 'release_date': '2024-01-01',
-            'duration': '120', 'maker': 'Test Maker', 'publisher': '',
-            'series': '', 'score': 8.5, 'cover_path': '',
-            'actors': '', 'categories': '',
-        }
-
-        with patch('web.backend.app.DB_PATH', self.db_path), \
-             patch('web.backend.app.batch_insert_scanned_videos',
-                   side_effect=self._patched_batch_insert), \
-             patch('web.backend.app.sync_derived_video_tags_for_code'), \
-             patch('web.backend.app.translate_title', return_value='测试作品'), \
-             patch('web.backend.app.shorten_chinese_title_with_candidates',
-                   return_value=('测试', ['测试'])), \
-             patch('web.backend.app.get_video_by_code', return_value={
-                 'title_jp': 'テスト作品', 'title_zh': '测试作品',
-                 'actors': [],
-             }), \
-             patch('web.backend.app.patch_video', return_value=True), \
-             patch('web.backend.app._scrape_with_playwright', return_value=fake_scrape_data):
-            _run_auto_pipeline(job, fps, self.volume)
-
-        events = []
-        while not job.queue.empty():
-            events.append(job.queue.get_nowait())
-        return events
-
-    def test_emits_done_event(self):
-        events = self._run()
-        step_names = [e['step'] for e in events]
-        self.assertIn('done', step_names)
-
-    def test_emits_parse_code_event(self):
-        events = self._run()
-        parse_events = [e for e in events if e['step'] == 'parse_code']
-        self.assertTrue(len(parse_events) > 0)
-        self.assertIn('SSIS-100-C', parse_events[0]['message'])
-
-    def test_emits_db_insert_event(self):
-        events = self._run()
-        step_names = [e['step'] for e in events]
-        self.assertIn('db_insert', step_names)
-
-    def test_adds_chinese_subtitle_tag_for_c_code(self):
-        events = self._run()
-        db_insert_events = [e for e in events if e['step'] == 'db_insert']
-        self.assertTrue(any('中文字幕' in e.get('message', '') for e in db_insert_events))
-
-    def test_error_on_bad_filename(self):
-        bad_file = Path(self.tmpdir) / 'unknown.mp4'
-        bad_file.write_bytes(b'x')
-        events = self._run(file_paths=[bad_file])
-        error_events = [e for e in events if e['step'] == 'error']
-        self.assertTrue(len(error_events) > 0)
+if __name__ == '__main__':
+    unittest.main()

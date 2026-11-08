@@ -1,4 +1,4 @@
-import json
+from contextlib import closing
 import re
 import sqlite3
 import logging
@@ -20,6 +20,38 @@ logger = logging.getLogger(__name__)
 
 def _to_simplified(value: Any) -> Any:
     return convert(value, 'zh-cn') if isinstance(value, str) and value else value
+
+
+def _actor_name_key(name):
+    return _to_simplified(name.strip()) if name else ''
+
+
+def _actor_by_name(cursor, name, exclude_id=0, *, include_display=False):
+    key = _actor_name_key(name)
+    exact_display = None
+    equivalent = None
+    columns = 'id,name,is_ignored,name_zh' if include_display else 'id,name,is_ignored'
+    for row in cursor.execute(f"SELECT {columns} FROM actors WHERE id != ? ORDER BY id", (exclude_id,)):
+        if row[1] == key:
+            return row
+        if equivalent is None and _actor_name_key(row[1]) == key:
+            equivalent = row
+        if include_display and exact_display is None and row[3] == name:
+            exact_display = row
+    return equivalent if equivalent is not None else exact_display
+
+
+def _get_or_create_actor(cursor, name, name_zh=''):
+    actor = _actor_by_name(cursor, name)
+    if actor is None:
+        cursor.execute("INSERT INTO actors (name) VALUES (?)", (_actor_name_key(name),))
+        actor_id, ignored, created = cursor.lastrowid, False, True
+    else:
+        actor_id, ignored, created = actor[0], actor[2], False
+    if name_zh:
+        cursor.execute("UPDATE actors SET name_zh = ? WHERE id = ? AND COALESCE(name_zh,'')=''",
+                       (_actor_name_key(name_zh), actor_id))
+    return actor_id, ignored, created
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -205,13 +237,16 @@ def get_pending_videos(limit: int = 5, status: str = 'PENDING') -> List[Tuple[in
         if conn:
             conn.close()
 
-def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = None):
+def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = None, *, connection=None):
     """
-    架构师终极版：将刮削结果更新回数据库，并处理多对多关联 (演员、标签)
+    保存刮削结果及演员、标签关联，并返回新建的演员 ID 和姓名。
     """
-    conn = None
+    conn = connection
+    owns_connection = connection is None
+    new_actors = []
     try:
-        conn = sqlite3.connect(DB_PATH)
+        if owns_connection:
+            conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
         # 0. 获取与此 video_id 关联的番号 (code)，并找出所有拥有此 code 的视频 ID
@@ -219,21 +254,14 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
         row = cursor.fetchone()
         if not row:
             logger.warning(f"⚠️ 未找到 ID 为 {video_id} 的视频记录。")
-            return
+            return new_actors
         
         code = row[0]
         cursor.execute("SELECT id FROM videos WHERE code = ?", (code,))
         target_video_ids = [r[0] for r in cursor.fetchall()]
         
         if status == 'SUCCESS' and data:
-            series_value = _to_simplified(data.get('series', ''))
-            if series_value:
-                try:
-                    from core.translator.service import translate_series_if_japanese
-                    series_value = _to_simplified(translate_series_if_japanese(series_value))
-                except Exception:
-                    # 翻译异常不影响主流程，保留原始 series
-                    pass
+            series_value = (data.get('series') or '').strip()
 
             # 1. 批量更新 videos 主表中所有具有相同 code 的记录
             sql_video = """
@@ -259,25 +287,12 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             actors_str = data.get('actors', '')
             if actors_str:
                 # 把逗号分隔的字符串拆成列表，并去掉两边空格
-                actor_list = [_to_simplified(a.strip()) for a in actors_str.split(',') if a.strip()]
+                actor_list = dict.fromkeys(_actor_name_key(a) for a in actors_str.split(',') if a.strip())
                 for actor_name in actor_list:
-                    cursor.execute("SELECT id, name, is_ignored FROM actors")
-                    equivalent_actor = next(
-                        (actor for actor in cursor.fetchall() if _to_simplified(actor[1]) == actor_name),
-                        None,
-                    )
-                    if equivalent_actor and equivalent_actor[1] != actor_name:
-                        cursor.execute(
-                            "UPDATE OR IGNORE actors SET name = ? WHERE id = ?",
-                            (actor_name, equivalent_actor[0]),
-                        )
-                    # 尝试插入演员 (如果已存在则忽略)
-                    cursor.execute("INSERT OR IGNORE INTO actors (name) VALUES (?)", (actor_name,))
-                    # 查询该演员的 ID (无论他是刚插入的，还是以前就存在的)
-                    cursor.execute("SELECT id, is_ignored FROM actors WHERE name = ?", (actor_name,))
-                    actor_row = cursor.fetchone()
-                    if actor_row and not actor_row[1]:
-                        actor_id = actor_row[0]
+                    actor_id, ignored, actor_created = _get_or_create_actor(cursor, actor_name)
+                    if not ignored:
+                        if actor_created:
+                            new_actors.append((actor_id, actor_name))
                         # 为所有具有相同 code 的 video_id 插入关联表
                         for t_v_id in target_video_ids:
                             cursor.execute("INSERT OR IGNORE INTO video_actor_link (video_id, actor_id) VALUES (?, ?)", (t_v_id, actor_id))
@@ -302,16 +317,20 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             cursor.execute(sql_fail, (new_status, code))
             
         # 所有操作要么一起成功，要么一起失败 (事务保障)
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         if status == 'SUCCESS' and data:
-            sync_derived_video_tags_for_code(code)
+            sync_derived_video_tags_for_code(code, connection=connection)
         logger.debug(f"💾 数据库多表联动更新完毕: 番号 {code} (包含 {len(target_video_ids)} 个分集记录) -> 状态 {status}")
+        return new_actors
         
     except sqlite3.Error as e:
         logger.error(f"❌ 数据库多表更新失败 (ID: {video_id}): {e}")
+        if not owns_connection:
+            raise
         # 如果发生异常，数据库会自动回滚，防止产生脏数据
     finally:
-        if conn:
+        if conn and owns_connection:
             conn.close()
 
 
@@ -361,10 +380,13 @@ def sync_derived_video_tags_for_code(
     code: str,
     uncensored_crack_tag: Optional[str] = None,
     subtitle_classification: Optional[str] = None,
+    *, connection=None,
 ) -> int:
-    conn = None
+    conn = connection
+    owns_connection = connection is None
     try:
-        conn = _get_conn()
+        if owns_connection:
+            conn = _get_conn()
         conn.execute("PRAGMA foreign_keys = ON;")
         cursor = conn.cursor()
         cursor.execute("SELECT id, code, maker, file_birthtime, file_mtime FROM videos WHERE code = ?", (code,))
@@ -412,13 +434,16 @@ def sync_derived_video_tags_for_code(
                 )
                 changed += cursor.rowcount
 
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         return changed
     except sqlite3.Error as e:
         logger.error(f"❌ sync_derived_video_tags_for_code 失败 [{code}]: {e}")
+        if not owns_connection:
+            raise
         return 0
     finally:
-        if conn:
+        if conn and owns_connection:
             conn.close()
 
 
@@ -458,11 +483,13 @@ def get_pending_actors(limit: int = 10) -> List[Tuple[int, str]]:
         if conn:
             conn.close()
 
-def update_actor_avatar(actor_id: int, avatar_path: Optional[str], actor_name: str = "", name_zh: Optional[str] = None):
+def update_actor_avatar(actor_id: int, avatar_path: Optional[str], actor_name: str = "", name_zh: Optional[str] = None, *, connection=None):
     """更新演员头像路径，如果发现同图，则执行自动合并归一化"""
-    conn = None
+    conn = connection
+    owns_connection = connection is None
     try:
-        conn = sqlite3.connect(DB_PATH)
+        if owns_connection:
+            conn = sqlite3.connect(DB_PATH)
         conn.execute("PRAGMA foreign_keys = ON;")
         cursor = conn.cursor()
         
@@ -492,7 +519,8 @@ def update_actor_avatar(actor_id: int, avatar_path: Optional[str], actor_name: s
                 
                 # 3. 删除这个冗余的马甲记录
                 cursor.execute("DELETE FROM actors WHERE id = ?", (actor_id,))
-                conn.commit()
+                if owns_connection:
+                    conn.commit()
                 logger.info(f"✅ 合并完毕: [{actor_name}] 的所有作品已归入 [{target_name}] 旗下。")
                 return
                 
@@ -501,14 +529,17 @@ def update_actor_avatar(actor_id: int, avatar_path: Optional[str], actor_name: s
             cursor.execute("UPDATE actors SET avatar_path = ?, name_zh = ? WHERE id = ?", (path_to_save, name_zh, actor_id))
         else:
             cursor.execute("UPDATE actors SET avatar_path = ? WHERE id = ?", (path_to_save, actor_id))
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         
         log_msg = f"💾 演员信息入库完毕 (ID: {actor_id}) -> 头像: {path_to_save}" + (f" | 译名: {name_zh}" if name_zh else "")
         logger.info(log_msg)
     except sqlite3.Error as e:
         logger.error(f"❌ 演员头像更新失败 (ID: {actor_id}): {e}")
+        if not owns_connection:
+            raise
     finally:
-        if conn:
+        if conn and owns_connection:
             conn.close()
 
 
@@ -654,26 +685,14 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
         base["actors"] = actors
         base["tags"] = tags
 
-        # Attach cluster info for series display
-        series_name = base.get("series")
-        base["series_cluster_id"] = None
-        base["series_zh"] = None
-        if series_name:
-            cursor.execute(
-                "SELECT id, canonical_name, canonical_name_zh, variations_json FROM series_clusters"
-            )
-            for row in cursor.fetchall():
-                c = dict(row)
-                names = {c["canonical_name"]}
-                try:
-                    import json as _json
-                    names.update(_json.loads(c["variations_json"] or "[]"))
-                except Exception:
-                    pass
-                if series_name in names:
-                    base["series_cluster_id"] = c["id"]
-                    base["series_zh"] = c["canonical_name_zh"] or None
-                    break
+        if base.get('series') and _has_series_catalog(conn):
+            series = conn.execute("""SELECT j.id AS series_jp_id, c.id_final AS series_final_id,
+                COALESCE(f.name,c.name) AS series_zh, c.status AS series_translation_status
+                FROM videos v JOIN series_jp j ON j.id=v.series_jp_id
+                LEFT JOIN series_cn c ON c.id_jp=j.id
+                LEFT JOIN series_final f ON f.id=c.id_final WHERE v.id=?""", (base['id'],)).fetchone()
+            if series:
+                base.update(dict(series))
 
         return base
     except sqlite3.Error as e:
@@ -813,16 +832,17 @@ def get_tag_with_videos(tag_id: int) -> Optional[Dict[str, Any]]:
 
 def search_actors(q: str, limit: int = 10) -> List[Dict[str, Any]]:
     """Search actors by name or name_zh, return id/name/name_zh/avatar_path."""
-    like_q = f"%{q}%"
+    like_q = f"%{_actor_name_key(q)}%"
     conn = None
     try:
         conn = _get_conn()
+        conn.create_function('actor_name_key', 1, _actor_name_key)
         cursor = conn.cursor()
         cursor.execute(
             """
             SELECT id, name, name_zh, avatar_path
             FROM actors
-            WHERE is_ignored = 0 AND (name LIKE ? OR name_zh LIKE ?)
+            WHERE is_ignored = 0 AND (actor_name_key(name) LIKE ? OR actor_name_key(name_zh) LIKE ?)
             ORDER BY CASE WHEN name_zh IS NOT NULL AND name_zh != '' THEN 0 ELSE 1 END, name_zh, name
             LIMIT ?
             """,
@@ -837,52 +857,23 @@ def search_actors(q: str, limit: int = 10) -> List[Dict[str, Any]]:
             conn.close()
 
 
+def _has_series_catalog(conn):
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='series_jp'").fetchone() is not None
+
+
 def search_series(q: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """Search series by Japanese name or Chinese cluster name.
-    Returns list of {name, name_zh, cluster_id} dicts.
-    """
-    like_q = f"%{q}%"
-    conn = None
-    try:
-        conn = _get_conn()
-        cursor = conn.cursor()
-        # 1. clusters matching canonical_name_zh or canonical_name
-        cursor.execute(
-            """
-            SELECT canonical_name AS name, canonical_name_zh AS name_zh, id AS cluster_id
-            FROM series_clusters
-            WHERE (canonical_name_zh LIKE ? OR canonical_name LIKE ?)
-              AND canonical_name_zh IS NOT NULL AND canonical_name_zh != ''
-            ORDER BY canonical_name_zh
-            LIMIT ?
-            """,
-            (like_q, like_q, limit),
-        )
-        results = _rows_to_dicts(cursor.fetchall())
-        cluster_names = {r['name'] for r in results}
-        # 2. raw series from videos not already covered by a cluster result
-        cursor.execute(
-            """
-            SELECT DISTINCT series AS name FROM videos
-            WHERE series IS NOT NULL AND series != '' AND series LIKE ?
-            ORDER BY series
-            LIMIT ?
-            """,
-            (like_q, limit),
-        )
-        for r in cursor.fetchall():
-            if r['name'] not in cluster_names:
-                results.append({'name': r['name'], 'name_zh': None, 'cluster_id': None})
-        return results[:limit]
-    except sqlite3.Error as e:
-        logger.error(f"❌ search_series 失败: {e}")
-        return []
-    finally:
-        if conn:
-            conn.close()
-
-
-PATCHABLE_FIELDS = {'title_jp', 'title_zh', 'title_zh_short', 'release_date', 'duration', 'maker', 'publisher', 'series', 'score'}
+    """Find source entries by raw, translated or reviewed name."""
+    with closing(_get_conn()) as conn:
+        like = f'%{q}%'
+        if not _has_series_catalog(conn):
+            return _rows_to_dicts(conn.execute("""SELECT DISTINCT series AS name FROM videos
+                WHERE deleted=0 AND series LIKE ? ORDER BY series LIMIT ?""", (like, limit)).fetchall())
+        return _rows_to_dicts(conn.execute("""SELECT DISTINCT j.raw_name AS name,
+            COALESCE(f.name,c.name) AS name_zh FROM series_jp j
+            JOIN videos v ON v.series_jp_id=j.id AND v.deleted=0
+            LEFT JOIN series_cn c ON c.id_jp=j.id LEFT JOIN series_final f ON f.id=c.id_final
+            WHERE j.raw_name LIKE ? OR c.name LIKE ? OR f.name LIKE ?
+            ORDER BY name LIMIT ?""", (like, like, like, limit)).fetchall())
 
 
 def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, tag_names: Optional[List[str]] = None) -> bool:
@@ -910,18 +901,9 @@ def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, ta
                     name_zh = ''
                 if not name:
                     continue
-                # Find by name, else create
-                cursor.execute("SELECT id FROM actors WHERE name = ?", (name,))
-                row = cursor.fetchone()
-                if not row:
-                    cursor.execute("INSERT INTO actors (name, name_zh) VALUES (?, ?)", (name, name_zh or None))
-                    cursor.execute("SELECT id FROM actors WHERE name = ?", (name,))
-                    row = cursor.fetchone()
-                elif name_zh:
-                    cursor.execute("UPDATE actors SET name_zh = ? WHERE id = ? AND (name_zh IS NULL OR name_zh = '')", (name_zh, row[0]))
-                if row:
-                    for vid in video_ids:
-                        cursor.execute("INSERT OR IGNORE INTO video_actor_link (video_id, actor_id) VALUES (?, ?)", (vid, row[0]))
+                actor_id, _, _ = _get_or_create_actor(cursor, name, name_zh)
+                for vid in video_ids:
+                    cursor.execute("INSERT OR IGNORE INTO video_actor_link (video_id, actor_id) VALUES (?, ?)", (vid, actor_id))
         if tag_names is not None:
             cursor.execute(f"DELETE FROM video_tag_link WHERE video_id IN ({ph})", video_ids)
             for name in tag_names:
@@ -996,8 +978,7 @@ def get_stats() -> Dict[str, Any]:
         total_actors = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM tags")
         total_tags = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM series_clusters")
-        total_series = cursor.fetchone()[0]
+        total_series = len(_series_entries(conn))
 
         # Scrape status
         cursor.execute("SELECT scrape_status, COUNT(*) as cnt FROM videos GROUP BY scrape_status")
@@ -1269,7 +1250,12 @@ def list_all_actors_with_count() -> List[Dict[str, Any]]:
             ORDER BY count DESC, a.name
             """
         )
-        return _rows_to_dicts(cursor.fetchall())
+        actors = _rows_to_dicts(cursor.fetchall())
+        for actor in actors:
+            names = {name for name in (actor['name'], actor['name_zh']) if name}
+            variants = {variant for name in names for variant in (_actor_name_key(name), convert(name, 'zh-hant'))}
+            actor['search_names'] = sorted(variants - names)
+        return actors
     except sqlite3.Error as e:
         logger.error(f"❌ list_all_actors_with_count 失败: {e}")
         return []
@@ -1278,121 +1264,58 @@ def list_all_actors_with_count() -> List[Dict[str, Any]]:
             conn.close()
 
 
+def _series_entries(conn):
+    if not _has_series_catalog(conn):
+        return _rows_to_dicts(conn.execute("""SELECT series, series AS raw_name, COUNT(DISTINCT code) AS count
+            FROM videos WHERE deleted=0 AND trim(COALESCE(series,''))!=''
+            GROUP BY series ORDER BY count DESC, series""").fetchall())
+    return _rows_to_dicts(conn.execute("""SELECT f.id AS final_id,
+        CASE WHEN f.id IS NULL THEN j.id END AS jp_id,
+        COALESCE(f.name,MAX(c.name),MAX(v.series)) AS series,
+        CASE WHEN f.id IS NULL THEN MAX(v.series) END AS raw_name,
+        CASE WHEN f.id IS NULL THEN MAX(j.maker) END AS maker,
+        CASE WHEN f.id IS NULL THEN MAX(c.status) END AS translation_status,
+        COUNT(DISTINCT v.code) AS count
+        FROM videos v LEFT JOIN series_jp j ON j.id=v.series_jp_id
+        LEFT JOIN series_cn c ON c.id_jp=j.id LEFT JOIN series_final f ON f.id=c.id_final
+        WHERE v.deleted=0 AND trim(COALESCE(v.series,''))!=''
+        GROUP BY f.id, CASE WHEN f.id IS NULL THEN j.id END,
+            CASE WHEN j.id IS NULL THEN v.series END
+        ORDER BY count DESC, series""").fetchall())
+
+
 def list_all_series_with_count() -> List[Dict[str, Any]]:
-    """
-    Return series list using series_clusters for aggregation.
-    Clustered series show canonical_name_zh and sum counts across all variants.
-    Unclustered series fall through with their raw name.
-    """
-    conn = None
+    conn = _get_conn()
     try:
-        conn = _get_conn()
-        cursor = conn.cursor()
-
-        # 1. Get per-series video counts from videos table
-        cursor.execute(
-            "SELECT series, COUNT(DISTINCT code) AS cnt FROM videos "
-            "WHERE series IS NOT NULL AND series != '' AND deleted = 0 GROUP BY series"
-        )
-        series_counts: Dict[str, int] = {r["series"]: r["cnt"] for r in cursor.fetchall()}
-
-        # 2. Load all clusters and build name → cluster_id mapping
-        cursor.execute("SELECT id, canonical_name, canonical_name_zh, variations_json FROM series_clusters")
-        clusters = _rows_to_dicts(cursor.fetchall())
-
-        name_to_cluster_id: Dict[str, int] = {}
-        for c in clusters:
-            all_names = set([c["canonical_name"]] + json.loads(c["variations_json"] or "[]"))
-            for name in all_names:
-                if name and name not in name_to_cluster_id:
-                    name_to_cluster_id[name] = c["id"]
-
-        # 3. Aggregate counts by cluster; collect unclustered series
-        cluster_counts: Dict[int, int] = {}
-        unclustered: Dict[str, int] = {}
-        for series, cnt in series_counts.items():
-            cid = name_to_cluster_id.get(series)
-            if cid:
-                cluster_counts[cid] = cluster_counts.get(cid, 0) + cnt
-            else:
-                unclustered[series] = cnt
-
-        # 4. Build result: clusters first (sorted by count), then unclustered
-        cluster_map = {c["id"]: c for c in clusters}
-        result: List[Dict[str, Any]] = []
-
-        for cid, cnt in sorted(cluster_counts.items(), key=lambda x: -x[1]):
-            c = cluster_map[cid]
-            result.append({
-                "id": cid,
-                "series": c["canonical_name_zh"] or c["canonical_name"],
-                "count": cnt,
-                "type": "cluster",
-            })
-        for series, cnt in sorted(unclustered.items(), key=lambda x: -x[1]):
-            result.append({"id": None, "series": series, "count": cnt, "type": "raw"})
-
-        return result
-    except Exception as e:
-        logger.error(f"❌ list_all_series_with_count 失败: {e}")
-        return []
+        return _series_entries(conn)
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
 
-def get_videos_by_series(series_name: Optional[str] = None, cluster_id: Optional[int] = None,
-                         page: int = 1, limit: int = 24, sort: str = 'date') -> Dict[str, Any]:
-    """
-    Fetch videos for a series. If cluster_id is given, expands all cluster variants.
-    Falls back to exact series_name match otherwise.
-    """
+def get_videos_by_series(series_name=None, jp_id=None, final_id=None, page=1, limit=24, sort='date'):
     page = max(1, page)
     limit = max(1, min(limit, 200))
-    offset = (page - 1) * limit
-    conn = None
+    conn = _get_conn()
     try:
-        conn = _get_conn()
-        cursor = conn.cursor()
-
-        if cluster_id:
-            cursor.execute(
-                "SELECT canonical_name, variations_json FROM series_clusters WHERE id = ?",
-                (cluster_id,),
-            )
-            row = cursor.fetchone()
-            if row:
-                row = dict(row)
-                names = list(set([row["canonical_name"]] + json.loads(row["variations_json"] or "[]")))
-            else:
-                names = []
+        if final_id:
+            condition = 'v.series_jp_id IN (SELECT id_jp FROM series_cn WHERE id_final=?)'
+            key = final_id
+            label = conn.execute('SELECT name FROM series_final WHERE id=?', (key,)).fetchone()
+        elif jp_id:
+            condition, key = 'v.series_jp_id=?', jp_id
+            label = conn.execute("""SELECT COALESCE(c.name,j.raw_name) FROM series_jp j
+                LEFT JOIN series_cn c ON c.id_jp=j.id WHERE j.id=?""", (key,)).fetchone()
         else:
-            names = [series_name] if series_name else []
-
-        if not names:
-            return {"page": page, "limit": limit, "total": 0, "items": []}
-
-        ph = ",".join("?" * len(names))
-        cursor.execute(f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE deleted = 0 AND series IN ({ph})", names)
-        total = int(cursor.fetchone()["total"])
-        cursor.execute(
-            f"""
-            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, deleted
-            FROM videos
-            WHERE series IN ({ph})
-              AND id IN (SELECT MIN(id) FROM videos GROUP BY code)
-            ORDER BY {_order_clause(sort)}
-            LIMIT ? OFFSET ?
-            """,
-            names + [limit, offset],
-        )
-        return {"page": page, "limit": limit, "total": total, "items": _rows_to_dicts(cursor.fetchall())}
-    except Exception as e:
-        logger.error(f"❌ get_videos_by_series 失败: {e}")
-        return {"page": page, "limit": limit, "total": 0, "items": []}
+            condition, key, label = 'v.series=?', series_name, None
+        matches = f'SELECT MIN(v.id) FROM videos v WHERE v.deleted=0 AND {condition} GROUP BY v.code'
+        total = conn.execute(f'SELECT COUNT(*) FROM ({matches})', (key,)).fetchone()[0]
+        rows = conn.execute(f"""SELECT id,code,title_jp,title_zh,release_date,score,cover_path,deleted
+            FROM videos WHERE id IN ({matches}) ORDER BY {_order_clause(sort)} LIMIT ? OFFSET ?""",
+                            (key, limit, (page - 1) * limit)).fetchall()
+        return dict(page=page, limit=limit, total=total, items=_rows_to_dicts(rows),
+                    name=label[0] if label else series_name)
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
 
 def list_all_prefixes_with_count() -> List[Dict[str, Any]]:
@@ -1867,68 +1790,64 @@ def rename_video_file(
             conn.close()
 
 
-def patch_actor(actor_id: int, fields: Dict[str, Any]) -> bool:
-    """Update editable scalar fields for an actor (name, name_zh)."""
-    allowed = {k: v for k, v in fields.items() if k in {'name', 'name_zh'}}
-    if not allowed:
-        return False
+def patch_actor(actor_id: int, fields: Dict[str, Any]) -> Optional[int]:
+    """Update an actor, returning the surviving ID if the new name matches another actor."""
+    allowed = {key: _actor_name_key(value) if isinstance(value, str) else value
+               for key, value in fields.items() if key in {'name', 'name_zh'}}
+    if not allowed or ('name' in allowed and (not isinstance(allowed['name'], str) or not allowed['name'])):
+        return None
     conn = None
     try:
         conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
-        set_clause = ', '.join(f"{k} = ?" for k in allowed)
-        cursor.execute(f"UPDATE actors SET {set_clause} WHERE id = ?", list(allowed.values()) + [actor_id])
+        if not cursor.execute("SELECT 1 FROM actors WHERE id = ?", (actor_id,)).fetchone():
+            return None
+        if 'name' in allowed:
+            conflict = _actor_by_name(cursor, fields['name'].strip(), exclude_id=actor_id, include_display=True)
+            if conflict is not None:
+                _merge_actor_rows(conn, actor_id, conflict[0])
+                conn.commit()
+                return conflict[0]
+        set_clause = ', '.join(f"{key} = ?" for key in allowed)
+        cursor.execute(f"UPDATE actors SET {set_clause} WHERE id = ?", [*allowed.values(), actor_id])
         conn.commit()
-        return cursor.rowcount > 0
+        return actor_id
     except sqlite3.Error as e:
         logger.error(f"❌ patch_actor 失败 [actor_id={actor_id}]: {e}")
-        return False
+        return None
     finally:
         if conn:
             conn.close()
+
+
+def _merge_actor_rows(conn, source_id, target_id):
+    source = conn.execute("SELECT avatar_path, name_zh FROM actors WHERE id = ?", (source_id,)).fetchone()
+    target = conn.execute("SELECT avatar_path, name_zh FROM actors WHERE id = ?", (target_id,)).fetchone()
+    if not source or not target or source_id == target_id:
+        return False
+    avatar = target[0] if target[0] not in (None, '', 'no_avatar') else source[0] or target[0]
+    conn.execute("UPDATE actors SET avatar_path = ?, name_zh = ? WHERE id = ?",
+                 (avatar, target[1] or source[1], target_id))
+    conn.execute("""INSERT OR IGNORE INTO video_actor_link (video_id, actor_id)
+        SELECT video_id, ? FROM video_actor_link WHERE actor_id = ?""", (target_id, source_id))
+    conn.execute("DELETE FROM video_actor_link WHERE actor_id = ?", (source_id,))
+    conn.execute("DELETE FROM actors WHERE id = ?", (source_id,))
+    return True
 
 
 def merge_actors(source_id: int, target_id: int) -> bool:
-    """Move all video links from source actor to target actor, then delete source."""
+    """Move source links to the target and preserve missing profile fields."""
     conn = None
     try:
         conn = _get_conn()
-        cursor = conn.cursor()
-        # Transfer links that don't already exist on target
-        cursor.execute(
-            """
-            INSERT OR IGNORE INTO video_actor_link (video_id, actor_id)
-            SELECT video_id, ? FROM video_actor_link WHERE actor_id = ?
-            """,
-            (target_id, source_id),
-        )
-        cursor.execute("DELETE FROM video_actor_link WHERE actor_id = ?", (source_id,))
-        cursor.execute("DELETE FROM actors WHERE id = ?", (source_id,))
+        conn.execute("BEGIN IMMEDIATE")
+        merged = _merge_actor_rows(conn, source_id, target_id)
         conn.commit()
-        logger.info(f"🔀 merge_actors: source={source_id} → target={target_id}")
-        return True
+        return merged
     except sqlite3.Error as e:
         logger.error(f"❌ merge_actors 失败: {e}")
         return False
-    finally:
-        if conn:
-            conn.close()
-
-
-def find_actor_by_name(name: str, exclude_id: int) -> Optional[Dict[str, Any]]:
-    """Return actor with given name (or name_zh) excluding exclude_id, or None."""
-    conn = None
-    try:
-        conn = _get_conn()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, name, name_zh FROM actors WHERE (name = ? OR name_zh = ?) AND id != ?",
-            (name, name, exclude_id),
-        )
-        row = cursor.fetchone()
-        if not row:
-            return None
-        return {'id': row[0], 'name': row[1], 'name_zh': row[2]}
     finally:
         if conn:
             conn.close()
@@ -1945,55 +1864,6 @@ def patch_actor_avatar(actor_id: int, avatar_path: str) -> bool:
         return cursor.rowcount > 0
     except sqlite3.Error as e:
         logger.error(f"❌ patch_actor_avatar 失败 [actor_id={actor_id}]: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-
-def assign_series_cluster(code: str, cluster_id: int) -> bool:
-    """Assign a video's series to an existing cluster.
-    - Adds the video's current series name as a variation in the cluster
-    - Updates videos.series to canonical_name for all rows with this code
-    """
-    conn = None
-    try:
-        conn = _get_conn()
-        cursor = conn.cursor()
-        # Get cluster info
-        cursor.execute(
-            "SELECT canonical_name, variations_json FROM series_clusters WHERE id = ?",
-            (cluster_id,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            return False
-        canonical_name = row['canonical_name']
-        variations = json.loads(row['variations_json'] or '[]')
-        # Get current series of this video (may be empty)
-        cursor.execute("SELECT DISTINCT series FROM videos WHERE code = ? AND series IS NOT NULL AND series != ''", (code,))
-        old_series_rows = cursor.fetchall()
-        for old_row in old_series_rows:
-            old_series = old_row['series']
-            if old_series and old_series != canonical_name and old_series not in variations:
-                variations.append(old_series)
-                # Also reassign any other videos with that series name
-                cursor.execute(
-                    "UPDATE videos SET series = ? WHERE series = ?",
-                    (canonical_name, old_series),
-                )
-        # Update variations_json in cluster
-        cursor.execute(
-            "UPDATE series_clusters SET variations_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (json.dumps(variations, ensure_ascii=False), cluster_id),
-        )
-        # Set this video's series to canonical_name
-        cursor.execute("UPDATE videos SET series = ? WHERE code = ?", (canonical_name, code))
-        conn.commit()
-        logger.info(f"✏️ assign_series_cluster [{code}] → cluster {cluster_id} ({canonical_name})")
-        return True
-    except sqlite3.Error as e:
-        logger.error(f"❌ assign_series_cluster 失败: {e}")
         return False
     finally:
         if conn:
@@ -2039,7 +1909,7 @@ def rename_video_code(old_code: str, new_code: str) -> bool:
             conn.close()
 
 
-def patch_video(code: str, fields: Dict[str, Any]) -> bool:
+def patch_video(code: str, fields: Dict[str, Any], *, series_store=None) -> bool:
     """Update simple scalar fields for all rows sharing the given code."""
     allowed = {k: v for k, v in fields.items() if k in PATCHABLE_FIELDS}
     if not allowed:
@@ -2048,15 +1918,23 @@ def patch_video(code: str, fields: Dict[str, Any]) -> bool:
     try:
         conn = _get_conn()
         cursor = conn.cursor()
+        code = _resolve_video_code(cursor, code)
+        if code is None:
+            return False
         set_clause = ', '.join(f"{k} = ?" for k in allowed)
         values = list(allowed.values()) + [code]
         cursor.execute(
             f"UPDATE videos SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE code = ?",
             values,
         )
+        changed = cursor.rowcount > 0
+        if changed and series_store is not None:
+            from core.series_catalog import attach
+            row = conn.execute('SELECT series,maker FROM videos WHERE code=? ORDER BY id LIMIT 1', (code,)).fetchone()
+            attach(conn, series_store, code, row['series'], row['maker'])
         conn.commit()
         logger.info(f"✏️ patch_video [{code}]: {list(allowed.keys())}")
-        return cursor.rowcount > 0
+        return changed
     except sqlite3.Error as e:
         logger.error(f"❌ patch_video 失败 [{code}]: {e}")
         return False

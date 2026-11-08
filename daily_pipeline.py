@@ -1,7 +1,7 @@
 """每日入库流水线守护进程。
 
-依次跑 scanner → auto_scraper → auto_actor_scraper → translate_titles，
-跑完一轮后睡到下一日。任一步抛异常只记 log，不影响后续步骤。
+同步扫描后提交持久化工作流，按影片刮削 → 演员刮削 → 翻译的依赖顺序推进。
+外部阶段由 Consumer 异步调度，守护进程在提交后睡到下一日。
 
 启动方式：
     nohup .venv/bin/python daily_pipeline.py > /dev/null 2>&1 &
@@ -37,8 +37,9 @@ def safe_run(name, fn, *args, **kwargs):
     """跑一步，抛异常只记 log，不让整轮崩。"""
     log.info("---- [%s] 开始 ----", name)
     try:
-        fn(*args, **kwargs)
+        result = fn(*args, **kwargs)
         log.info("---- [%s] 完成 ----", name)
+        return result
     except Exception:
         log.error("[%s] 异常:\n%s", name, traceback.format_exc())
 
@@ -46,13 +47,12 @@ def safe_run(name, fn, *args, **kwargs):
 def run_one_cycle():
     from core.scanner import run_scan
     from core.auto_scraper import run_background_worker
-    from core.auto_actor_scraper import run_actor_worker
-    from utils.translate_titles import batch_translate_titles
+    from core.worker_client import WorkerClient
 
-    safe_run("scanner",         run_scan)
-    safe_run("auto_scraper",    run_background_worker)
-    safe_run("actor_scraper",   run_actor_worker)
-    safe_run("translate_title", batch_translate_titles)
+    safe_run("scanner", run_scan)
+    video_tasks = safe_run("auto_scraper", run_background_worker) or []
+    job_id = WorkerClient().call('daily_finalize', payload={'video_tasks': video_tasks}, priority=-1000)
+    log.info("每日流水线后续阶段已入队 %s", job_id)
 
 
 if __name__ == "__main__":

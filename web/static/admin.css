@@ -1,0 +1,119 @@
+.admin-view h1, .admin-view h2, .admin-view h3, .admin-view p, .admin-view dl, .admin-view dd { margin: 0; }
+.admin-view section { margin-top: 26px; }
+.admin-view .section-head, .admin-view .card-top, .admin-view .pagination, .admin-view .metric { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.admin-view .section-head { margin-bottom: 14px; }
+.admin-view .page-head p, .admin-view .hint { margin-top: 4px; }
+.admin-view .hint, .admin-view .muted { font-size: var(--text-small); color: var(--muted); }
+.admin-view .admin-head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.admin-view #notice { color: var(--muted); font-size: var(--text-small); }
+.admin-view #notice[data-error] { color: #ffaebd; }
+.admin-view .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.admin-view .overview { align-items: stretch; }
+.admin-view .services { display: contents; }
+.admin-view .card {
+  min-width: 0;
+  padding: 17px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+  overflow-wrap: anywhere;
+}
+.admin-view .consumer-card { --service-accent: #78bde6; background: #1c2934; }
+.admin-view .browser-card { --service-accent: #bfa6ee; background: #231e30; }
+.admin-view .session-card { --service-accent: #e8b676; background: #2b241d; }
+.admin-view :is(.consumer-card, .browser-card, .session-card) { border-top: 3px solid var(--service-accent); }
+.admin-view .card-top { margin-bottom: 12px; }
+.admin-view .pill { display: inline-block; border-radius: 20px; padding: 3px 10px; font-size: 12px; font-weight: 700; }
+.admin-view .lilac { background: #352746; color: #e0ceff; }
+.admin-view .sky { background: #23394a; color: #a5ddff; }
+.admin-view .mint { background: #213a30; color: #a4e7c4; }
+.admin-view .rose { background: #442936; color: #ffb3c5; }
+.admin-view .amber { background: #402c19; color: #ffce92; }
+.admin-view .neutral { background: #2c2f3a; color: #d4d7e2; }
+.admin-view .card h3 { margin-bottom: 8px; }
+.admin-view input, .admin-view select {
+  min-height: var(--control-height);
+  border: 1px solid var(--control-line);
+  border-radius: var(--control-radius);
+  padding: 7px 11px;
+}
+.admin-view .back.jump { display: none; }
+.admin-view .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.admin-view .metrics { display: grid; gap: 5px; margin-top: 10px; font-size: var(--text-small); }
+.admin-view .metric { align-items: baseline; }
+.admin-view .metric dt { color: var(--muted); flex-shrink: 0; }
+.admin-view .metric dd { text-align: right; min-width: 0; }
+.admin-view .settings label { display: grid; grid-template-columns: 1fr minmax(70px, 38%); align-items: center; gap: 8px; margin-top: 7px; font-size: var(--text-small); }
+.admin-view .settings input { width: 100%; min-width: 0; padding: 5px 8px; }
+.admin-view .filters { display: grid; grid-template-columns: 1fr 1fr 1.5fr auto; gap: 9px; margin-bottom: 14px; }
+.admin-view .filters > * { min-width: 0; width: 100%; }
+.admin-view .record .card-top { margin-bottom: 10px; }
+.admin-view .record-title { overflow-wrap: anywhere; }
+.admin-view .record-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 10px; }
+.admin-view .record-error { color: #ffb3c5; margin-top: 6px; white-space: pre-wrap; }
+.admin-view .pagination { justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+.admin-view .pagination .muted { margin-right: auto; }
+.admin-view .empty { grid-column: 1 / -1; padding: 24px; text-align: center; color: var(--muted); }
+.admin-view .panels { display: grid; gap: 16px; align-items: start; }
+@media (min-width: 1160px) {
+  .admin-view .panels { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); }
+}
+.admin-view .usage-header, .admin-view .usage-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.admin-view .usage-header { justify-content: space-between; margin-bottom: 14px; }
+.admin-view .usage-total { font-weight: 700; font-variant-numeric: tabular-nums; }
+.admin-view .usage-legend { margin: 8px 0; font-size: var(--text-small); }
+.admin-view .usage-legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; }
+.admin-view .usage-allowed::before, .admin-view .usage-bars .usage-allowed { background: #7e778c; }
+.admin-view .usage-used::before, .admin-view .usage-bars .usage-used { background: #c2a6f1; }
+.admin-view .usage-scroll { overflow-x: auto; padding: 4px; }
+.admin-view .usage-chart { display: grid; grid-template-columns: repeat(var(--hours, 24), minmax(28px, 1fr)); }
+.admin-view button.usage-hour {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; padding: 3px 2px;
+  border-color: transparent; background: transparent; box-shadow: none;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.admin-view button.usage-hour[aria-pressed=true] { border-color: var(--service-accent); background: var(--surface); }
+.admin-view .usage-bars { display: flex; align-items: end; justify-content: center; gap: 2px; height: 115px; border-bottom: 1px solid var(--line); }
+.admin-view .usage-bars span { width: min(11px, 38%); border-radius: 2px 2px 0 0; }
+.admin-view .usage-detail { margin-top: 8px; font-weight: 650; }
+.admin-view .quota-editor { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.admin-view .quota-editor summary { cursor: pointer; font-weight: 700; padding-block: 8px; }
+.admin-view #quota-curve { display: block; width: 100%; max-width: 760px; margin: 10px 0; touch-action: none; }
+.admin-view #quota-curve text { fill: var(--muted); font-size: 15px; }
+.admin-view .quota-axis { stroke: var(--control-line); }
+.admin-view #quota-line { stroke: #c2a6f1; stroke-width: 3; fill: none; }
+.admin-view #quota-curve circle { fill: #c2a6f1; stroke: transparent; stroke-width: 32; cursor: grab; }
+.admin-view #quota-curve circle:active { cursor: grabbing; }
+.admin-view #quota-curve #quota-width { fill: #9d91b0; }
+.admin-view .quota-fields { display: flex; flex-wrap: wrap; gap: 8px 12px; }
+.admin-view .quota-fields label { display: grid; gap: 4px; font-size: var(--text-small); }
+.admin-view .quota-fields input { width: 100px; }
+.admin-view .quota-editor button { margin-top: 10px; }
+.admin-view .activity { margin: 10px 0 0; padding: 0; list-style: none; }
+.admin-view .activity li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; padding: 9px 0; }
+.admin-view .activity li + li { border-top: 1px solid var(--line); }
+.admin-view .activity-body { min-width: 0; }
+.admin-view .activity-target { font-size: var(--text-section); font-weight: 700; }
+.admin-view .activity-action { color: var(--muted); }
+.admin-view dialog { width: min(680px, calc(100% - 28px)); max-height: 86vh; max-height: 86dvh; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: inherit; }
+.admin-view dialog::backdrop { background: var(--overlay); }
+.admin-view dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-small); }
+.admin-view #priority-dialog { max-width: 370px; }
+.admin-view #priority-dialog input { width: 100%; margin-top: 6px; }
+.admin-view #login-result:empty { display: none; }
+.admin-view #login-result { margin-top: 10px; }
+.admin-view #records-heading { scroll-margin-top: 125px; }
+@media (max-width: 1120px) {
+  .admin-view .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .admin-view .back.jump { display: inline-flex; }
+  .admin-view .grid, .admin-view .panels { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .admin-view .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-view #records-heading { scroll-margin-top: 174px; }
+}
+
+.admin-view .series-review-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 8px; }
+.admin-view .series-review-fields label { display: grid; gap: 4px; min-width: 0; }
+.admin-view .series-review-fields input, .admin-view .series-review-fields select { width: 100%; min-width: 0; }

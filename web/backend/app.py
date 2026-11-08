@@ -1,13 +1,10 @@
 import json
 import logging
 import os
-import queue
 import re
 import sqlite3
-import threading
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -16,10 +13,10 @@ from werkzeug.utils import secure_filename
 
 from config import DB_PATH, MEDIA_LIBRARIES
 from core.scanner import extract_video_code
-from core.worker_client import WorkerClient, ensure_worker
-from core.scrape_queue import QueueStore
-from core.scraper.video_scraper import ScrapeInterrupted
-from core.translator.service import shorten_chinese_title_with_candidates, translate_title
+from core.worker_client import ensure_worker
+from core.browser_queue import RuntimeStore
+from core.scrape_queue import StoredJob
+from core.workflows import prepare_upload, _build_current_library_destination
 from utils.rename_and_move_videos import (
     VideoRecord,
     build_destination,
@@ -41,11 +38,8 @@ from dal.db_manager import (
     list_all_series_with_count,
     list_all_tags_with_count,
     list_videos,
-    assign_series_cluster,
     delete_video,
-    find_actor_by_name,
     get_video_file_path,
-    merge_actors,
     patch_actor,
     patch_actor_avatar,
     patch_video,
@@ -67,409 +61,20 @@ app = Flask(__name__, static_folder='../static', static_url_path='/static', temp
 app.json.ensure_ascii = False
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50 GB
 
-# ── Job management ──────────────────────────────────────────────
-
-# Alias avoids shadowing the `queue` module inside the _Job dataclass field annotation
-_Queue = queue.Queue
-
-
-@dataclass
-class _Job:
-    job_id: str
-    queue: _Queue = field(default_factory=_Queue)
-    status: str = 'running'
-    created_at: float = field(default_factory=time.time)
-
-
-_jobs: dict = {}
-_jobs_lock = threading.Lock()
-_javdb_context_lock = threading.Lock()
-_javdb_session = None
-_worker_browser = None
 _scrape_store = None
 
 
 def scrape_store():
     global _scrape_store
     if _scrape_store is None or _scrape_store.path != str(DB_PATH):
-        _scrape_store = QueueStore(DB_PATH)
+        _scrape_store = RuntimeStore(DB_PATH)
     return _scrape_store
-
-
-def _cleanup_old_jobs():
-    while True:
-        time.sleep(600)
-        cutoff = time.time() - 3600
-        with _jobs_lock:
-            stale = [jid for jid, j in _jobs.items() if j.created_at < cutoff]
-            for jid in stale:
-                del _jobs[jid]
-
-
-threading.Thread(target=_cleanup_old_jobs, daemon=True).start()
-
-
-
-
-def _get_javdb_session():
-    global _javdb_session
-    if _worker_browser is not None:
-        return _worker_browser
-    if _javdb_session is None:
-        _javdb_session = WorkerClient()
-    return _javdb_session
-
-
-def _scrape_with_playwright(base_code: str) -> dict:
-    """Run JavDB scrape through a long-lived browser session."""
-    with _javdb_context_lock:
-        session = _get_javdb_session()
-        return session.scrape(base_code)
 
 
 @app.post('/api/javdb/session/close')
 def api_javdb_session_close():
-    global _javdb_session
-    with _javdb_context_lock:
-        if _javdb_session is not None:
-            _javdb_session.close()
-            _javdb_session = None
-    return jsonify({'ok': True})
-
-
-def _run_auto_pipeline(
-    job: '_Job', file_paths: list, volume_path: 'Path', uncensored_crack_tag: str = 'LTX 无码破解',
-    subtitle_classification: Optional[str] = None, additional_tags: Optional[list[str]] = None,
-):
-    def emit(step: str, status: str, message: str, **extra):
-        job.queue.put({'step': step, 'status': status, 'message': message, **extra})
-
-    succeeded = False
-    try:
-        # ── Step 1: Parse codes ──────────────────────────────────
-        sorted_paths = sorted(file_paths, key=lambda p: p.name)
-        codes_parts = []
-        for i, fpath in enumerate(sorted_paths):
-            code, part = extract_video_code(fpath.stem)
-            if not code:
-                raise ValueError(f'无法解析番号: {fpath.name}，请改用手动模式')
-            if subtitle_classification is not None:
-                base = re.sub(r'(?i)-(?:uc|u|c)$', '', code)
-                has_u = bool(uncensored_crack_tag) or code.upper().endswith(('-U', '-UC'))
-                has_c = bool(subtitle_classification)
-                code = base + ('-UC' if has_u and has_c else '-U' if has_u else '-C' if has_c else '')
-            if len(sorted_paths) > 1 and not part:
-                part = f'part{i + 1}'
-            codes_parts.append((code, part, fpath))
-        main_code = codes_parts[0][0]
-        emit('parse_code', 'done', f'番号: {main_code}')
-
-        # ── Steps 2-3: Move to destination ──────────────────────
-        dest_dir = None
-        scanned = []
-        checkpoint = job.checkpoint() if hasattr(job, 'checkpoint') else {}
-        planned = checkpoint.get('upload_files')
-        if planned is None:
-            planned = []
-            for code, part, tmp_path in codes_parts:
-                record = VideoRecord(id=0, code=code, part=part, original_file_path=tmp_path,
-                                     title_zh_short=None, title_zh=None, title_jp=None, actors=[])
-                target = build_destination(record, dest_root=volume_path)
-                st = tmp_path.stat()
-                planned.append({'code': code, 'part': part, 'source': str(tmp_path), 'original_path': str(target),
-                                'file_size': st.st_size, 'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
-                                'file_birthtime': datetime.fromtimestamp(getattr(st, 'st_birthtime', st.st_mtime)).isoformat()})
-            if hasattr(job, 'checkpoint'):
-                checkpoint['upload_files'] = planned
-                job.checkpoint(checkpoint)
-        for item in planned:
-            code, part, tmp_path = item['code'], item['part'], Path(item['source'])
-            dest_path = Path(item['original_path'])
-            dest_dir = dest_path.parent
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            if tmp_path.exists():
-                if dest_path.exists() and tmp_path != dest_path:
-                    raise ValueError(f'目标文件已存在，保留上传文件: {dest_path}')
-                tmp_path.rename(dest_path)
-            elif not dest_path.exists():
-                with sqlite3.connect(DB_PATH) as recovery:
-                    row = recovery.execute('SELECT original_file_path FROM videos WHERE UPPER(code)=UPPER(?) AND COALESCE(part,\'\')=COALESCE(?,\'\') AND deleted=0 LIMIT 1', (code, part)).fetchone()
-                if not row or not Path(row[0]).exists():
-                    raise FileNotFoundError(f'上传文件和目标文件均不存在: {tmp_path}')
-                dest_path = Path(row[0])
-            st = dest_path.stat()
-            scanned.append({
-                'code': code, 'part': part, 'original_path': dest_path,
-                'file_size': st.st_size,
-                'file_mtime': datetime.fromtimestamp(st.st_mtime).isoformat(),
-                'file_birthtime': datetime.fromtimestamp(
-                    getattr(st, 'st_birthtime', st.st_mtime)
-                ).isoformat(),
-            })
-        emit('calc_dir', 'done', f'目标目录: {dest_dir}')
-        emit('upload', 'done', '文件已就位')
-
-        # ── Steps 4-5: Insert DB + sync derived tags ─────────────
-        batch_insert_scanned_videos(scanned)
-        sync_derived_video_tags_for_code(main_code, uncensored_crack_tag, subtitle_classification)
-        if additional_tags and not add_existing_tags_to_video(main_code, additional_tags):
-            raise ValueError('添加标签失败')
-        suffix_upper = main_code.upper()
-        if suffix_upper.endswith('-UC'):
-            tag_msg = '标签: 中文字幕、无码破解'
-        elif suffix_upper.endswith('-C'):
-            tag_msg = '标签: 中文字幕'
-        elif suffix_upper.endswith('-U'):
-            tag_msg = '标签: 无码破解'
-        else:
-            tag_msg = '无特殊标签'
-        emit('db_insert', 'done', f'已写入数据库，{tag_msg}')
-        emit('tags', 'done', '标签同步完成')
-
-        # ── Step 6: Scrape ───────────────────────────────────────
-        emit('scrape', 'running', '刮削影片信息（JavDB）…')
-        base_code = re.sub(r'(?i)-(?:uc|u|c)$', '', main_code)
-        result_data = _scrape_with_playwright(base_code)
-        from core.scraper import FREEZE
-
-        conn_tmp = sqlite3.connect(DB_PATH)
-        try:
-            cur = conn_tmp.cursor()
-            cur.execute('SELECT id FROM videos WHERE code = ? LIMIT 1', (main_code,))
-            row = cur.fetchone()
-        finally:
-            conn_tmp.close()
-
-        if result_data == FREEZE:
-            if row:
-                from dal.db_manager import update_video_metadata
-                update_video_metadata(row[0], 'FREEZE')
-            emit('scrape', 'done', '未找到精确匹配，已冻结待人工')
-            emit('actors', 'done', '跳过')
-        elif result_data:
-            if row:
-                from dal.db_manager import update_video_metadata
-                update_video_metadata(row[0], 'SUCCESS', result_data)
-            emit('scrape', 'done', '刮削完成')
-            emit('actors', 'done', '演员信息已更新')
-        else:
-            emit('scrape', 'done', '刮削未找到结果，跳过')
-            emit('actors', 'done', '跳过')
-
-        # ── Step 8: Translate ────────────────────────────────────
-        emit('translate', 'running', '翻译标题…')
-        video_data = get_video_by_code(main_code) or {}
-        title_jp = video_data.get('title_jp') or ''
-        actor_list = video_data.get('actors') or []
-        actor_name_map = {a['name']: (a.get('name_zh') or a['name']) for a in actor_list}
-        actor_names = [a.get('name_zh') or a['name'] for a in actor_list]
-        title_zh = ''
-        if title_jp:
-            try:
-                title_zh = translate_title(title_jp, [main_code], actor_name_map=actor_name_map)
-                patch_video(main_code, {'title_zh': title_zh})
-            except Exception:
-                logging.exception(f'[{main_code}] 翻译标题失败')
-        emit('translate', 'done', f'翻译: {title_zh[:30]}' if title_zh else '无日文标题，跳过')
-
-        # ── Step 9: Short title ──────────────────────────────────
-        emit('short_title', 'running', '计算短标题…')
-        title_zh_short = ''
-        if title_zh:
-            try:
-                title_zh_short, _ = shorten_chinese_title_with_candidates(
-                    title_zh, actor_names=actor_names
-                )
-                if title_zh_short:
-                    patch_video(main_code, {'title_zh_short': title_zh_short})
-            except Exception:
-                logging.exception(f'[{main_code}] 计算短标题失败')
-        emit('short_title', 'done', f'短标题: {title_zh_short}' if title_zh_short else '跳过')
-
-        # ── Steps 10-12: Rename files ────────────────────────────
-        emit('calc_filename', 'running', '计算文件名…')
-        _rename_files_for_code(main_code, job=job)
-        emit('calc_filename', 'done', '文件名已计算')
-        emit('rename', 'done', '文件已重命名')
-        emit('db_update', 'done', '数据库已更新')
-        emit('done', 'done', '全部完成', code=main_code)
-        succeeded = True
-
-    except ScrapeInterrupted:
-        raise
-    except Exception as exc:
-        emit('error', 'error', str(exc))
-    finally:
-        job.status = 'done'
-        if succeeded and file_paths:
-            try:
-                tmp_parent = file_paths[0].parent
-                if '.upload_tmp' in str(tmp_parent):
-                    import shutil as _shutil
-                    _shutil.rmtree(str(tmp_parent), ignore_errors=True)
-            except Exception:
-                pass
-
-
-def _rename_files_for_code(main_code: str, job=None) -> None:
-    """Rebuild on-disk filenames from current DB metadata for all parts of a code."""
-    final_conn = sqlite3.connect(DB_PATH)
-    final_conn.row_factory = sqlite3.Row
-    try:
-        cur = final_conn.cursor()
-        cur.execute(
-            'SELECT id, code, part, original_file_path, title_zh_short, title_zh, title_jp '
-            'FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0',
-            (main_code,),
-        )
-        video_rows = cur.fetchall()
-        for vrow in video_rows:
-            cur.execute(
-                'SELECT COALESCE(a.name_zh, a.name) AS name FROM actors a '
-                'JOIN video_actor_link val ON val.actor_id = a.id '
-                'WHERE val.video_id = ? ORDER BY a.id ASC',
-                (vrow['id'],),
-            )
-            actors_for_rec = [r['name'] for r in cur.fetchall() if r['name']]
-            rec = VideoRecord(
-                id=vrow['id'], code=vrow['code'], part=vrow['part'],
-                original_file_path=Path(vrow['original_file_path']),
-                title_zh_short=vrow['title_zh_short'],
-                title_zh=vrow['title_zh'],
-                title_jp=vrow['title_jp'],
-                actors=actors_for_rec,
-            )
-            new_name = build_filename(rec)
-            old_path = Path(vrow['original_file_path'])
-            checkpoint = job.checkpoint() if job and hasattr(job, 'checkpoint') else {}
-            recovered = checkpoint.get('rename_moves', {}).get(str(old_path))
-            if not old_path.exists() and recovered and Path(recovered).exists():
-                old_path = Path(recovered)
-                cur.execute('UPDATE videos SET original_file_path=? WHERE id=?', (str(old_path), vrow['id']))
-            new_path = _build_current_library_destination(rec)
-            if old_path != new_path and old_path.exists():
-                if job and hasattr(job, 'checkpoint'):
-                    final_conn.commit()
-                    checkpoint.setdefault('rename_moves', {})[str(old_path)] = str(new_path)
-                    job.checkpoint(checkpoint)
-                new_path.parent.mkdir(parents=True, exist_ok=True)
-                old_path.rename(new_path)
-                cur.execute(
-                    'UPDATE videos SET original_file_path = ?, updated_at = CURRENT_TIMESTAMP '
-                    'WHERE id = ?',
-                    (str(new_path), vrow['id']),
-                )
-        final_conn.commit()
-    finally:
-        final_conn.close()
-
-
-def _library_root_for_path(path: Path) -> Optional[Path]:
-    for parent in path.parents:
-        if parent.name.lower() == 'avideo':
-            return parent
-    return None
-
-
-def _build_current_library_destination(record: VideoRecord) -> Path:
-    library_root = _library_root_for_path(record.original_file_path)
-    if library_root is None:
-        return record.original_file_path.parent / build_filename(record)
-    return build_destination(record, dest_root=library_root)
-
-
-def _rescrape_one_code(main_code: str, job=None) -> dict:
-    """Re-scrape one existing code: scrape → update metadata → translate → short title → rename."""
-    with sqlite3.connect(DB_PATH) as validation:
-        if not validation.execute('SELECT 1 FROM videos WHERE UPPER(code)=UPPER(?) AND deleted=0 LIMIT 1', (main_code,)).fetchone():
-            return {'ok': False, 'message': '影片已删除或番号已改变，跳过刮削'}
-    base_code = re.sub(r'(?i)-(?:uc|u|c)$', '', main_code)
-    result_data = _scrape_with_playwright(base_code)
-
-    conn_tmp = sqlite3.connect(DB_PATH)
-    try:
-        cur = conn_tmp.cursor()
-        cur.execute('SELECT id FROM videos WHERE code = ? LIMIT 1', (main_code,))
-        row = cur.fetchone()
-    finally:
-        conn_tmp.close()
-    if not row:
-        return {'ok': False, 'message': '未找到记录'}
-
-    from dal.db_manager import update_video_metadata
-    from core.scraper import FREEZE
-    if result_data == FREEZE:
-        update_video_metadata(row[0], 'FREEZE')
-        return {'ok': False, 'message': '搜索结果无精确匹配，已冻结待人工'}
-    update_video_metadata(row[0], 'SUCCESS' if result_data else 'FAILED', result_data)
-    if not result_data:
-        return {'ok': False, 'message': '刮削未找到结果'}
-
-    video_data = get_video_by_code(main_code) or {}
-    title_jp = video_data.get('title_jp') or ''
-    actor_list = video_data.get('actors') or []
-    actor_name_map = {a['name']: (a.get('name_zh') or a['name']) for a in actor_list}
-    actor_names = [a.get('name_zh') or a['name'] for a in actor_list]
-    title_zh = ''
-    if title_jp:
-        try:
-            title_zh = translate_title(title_jp, [main_code], actor_name_map=actor_name_map)
-            patch_video(main_code, {'title_zh': title_zh})
-        except Exception:
-            logging.exception(f'[{main_code}] 翻译标题失败')
-    if title_zh:
-        try:
-            title_zh_short, _ = shorten_chinese_title_with_candidates(
-                title_zh, actor_names=actor_names
-            )
-            if title_zh_short:
-                patch_video(main_code, {'title_zh_short': title_zh_short})
-        except Exception:
-            logging.exception(f'[{main_code}] 计算短标题失败')
-
-    _rename_files_for_code(main_code, job=job)
-    return {'ok': True, 'message': title_zh or '刮削完成'}
-
-
-def _run_rescrape_pipeline(job: '_Job', codes: list) -> None:
-    def emit(step: str, status: str, message: str, **extra):
-        job.queue.put({'step': step, 'status': status, 'message': message, **extra})
-
-    success = 0
-    failed = 0
-    checkpoint = job.checkpoint() if hasattr(job, 'checkpoint') else {}
-    completed = checkpoint.get('completed_codes', [])
-    try:
-        for code in codes:
-            if code in completed:
-                continue
-            emit(code, 'running', '刮削中…')
-            try:
-                res = _rescrape_one_code(code, job=job)
-            except ScrapeInterrupted:
-                raise
-            except Exception as exc:
-                logging.exception(f'[{code}] 重新刮削失败')
-                res = {'ok': False, 'message': str(exc)}
-            if res['ok']:
-                success += 1
-                emit(code, 'done', res['message'])
-            else:
-                failed += 1
-                emit(code, 'error', res['message'])
-            completed.append(code)
-            if hasattr(job, 'checkpoint'):
-                checkpoint = job.checkpoint()
-                checkpoint['completed_codes'] = completed
-                job.checkpoint(checkpoint)
-            if _worker_browser is not None:
-                _worker_browser.progress('waiting', '当前影片已完成，准备下一部')
-        emit('done', 'done', f'完成：{success} 成功 / {failed} 失败',
-             total=len(codes), success=success, failed=failed)
-    finally:
-        job.status = 'done'
-
-
+    from core.service_manager import control_service
+    return jsonify(control_service('browser', 'stop'))
 
 
 def _selected_tags():
@@ -997,6 +602,11 @@ def api_add_auto():
         tmp_dir = _resolve_upload_dir(volume_path, payload['upload_id'])
         if tmp_dir is None:
             return jsonify({'error': 'invalid volume_path'}), 400
+        existing = scrape_store().get(payload['upload_id'])
+        if existing:
+            if existing['kind'] != 'pipeline_auto':
+                return jsonify(error='upload_id 已用于其他任务'), 409
+            return jsonify(job_id=existing['id']), 202
         saved_paths = _list_uploaded_files(tmp_dir)
         if not saved_paths:
             return jsonify({'error': 'no files'}), 400
@@ -1022,13 +632,31 @@ def api_add_auto():
             f.save(str(dest))
             saved_paths.append(dest)
 
-    scrape_store().submit('pipeline_auto', payload={
+    task_payload = {
         'file_paths': [str(path) for path in saved_paths], 'volume_path': str(volume_path),
         'uncensored_crack_tag': uncensored_crack_tag, 'subtitle_classification': subtitle_classification,
         'additional_tags': additional_tags,
-    }, task_id=job_id)
+    }
+    with scrape_store().connect(write=True) as conn:
+        added = conn.execute("""INSERT OR IGNORE INTO scrape_tasks
+            (id,kind,status,payload_json,owner,created_at,queued_at)
+            VALUES (?,'pipeline_auto','PREPARING',?,?,?,?)""",
+            (job_id, json.dumps(task_payload, ensure_ascii=False), str(os.getpid()), time.time(), time.time())).rowcount
+    if not added:
+        return jsonify(job_id=job_id), 202
+    try:
+        task_payload['main_code'] = prepare_upload(
+            StoredJob(scrape_store(), job_id), saved_paths, volume_path,
+            uncensored_crack_tag, subtitle_classification, additional_tags)
+    except (ValueError, OSError) as exc:
+        with scrape_store().connect(write=True) as conn:
+            conn.execute("UPDATE scrape_tasks SET status='FAILED',error=? WHERE id=?", (str(exc), job_id))
+        return jsonify(error=str(exc), job_id=job_id), 400
+    with scrape_store().connect(write=True) as conn:
+        conn.execute("UPDATE scrape_tasks SET code=?,payload_json=?,status='PENDING' WHERE id=?",
+                     (task_payload['main_code'], json.dumps(task_payload, ensure_ascii=False), job_id))
     ensure_worker()
-    return jsonify({'job_id': job_id})
+    return jsonify({'job_id': job_id}), 202
 
 
 @app.post('/api/videos/rescrape')
@@ -1053,7 +681,7 @@ def api_rescrape():
     job_id = str(uuid.uuid4())
     scrape_store().submit('pipeline_rescrape', payload={'codes': codes}, task_id=job_id)
     ensure_worker()
-    return jsonify({'job_id': job_id, 'codes': codes})
+    return jsonify({'job_id': job_id, 'codes': codes}), 202
 
 
 @app.post('/api/videos/<string:code>/rescrape')
@@ -1073,107 +701,13 @@ def api_video_rescrape(code: str):
     job_id = str(uuid.uuid4())
     scrape_store().submit('pipeline_rescrape', main_code, payload={'codes': [main_code]}, task_id=job_id)
     ensure_worker()
-    return jsonify({'job_id': job_id, 'code': main_code})
-
-
-def _ensure_ltx_scrape_table(conn):
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS ltx_scrape_results ("
-        "code TEXT PRIMARY KEY COLLATE NOCASE, status TEXT NOT NULL, "
-        "links_json TEXT NOT NULL DEFAULT '[]', downloaded INTEGER NOT NULL DEFAULT 0, "
-        "error TEXT, scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
-        "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-    )
-
-
-def _ltx_rows(only_unprocessed=False):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        _ensure_ltx_scrape_table(conn)
-        processed_filter = 'AND r.code IS NULL' if only_unprocessed else ''
-        rows = conn.execute(f"""
-            WITH active AS (
-                SELECT v.*,
-                       UPPER(CASE
-                         WHEN UPPER(v.code) LIKE '%-UC' THEN SUBSTR(v.code, 1, LENGTH(v.code) - 3)
-                         WHEN UPPER(v.code) LIKE '%-U' OR UPPER(v.code) LIKE '%-C'
-                           THEN SUBSTR(v.code, 1, LENGTH(v.code) - 2)
-                         ELSE v.code END) AS base_code
-                FROM videos v
-                WHERE v.deleted = 0
-                  AND UPPER(v.code) NOT LIKE '%VR%'
-            ), blocked AS (
-                SELECT DISTINCT a.base_code
-                FROM active a
-                JOIN video_tag_link vtl ON vtl.video_id = a.id
-                JOIN tags t ON t.id = vtl.tag_id
-                WHERE t.name IN ('LTX 无码破解', '无码流出', '原装无码')
-            ), eligible AS (
-                SELECT a.base_code, MIN(a.id) AS representative_id, MAX(a.score) AS score
-                FROM active a
-                LEFT JOIN blocked b ON b.base_code = a.base_code
-                WHERE b.base_code IS NULL
-                GROUP BY a.base_code
-            ), actor_names AS (
-                SELECT a.base_code,
-                       GROUP_CONCAT(DISTINCT COALESCE(ac.name_zh, ac.name)) AS actresses
-                FROM active a
-                JOIN video_actor_link val ON val.video_id = a.id
-                JOIN actors ac ON ac.id = val.actor_id
-                WHERE COALESCE(ac.is_ignored, 0) = 0
-                GROUP BY a.base_code
-            )
-            SELECT e.base_code AS code,
-                   e.score,
-                   COALESCE(v.title_zh, v.title_jp, '') AS title,
-                   COALESCE(an.actresses, '') AS actresses,
-                   r.status, r.links_json, COALESCE(r.downloaded, 0) AS downloaded,
-                   r.error, r.scraped_at
-            FROM eligible e
-            JOIN videos v ON v.id = e.representative_id
-            LEFT JOIN actor_names an ON an.base_code = e.base_code
-            LEFT JOIN ltx_scrape_results r ON r.code = e.base_code
-            WHERE 1 = 1 {processed_filter}
-            ORDER BY e.score DESC NULLS LAST, e.base_code
-        """).fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            try:
-                item['links'] = json.loads(item.pop('links_json') or '[]')
-            except (TypeError, json.JSONDecodeError):
-                item['links'] = []
-            item['downloaded'] = bool(item['downloaded'])
-            item['scraped'] = bool(item['status'])
-            result.append(item)
-        return result
-    finally:
-        conn.close()
+    return jsonify({'job_id': job_id, 'code': main_code}), 202
 
 
 from web.backend.scrape_api import register_scrape_api
-register_scrape_api(app, _ltx_rows)
-
-
-@app.patch('/api/ltx/results/<string:code>/downloaded')
-def api_ltx_downloaded(code):
-    downloaded = (request.get_json(silent=True) or {}).get('downloaded')
-    if not isinstance(downloaded, bool):
-        return jsonify({'error': 'downloaded must be boolean'}), 400
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        _ensure_ltx_scrape_table(conn)
-        cursor = conn.execute(
-            'UPDATE ltx_scrape_results SET downloaded = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?',
-            (int(downloaded), code),
-        )
-        conn.commit()
-        if cursor.rowcount == 0:
-            return jsonify({'error': 'not found'}), 404
-        return jsonify({'ok': True, 'code': code, 'downloaded': downloaded})
-    finally:
-        conn.close()
+from web.backend.admin_api import register_admin_api
+register_scrape_api(app)
+register_admin_api(app)
 
 
 @app.get('/api/jobs/<string:job_id>/stream')
@@ -1207,29 +741,7 @@ def api_job_stream(job_id: str):
 
         return Response(durable_events(), mimetype='text/event-stream',
                         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-    if not job:
-        return jsonify({'error': 'not found'}), 404
-
-    def generate():
-        while True:
-            try:
-                event = job.queue.get(timeout=30)
-            except queue.Empty:
-                yield 'data: {"step":"ping","status":"running","message":""}\n\n'
-                continue
-            yield f'data: {json.dumps(event, ensure_ascii=False)}\n\n'
-            if event.get('step') in ('done', 'error'):
-                break
-
-    resp = Response(
-        generate(),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
-    resp.headers['Content-Type'] = 'text/event-stream'
-    return resp
+    return jsonify({'error': 'not found'}), 404
 
 
 @app.get('/api/videos')
@@ -1474,14 +986,14 @@ def api_video_patch(code: str):
     actor_names = body.pop('actors', None)
     tag_names = body.pop('tags', None)
     new_code = body.pop('code', None)
-    cluster_id = body.pop('series_cluster_id', None)
     changed = False
-    # If user picked a cluster, assign via cluster logic (merge old series in)
-    if cluster_id:
-        changed = assign_series_cluster(code, int(cluster_id))
-        body.pop('series', None)  # don't double-write series
+    if 'series' in body and body['series'] is not None and not isinstance(body['series'], str):
+        return jsonify(error='系列名必须是文本'), 400
     if body:
-        changed = patch_video(code, body) or changed
+        series_store = scrape_store() if 'series' in body else None
+        changed = patch_video(code, body, series_store=series_store) if series_store else patch_video(code, body)
+        if changed and series_store:
+            ensure_worker()
     if actor_names is not None or tag_names is not None:
         changed = patch_video_relations(code, actor_names, tag_names) or changed
     if new_code and new_code != code:
@@ -1817,14 +1329,15 @@ def api_series_all():
 
 @app.get('/api/series/videos')
 def api_series_videos():
-    cid = request.args.get('cid', type=int)
-    s = request.args.get('s', '').strip() or None
-    if not cid and not s:
-        return jsonify({'error': 'missing cid or s'}), 400
+    jp_id = request.args.get('jp', type=int)
+    final_id = request.args.get('final', type=int)
+    s = request.args.get('s') or None
+    if sum(bool(key) for key in (jp_id, final_id, s)) != 1:
+        return jsonify({'error': '请指定一个系列'}), 400
     page = request.args.get('page', 1, type=int) or 1
     limit = request.args.get('limit', 24, type=int) or 24
     sort = request.args.get('sort', 'date')
-    return jsonify(get_videos_by_series(series_name=s, cluster_id=cid, page=page, limit=limit, sort=sort))
+    return jsonify(get_videos_by_series(series_name=s, jp_id=jp_id, final_id=final_id, page=page, limit=limit, sort=sort))
 
 
 @app.get('/api/prefixes/all')
@@ -1854,19 +1367,12 @@ def api_actor(actor_id: int):
 @app.patch('/api/actors/<int:actor_id>')
 def api_actor_patch(actor_id: int):
     body = request.get_json(silent=True) or {}
-    new_name = body.get('name', '').strip()
-
-    # Check if renaming `name` would collide with an existing actor → merge
-    if new_name:
-        conflict = find_actor_by_name(new_name, exclude_id=actor_id)
-        if conflict:
-            merge_actors(source_id=actor_id, target_id=conflict['id'])
-            data = get_actor_with_videos(conflict['id'])
-            return jsonify({'merged': True, 'actor': data['actor'], 'redirect_id': conflict['id']})
-
-    if not patch_actor(actor_id, body):
+    target_id = patch_actor(actor_id, body)
+    if target_id is None:
         return jsonify({'error': 'no valid fields or not found'}), 400
-    data = get_actor_with_videos(actor_id)
+    data = get_actor_with_videos(target_id)
+    if target_id != actor_id:
+        return jsonify({'merged': True, 'actor': data['actor'], 'redirect_id': target_id})
     return jsonify({'merged': False, 'actor': data['actor']})
 
 

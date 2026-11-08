@@ -99,28 +99,20 @@ def is_likely_japanese(text: str) -> bool:
     return bool(re.search(r'[\u3040-\u30ff\u31f0-\u31ff]', text))
 
 
-def translate_series_if_japanese(
-    series: str,
-    host: str = DEFAULT_HOST,
-    model: str = DEFAULT_MODEL,
-) -> str:
-    """Translate series only when it appears to be Japanese; otherwise keep original."""
-    if not series or not is_likely_japanese(series):
-        return series
+def translate_series(raw_name, host=DEFAULT_HOST, model=DEFAULT_MODEL):
+    from ollama import Client
+    from core.series_catalog import normalize_input, translated_name
 
-    prompt = (
-        '请将以下日文系列名翻译成简体中文，仅输出翻译结果，不要解释：\n\n'
-        f'{series}'
-    )
-
-    try:
-        from ollama import Client
-        client = Client(host=host)
-        response = client.chat(model=model, messages=[{'role': 'user', 'content': prompt}])
-        translated = (response['message']['content'] or '').strip()
-        return translated if translated else series
-    except Exception:
-        return series
+    normalized = normalize_input(raw_name)
+    if not normalized:
+        raise ValueError('系列名去掉符号后为空')
+    prompt = ('将下面的影片系列名译为简体中文。原文若已是中文，请统一为简体。'
+              '保留有意义的数字和专名，仅输出系列名。\n\n' + normalized)
+    response = Client(host=host, timeout=120).chat(model=model, messages=[{'role': 'user', 'content': prompt}])
+    result = translated_name(response['message']['content'] or '')
+    if not result or is_likely_japanese(result):
+        raise ValueError('模型未返回有效的简体中文系列名')
+    return result
 
 
 def clean_short_title(text: str, max_len: int = 20) -> str:

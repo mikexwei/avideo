@@ -8,215 +8,30 @@
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/theme.css" />
+  <link rel="stylesheet" href="/static/admin.css" />
   <style>
-    /* ── Apple Design System ── */
-
-    /* SF Pro font stack — picks up system font on Apple devices, falls back gracefully */
-    :root {
-      --apple-display: "SF Pro Display", "SF Pro Icons", -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
-      --apple-text:    "SF Pro Text",    "SF Pro Icons", -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
-      --blue:   #0071e3;
-      --blue-link-dark: #2997ff;
-      --blue-link-light: #0066cc;
-      --surface-1: #272729;
-      --surface-2: #28282a;
-      --surface-3: #2a2a2d;
-      --text-primary: #f5f5f7;
-      --text-secondary: rgba(255,255,255,.6);
-      --text-tertiary: rgba(255,255,255,.4);
+    .scrape-progress-card {
+      display: grid; grid-template-columns: 64px minmax(0, 1fr) minmax(130px, 24%);
+      align-items: center; gap: 14px; padding: 12px;
+      overflow-wrap: anywhere;
     }
-
-    /* ── Background ── */
-    body {
-      background: #000;
-      color: var(--text-primary);
-      min-height: 100vh;
-      font-family: var(--apple-text);
-      font-size: 17px;
-      line-height: 1.47;
-      letter-spacing: -0.374px;
-      -webkit-font-smoothing: antialiased;
+    .scrape-progress-cover {
+      display: grid; place-items: center; width: 64px; aspect-ratio: 3 / 4;
+      background: var(--subtle); border-radius: 8px; color: var(--muted); font-size: var(--text-small);
     }
-
-    /* ── Glass utility (kept for opt-in use) ── */
-    .glass {
-      background: rgba(255,255,255,.04);
-      backdrop-filter: blur(20px) saturate(180%);
-      -webkit-backdrop-filter: blur(20px) saturate(180%);
+    .scrape-progress-cover img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+    .scrape-progress-card progress { width: 100%; height: 8px; accent-color: var(--primary); }
+    .scrape-progress-pill { display: inline-block; border-radius: 20px; padding: 3px 9px; font-size: 12px; font-weight: 600; }
+    @media (max-width: 600px) {
+      .scrape-progress-card { grid-template-columns: 48px minmax(0, 1fr); gap: 9px 12px; }
+      .scrape-progress-cover { width: 48px; }
+      .scrape-progress-state { grid-column: 2; }
     }
-
-    /* ── Navbar ── */
-    header.glass-nav {
-      background: rgba(0,0,0,.8);
-      backdrop-filter: saturate(180%) blur(20px);
-      -webkit-backdrop-filter: saturate(180%) blur(20px);
-      border-bottom: 1px solid rgba(255,255,255,.08);
+    .subtitle-card { display: grid; grid-template-columns: minmax(110px, 18%) minmax(0, 1fr) 210px; gap: 12px; align-items: center; }
+    @media (max-width: 650px) {
+      .subtitle-card { grid-template-columns: minmax(0, 1fr); }
     }
-
-    header.glass-nav .text-indigo-400 {
-      color: #fff !important;
-      font-family: var(--apple-display);
-      font-size: 1.13rem;
-      font-weight: 600;
-      letter-spacing: -0.28px;
-    }
-
-    /* ── Sub-nav ── */
-    nav.glass-subnav {
-      background: rgba(0,0,0,.72);
-      backdrop-filter: saturate(180%) blur(20px);
-      -webkit-backdrop-filter: saturate(180%) blur(20px);
-      border-bottom: 1px solid rgba(255,255,255,.06);
-    }
-
-    /* ── Cards ── */
-    .card-hover {
-      background: var(--surface-1);
-      border: none;
-      border-radius: 8px;
-      transition: transform .2s ease, box-shadow .2s ease;
-      cursor: pointer;
-    }
-
-    .card-hover:hover {
-      transform: translateY(-3px);
-      box-shadow: rgba(0,0,0,.22) 3px 5px 30px 0px;
-    }
-
-    /* ── bg-gray-* overrides → Apple dark surfaces ── */
-    .bg-gray-900 {
-      background: var(--surface-1) !important;
-    }
-    .bg-gray-800 {
-      background: var(--surface-2) !important;
-    }
-    .bg-gray-700 {
-      background: var(--surface-3) !important;
-    }
-    .bg-gray-950 {
-      background: transparent !important;
-    }
-
-    /* ── Inputs ── */
-    input, select {
-      background: var(--surface-2) !important;
-      border-color: rgba(255,255,255,.12) !important;
-      font-family: var(--apple-text);
-      font-size: 15px;
-      letter-spacing: -0.24px;
-      color: #f5f5f7 !important;
-    }
-    input::placeholder { color: rgba(255,255,255,.32) !important; }
-    input:focus, select:focus {
-      border-color: var(--blue) !important;
-      box-shadow: 0 0 0 2px rgba(0,113,227,.25) !important;
-      outline: none;
-    }
-
-    /* ── Cover image ── */
-    .cover-img {
-      aspect-ratio: 16/9;
-      object-fit: cover;
-      background: var(--surface-2);
-    }
-
-    /* ── Tags ── */
-    .tag-pill {
-      display: inline-block;
-      background: var(--surface-2);
-      border: 1px solid rgba(255,255,255,.1);
-      border-radius: 4px;
-      padding: 2px 8px;
-      font-size: 12px;
-      font-family: var(--apple-text);
-      letter-spacing: -0.12px;
-      margin: 2px;
-      cursor: pointer;
-      transition: background .15s, border-color .15s;
-      color: rgba(255,255,255,.7);
-    }
-    .tag-pill:hover {
-      background: var(--surface-3);
-      border-color: rgba(255,255,255,.18);
-      color: #fff;
-    }
-
-    /* ── Score badge ── */
-    .score-badge {
-      background: var(--blue);
-    }
-
-    /* ── Scrollbar ── */
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 3px; }
-
-    /* ── Page transitions ── */
-    .fade-enter-active, .fade-leave-active { transition: opacity .15s; }
-    .fade-enter-from, .fade-leave-to { opacity: 0; }
-
-    /* ── Sub-nav tabs ── */
-    .nav-tab {
-      padding: 8px 16px;
-      font-size: 14px;
-      font-family: var(--apple-text);
-      letter-spacing: -0.224px;
-      color: rgba(255,255,255,.5);
-      transition: color .15s;
-      border-bottom: 2px solid transparent;
-      white-space: nowrap;
-    }
-    .nav-tab:hover { color: rgba(255,255,255,.8); }
-    .router-link-exact-active.nav-tab,
-    .router-link-active.nav-tab {
-      color: #fff;
-      border-bottom-color: var(--blue);
-    }
-
-    /* ── Typography overrides ── */
-    h1, h2, h3 {
-      font-family: var(--apple-display);
-      letter-spacing: -0.28px;
-      line-height: 1.1;
-    }
-    .text-xl  { font-family: var(--apple-display); letter-spacing: -0.28px; }
-    .text-2xl { font-family: var(--apple-display); letter-spacing: -0.28px; }
-    .font-mono { font-family: "SF Mono", "Fira Mono", ui-monospace, monospace; }
-
-    /* ── Indigo → Apple Blue remapping ── */
-    .text-indigo-400 { color: var(--blue-link-dark) !important; }
-    .text-indigo-300 { color: #5ac8fa !important; }
-    .hover\:text-indigo-300:hover { color: #5ac8fa !important; }
-    .bg-indigo-600  { background: var(--blue) !important; }
-    .hover\:bg-indigo-500:hover { background: #0077ed !important; }
-    .bg-indigo-500  { background: #0077ed !important; }
-    .border-indigo-500 { border-color: var(--blue) !important; }
-    .focus\:border-indigo-500:focus { border-color: var(--blue) !important; }
-    .ring-indigo-500 { --tw-ring-color: var(--blue) !important; }
-    /* Emerald bars keep their color — data viz distinction */
-
-    /* ── Buttons ── */
-    button, [role="button"] {
-      font-family: var(--apple-text);
-      letter-spacing: -0.224px;
-    }
-
-    /* ── Reduced motion ── */
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after {
-        animation-duration: .01ms !important;
-        transition-duration: .01ms !important;
-      }
-    }
-    .ltx-column-filters th { padding: 0 12px 12px; vertical-align: top; font-weight: 400; }
-    .ltx-column-filters input, .ltx-column-filters select {
-      display: block; width: 100%; min-width: 0; height: 30px; padding: 4px 6px;
-      border: 1px solid #374151; border-radius: 4px; background: #1f2937;
-      color: #d1d5db; font-size: 12px; letter-spacing: 0;
-    }
-    .ltx-column-filters input:focus, .ltx-column-filters select:focus { outline: 1px solid #2997ff; }
-    .ltx-column-filters th > * + * { margin-top: 4px; }
-    .ltx-filter-range { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px; }
   </style>
 </head>
 
@@ -225,29 +40,29 @@
 
   <!-- ========== VideoCard ========== -->
   <script type="text/x-template" id="tpl-video-card">
-  <div class="card-hover cursor-pointer rounded-lg overflow-hidden bg-gray-900 relative" @click="go">
-    <div class="relative">
-      <img v-if="video.cover_path" :src="'/static/' + video.cover_path" class="cover-img w-full" loading="lazy" @error="imgErr" />
-      <div v-else class="cover-img w-full flex items-center justify-center text-gray-600 text-sm">无封面</div>
+  <router-link :to="'/video/' + encodeURIComponent(baseVideoCode(video.code))" class="video-card">
+    <div class="film-art">
+      <span class="art-fallback" aria-hidden="true">{{ video.code }}</span>
+      <img v-if="video.cover_path" :src="'/static/' + video.cover_path" class="cover-img w-full" alt="" loading="lazy" decoding="async" @error="imgErr" />
       <span v-if="video.score" class="score-badge absolute top-2 right-2 text-white text-xs font-bold px-2 py-0.5 rounded">
-        {{ video.score.toFixed(1) }}
+        {{ Number(video.score).toFixed(1) }}
       </span>
     </div>
-    <div class="p-2">
-      <div class="text-xs text-indigo-400 font-mono mb-1">{{ video.code }}</div>
-      <div class="text-sm leading-snug line-clamp-2 text-gray-200">{{ video.title_zh || video.title_jp || '暂无标题' }}</div>
+    <div class="film-caption">
+      <div class="film-code">{{ video.code }}</div>
+      <div class="video-card-title text-sm leading-snug text-gray-200">{{ video.title_zh || video.title_jp || '暂无标题' }}</div>
       <div v-if="video.release_date" class="text-xs text-gray-500 mt-1">{{ video.release_date }}</div>
     </div>
     <!-- Deleted overlay -->
     <div v-if="video.deleted" class="absolute inset-0 bg-black bg-opacity-60 flex items-center justify-center rounded-lg pointer-events-none">
       <span class="text-red-400 text-xs font-bold border border-red-400 px-2 py-0.5 rounded">已删除</span>
     </div>
-  </div>
+  </router-link>
 </script>
 
   <!-- ========== Pagination ========== -->
   <script type="text/x-template" id="tpl-pagination">
-  <div class="flex items-center gap-2 justify-center mt-8" v-if="totalPages > 1">
+  <div class="flex flex-wrap items-center gap-2 justify-center mt-8" v-if="totalPages > 1">
     <button @click="$emit('change', page - 1)" :disabled="page <= 1"
       class="px-3 py-1 rounded bg-gray-800 disabled:opacity-30 hover:bg-gray-700 text-sm">«</button>
     <template v-for="p in pages" :key="p">
@@ -264,6 +79,30 @@
   <!-- ========== HomeView ========== -->
   <script type="text/x-template" id="tpl-home">
   <div>
+    <header class="library-hero" :class="{ 'library-hero-compact': filterLabel || selectedTags.length || page > 1 }">
+      <img v-if="!filterLabel && !selectedTags.length && page === 1 && items[0]?.cover_path" class="library-hero-art"
+        :src="'/static/' + items[0].cover_path" alt="" decoding="async" @error="hideImage" />
+      <div class="library-hero-content">
+        <p class="section-kicker">AVIDEO / FILM LIBRARY</p>
+        <h1>影片库</h1>
+        <p v-if="!loading" class="library-count">{{ total.toLocaleString() }} 部影片</p>
+        <div class="library-destinations">
+          <router-link to="/recommend" class="ui-button ui-primary">探索推荐</router-link>
+          <router-link to="/actors" class="ui-button">按演员浏览</router-link>
+        </div>
+      </div>
+    </header>
+    <div class="library-heading">
+      <h2>浏览影片</h2>
+      <div class="flex flex-wrap items-center gap-2">
+        <button @click="openManualModal" class="ui-button">手动添加</button>
+        <button @click="openBatchModal" class="ui-button">批量添加/替换</button>
+        <button @click="openAddModal" class="ui-button ui-primary">+ 添加影片</button>
+      </div>
+    </div>
+    <add-video-modal v-if="showAddModal" @close="closeAddModal" />
+    <add-video-modal v-if="showManualModal" :initial-step="'manual-code'" @close="closeManualModal" />
+    <batch-modal v-if="showBatchModal" @close="closeBatchModal" />
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else>
       <!-- Active filter banner -->
@@ -284,79 +123,40 @@
           <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
             <span class="font-semibold text-white">↻ 重新刮削 — {{ rescrapeFilterStatus }}</span>
             <button @click="closeRescrape" :disabled="rescrapeRunning"
-              class="text-gray-500 hover:text-gray-300 disabled:opacity-30 text-lg leading-none">✕</button>
+              class="ui-button ui-icon-button" aria-label="关闭窗口">✕</button>
           </div>
           <!-- Confirm step -->
           <div v-if="!rescrapeStarted" class="p-5 flex flex-col gap-4">
             <div class="text-sm text-gray-300">
-              将对当前筛选的 <span class="text-amber-400 font-semibold">{{ total }}</span> 部影片重新刮削、翻译并重命名。该操作较慢，请耐心等待。
+              将对当前筛选的 <span class="text-amber-400 font-semibold">{{ total }}</span> 部影片重新刮削、翻译并重命名。提交后将在后台处理。
             </div>
             <div class="flex justify-end gap-3">
               <button @click="closeRescrape" class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">取消</button>
               <button @click="startRescrape" class="px-4 py-2 text-sm rounded-lg bg-amber-600 hover:bg-amber-500 text-white">开始刮削</button>
             </div>
           </div>
-          <!-- Progress step -->
-          <div v-else class="p-5 flex flex-col gap-2" style="max-height:65vh;overflow-y:auto">
-            <div v-for="r in rescrapeItems" :key="r.code"
-              class="flex items-center gap-2 px-3 py-2 rounded-lg"
-              :class="r.status === 'running' ? 'bg-indigo-950 bg-opacity-50 border border-indigo-700' : 'bg-gray-800'">
-              <span class="font-mono text-indigo-400 text-xs flex-shrink-0 w-28 truncate">{{ r.code }}</span>
-              <span class="flex-shrink-0 w-4 text-center">
-                <span v-if="r.status === 'done'" class="text-green-500">✓</span>
-                <span v-else-if="r.status === 'running'" class="text-indigo-400">⊙</span>
-                <span v-else-if="r.status === 'error'" class="text-red-400">✕</span>
-                <span v-else class="text-gray-700">○</span>
-              </span>
-              <span class="flex-1 text-xs truncate"
-                :class="{'text-gray-500': r.status === 'pending', 'text-indigo-300': r.status === 'running', 'text-gray-400': r.status === 'done', 'text-red-400': r.status === 'error'}">
-                {{ r.message || {pending:'等待中', running:'刮削中…'}[r.status] }}
-              </span>
-              <a v-if="r.status === 'done'" :href="'#/video/' + encodeURIComponent(r.code)" target="_blank" rel="noopener"
-                class="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300">查看 ↗</a>
-            </div>
-            <div class="text-xs text-gray-600 text-center pt-1">
-              {{ rescrapeItems.filter(r => r.status === 'done' || r.status === 'error').length }} / {{ rescrapeItems.length }} 已处理
-              <span v-if="rescrapeSummary" class="text-gray-400">— {{ rescrapeSummary }}</span>
-            </div>
-            <div class="flex justify-end pt-2">
-              <button @click="closeRescrape" :disabled="rescrapeRunning"
-                class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
-                {{ rescrapeRunning ? '处理中…' : '完成' }}
-              </button>
+          <div v-else class="p-5 space-y-3">
+            <p :class="rescrapeFailed ? 'text-red-300' : 'text-gray-200'">{{ rescrapeSummary }}</p>
+            <div class="flex flex-wrap justify-end gap-3">
+              <router-link v-if="!rescrapeRunning && !rescrapeFailed" to="/scrape-progress" class="px-4 py-2 text-sm text-indigo-300">查看刮削进度</router-link>
+              <button @click="closeRescrape" :disabled="rescrapeRunning" class="px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white disabled:opacity-40">完成</button>
             </div>
           </div>
         </div>
       </div>
-      <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
+      <div class="site-card library-toolbar" aria-label="影片筛选与排序" role="group">
         <div class="flex items-center gap-2 flex-wrap">
           <button v-for="tag in filterTags" :key="tag" @click="toggleTag(tag)"
-            :class="['px-2.5 py-1 rounded text-xs transition', selectedTags.includes(tag) ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+            class="tag-pill" :aria-pressed="selectedTags.includes(tag)">
             {{ tag }}
           </button>
         </div>
-        <div class="flex items-center gap-2">
-          <sort-bar :sort="sort" @change="changeSort" />
-          <button @click="openManualModal"
-            class="px-3 py-1.5 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium flex-shrink-0">
-            手动添加
-          </button>
-          <button @click="openBatchModal"
-            class="px-3 py-1.5 text-sm rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white font-medium flex-shrink-0">
-            ⚡ 批量添加/替换
-          </button>
-          <button @click="openAddModal"
-            class="px-3 py-1.5 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium flex-shrink-0">
-            + 添加影片
-          </button>
-        </div>
+        <sort-bar :sort="sort" @change="changeSort" />
       </div>
-      <add-video-modal v-if="showAddModal" @close="closeAddModal" />
-      <add-video-modal v-if="showManualModal" :initial-step="'manual-code'" @close="closeManualModal" />
-      <batch-modal v-if="showBatchModal" @close="closeBatchModal" />
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+      <div class="film-grid">
         <video-card v-for="v in items" :key="v.id" :video="v" />
       </div>
+      <p v-if="!items.length" class="site-card p-5 text-gray-500">没有符合当前筛选条件的影片。</p>
       <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
     </div>
   </div>
@@ -367,13 +167,13 @@
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80" @click.self="!batchProcessing && $emit('close')">
     <div class="bg-gray-900 rounded-xl w-full max-w-4xl mx-4 shadow-2xl" style="max-height:90vh;overflow-y:auto">
       <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
-        <span class="font-semibold text-white">⚡ 批量添加/替换</span>
+        <h2>批量添加/替换</h2>
         <div class="flex items-center gap-3">
           <span class="text-xs text-gray-500" v-if="batchStep !== 'batch-progress' || batchProcessing">
             步骤 {{ batchStepNum }} / 3
           </span>
           <button @click="$emit('close')" :disabled="batchProcessing"
-            class="text-gray-500 hover:text-gray-300 disabled:opacity-30 text-lg leading-none">✕</button>
+            class="ui-button ui-icon-button" aria-label="关闭窗口">✕</button>
         </div>
       </div>
 
@@ -476,24 +276,21 @@
                         </button>
                         <span class="text-xs text-gray-400 whitespace-nowrap">{{ label }}</span>
                       </label>
-                      <div class="flex flex-wrap gap-1">
+                      <div class="flex flex-wrap gap-2">
                         <button v-for="[value,label] in [['','无中文'],['机翻中文','机翻中文'],['中文字幕','中文字幕']]"
                           :key="label" @click="g.subtitle_classification = value"
-                          :class="['px-2 py-1 rounded text-xs transition-colors',
-                            g.subtitle_classification === value ? 'bg-emerald-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+                          class="tag-pill" :aria-pressed="g.subtitle_classification === value">
                           {{ label }}
                         </button>
                       </div>
-                      <div class="flex flex-wrap gap-1 pt-1">
+                      <div class="flex flex-wrap gap-2 pt-1">
                         <button @click="g.uncensored_crack_tag = ''"
-                          :class="['px-2 py-1 rounded text-xs transition-colors',
-                            !g.uncensored_crack_tag ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+                          class="tag-pill" :aria-pressed="!g.uncensored_crack_tag">
                           有码
                         </button>
                         <button v-for="tag in ['JAV 无码破解','LADA 无码破解','LTX 无码破解']" :key="tag"
                           @click="g.uncensored_crack_tag = tag"
-                          :class="['px-2 py-1 rounded text-xs transition-colors',
-                            g.uncensored_crack_tag === tag ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+                          class="tag-pill" :aria-pressed="g.uncensored_crack_tag === tag">
                           {{ tag.replace(' 无码破解', '') }}
                         </button>
                       </div>
@@ -575,8 +372,8 @@
               </div>
             </div>
             <!-- New: upload progress bar (before pipeline starts) -->
-            <div v-if="r.type === 'new' && r.status === 'running' && !r.uploaded" class="mt-1.5">
-              <div class="text-xs text-gray-400 mb-1">上传中…</div>
+            <div v-if="r.type === 'new' && r.status === 'running'" class="mt-1.5">
+              <div class="text-xs text-gray-400 mb-1">{{ r.progress >= 100 ? '正在提交入库…' : '上传中…' }}</div>
               <div class="flex items-center gap-2">
                 <div class="flex-1 bg-gray-700 rounded-full h-2 overflow-hidden">
                   <div class="bg-indigo-500 h-2 rounded-full transition-all duration-200"
@@ -586,30 +383,8 @@
                 <span class="text-xs text-gray-400 font-mono w-9 text-right">{{ r.progress || 0 }}%</span>
               </div>
             </div>
-            <!-- New: SSE step list (after upload completes) -->
-            <div v-if="r.type === 'new' && ((r.status === 'running' && r.uploaded) || r.status === 'done')"
-              class="mt-2 flex flex-col gap-0.5 pl-1">
-              <div v-for="step in r.progressSteps" :key="step.step"
-                class="flex items-start gap-2 text-xs">
-                <span class="flex-shrink-0 mt-0.5 w-3 text-center">
-                  <span v-if="step.status === 'done'" class="text-green-500">✓</span>
-                  <span v-else-if="step.status === 'running'" class="text-indigo-400">⊙</span>
-                  <span v-else-if="step.status === 'error'" class="text-red-400">✕</span>
-                  <span v-else class="text-gray-700">○</span>
-                </span>
-                <span :class="step.status === 'done' ? 'text-gray-600 line-through' : step.status === 'running' ? 'text-gray-200' : step.status === 'error' ? 'text-red-400' : 'text-gray-700'">
-                  {{ autoStepLabel(step.step) }}
-                  <span v-if="step.message && step.status !== 'pending'"
-                    class="ml-1 font-normal" style="text-decoration:none"
-                    :class="step.status === 'done' ? 'text-gray-500' : step.status === 'running' ? 'text-indigo-300' : 'text-red-400'">
-                    {{ step.message }}
-                  </span>
-                </span>
-              </div>
-            </div>
-            <!-- Error -->
-            <div v-if="r.status === 'error' && r.message"
-              class="text-xs text-red-400 mt-1">{{ r.message }}</div>
+            <div v-if="r.message && (r.type === 'new' || r.status === 'error')" class="text-xs mt-1"
+              :class="r.status === 'error' ? 'text-red-400' : 'text-gray-400'">{{ r.message }}</div>
             <!-- View detail button -->
             <div v-if="r.status === 'done' && r.viewCode" class="mt-2">
               <a :href="'#/video/' + encodeURIComponent(r.viewCode)" target="_blank" rel="noopener"
@@ -624,6 +399,8 @@
           </div>
         </div>
         <div class="flex justify-end gap-3 px-5 py-4 border-t border-gray-800">
+          <router-link v-if="!batchProcessing && batchResults.some(r => r.type === 'new' && r.status === 'done')" to="/scrape-progress"
+            class="px-4 py-2 text-sm text-indigo-300">查看刮削进度</router-link>
           <button @click="$emit('close')" :disabled="batchProcessing"
             class="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40">
             完成
@@ -637,15 +414,14 @@
 
   <!-- ========== AddVideoModal ========== -->
   <script type="text/x-template" id="tpl-add-video">
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80" @click.self="$emit('close')">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80" @click.self="(addStep !== 'auto-progress' || autoFinished) && $emit('close')">
     <div class="bg-gray-900 rounded-xl w-full max-w-lg mx-4 shadow-2xl" style="max-height:90vh;overflow-y:auto">
 
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800">
-        <span class="font-semibold text-white">添加影片</span>
-        <span class="text-xs text-gray-500 font-mono">{{ addStep }}</span>
-        <button @click="$emit('close')" :disabled="addStep === 'auto-progress'"
-          class="text-gray-500 hover:text-gray-300 disabled:opacity-30 text-lg leading-none">✕</button>
+        <h2>添加影片</h2>
+        <button @click="$emit('close')" :disabled="addStep === 'auto-progress' && !autoFinished"
+          class="ui-button ui-icon-button" aria-label="关闭窗口">✕</button>
       </div>
 
       <!-- ── Step: file-select ── -->
@@ -653,11 +429,10 @@
         <div class="p-5 flex flex-col gap-4">
           <div>
             <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">选择影片文件（可多选）</div>
-            <div class="border border-dashed border-indigo-800 rounded-lg p-5 text-center cursor-pointer hover:border-indigo-600 transition"
-              @click="$refs.addFileInput.click()">
-              <div class="text-gray-400 text-sm">拖拽或 <span class="text-indigo-400">点击选择</span></div>
-              <div class="text-gray-600 text-xs mt-1">支持 .mp4 .mkv .avi .wmv .mov 等</div>
-            </div>
+            <button type="button" class="upload-picker" @click="$refs.addFileInput.click()">
+              <span class="font-semibold text-indigo-400">选择文件</span>
+              <span class="block text-gray-600 text-xs mt-1">支持 .mp4 .mkv .avi .wmv .mov 等</span>
+            </button>
             <input ref="addFileInput" type="file" multiple class="hidden"
               accept=".mp4,.mkv,.avi,.wmv,.mov,.ts,.flv,.webm,.m4v"
               @change="onAddFilesChange" />
@@ -723,18 +498,17 @@
           </div>
           <div v-if="addMode === 'auto'">
             <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">中文类型</div>
-            <div class="grid grid-cols-3 gap-2">
+            <div class="flex flex-wrap gap-2">
               <button v-for="[value,label] in [['','无中文'],['机翻中文','机翻中文'],['中文字幕','中文字幕']]"
                 :key="label" @click="addSubtitleClassification = value"
-                :class="['py-2 text-sm rounded-lg border transition',
-                  addSubtitleClassification === value ? 'bg-emerald-700 border-emerald-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400']">
+                class="tag-pill" :aria-pressed="addSubtitleClassification === value">
                 {{ label }}
               </button>
             </div>
           </div>
           <div class="px-3 py-2 bg-gray-800 rounded-lg text-xs text-gray-500 leading-relaxed">
             <template v-if="addMode === 'auto'">
-              自动模式：从文件名解析番号 → 上传 → 刮削 JavDB → 翻译标题 → 重命名，全程自动，实时显示进度
+              自动模式：从文件名解析番号 → 上传 → 刮削 JavDB → 翻译标题 → 重命名，上传后可在刮削进度页查看后续处理
             </template>
             <template v-else>
               手动模式：手动指定 WEST / CN / DUMMY 番号 → 上传 → 填写元数据
@@ -763,36 +537,17 @@
                 :style="{ width: addUploadPct + '%' }"></div>
             </div>
           </div>
-          <div class="h-1 bg-gray-800 rounded-full overflow-hidden">
-            <div class="h-1 bg-indigo-600 rounded-full transition-all duration-500"
-              :style="{ width: autoProgressPct + '%' }"></div>
-          </div>
-          <div class="flex flex-col gap-2 text-sm">
-            <div v-for="step in autoProgressSteps" :key="step.step"
-              class="flex items-start gap-3 py-1">
-              <span v-if="step.status === 'done'" class="text-emerald-400 text-base flex-shrink-0 mt-0.5">✓</span>
-              <span v-else-if="step.status === 'running'" class="text-indigo-400 text-base animate-pulse flex-shrink-0 mt-0.5">⊙</span>
-              <span v-else-if="step.status === 'error'" class="text-red-400 text-base flex-shrink-0 mt-0.5">✗</span>
-              <span v-else class="text-gray-700 text-base flex-shrink-0 mt-0.5">○</span>
-              <div class="flex-1 min-w-0">
-                <span :class="[step.status === 'done' ? 'text-gray-500 line-through' : step.status === 'running' ? 'text-white font-medium' : step.status === 'error' ? 'text-red-400' : 'text-gray-600']">
-                  {{ autoStepLabel(step.step) }}
-                </span>
-                <span v-if="step.message && step.status !== 'pending'"
-                  :class="['text-xs ml-2 break-all', step.status === 'done' ? 'text-gray-400' : step.status === 'running' ? 'text-indigo-300' : 'text-red-400']">
-                  {{ step.message }}
-                </span>
-              </div>
-            </div>
-          </div>
+          <p v-if="autoFinished && !addError" class="text-emerald-300">上传完成，影片已加入刮削队列。</p>
+          <p v-else-if="!addUploading && !autoFinished" class="text-gray-300">正在提交入库…</p>
           <div v-if="addError" class="mt-2 px-3 py-2 bg-red-900 bg-opacity-40 rounded-lg text-red-300 text-xs">
             {{ addError }}
           </div>
         </div>
-        <div class="flex justify-end px-5 py-4 border-t border-gray-800">
+        <div class="flex flex-wrap justify-end gap-3 px-5 py-4 border-t border-gray-800">
+          <router-link v-if="autoFinished && !addError" to="/scrape-progress" class="px-4 py-2 text-sm text-indigo-300">查看刮削进度</router-link>
           <button @click="$emit('close')" :disabled="!autoFinished"
             class="px-4 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-30">
-            {{ autoFinished ? '关闭' : '处理中…' }}
+            {{ autoFinished ? '完成' : '处理中…' }}
           </button>
         </div>
       </template>
@@ -804,11 +559,10 @@
           <template v-if="initialStep === 'manual-code'">
             <div>
               <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">选择影片文件（可多选）</div>
-              <div class="border border-dashed border-indigo-800 rounded-lg p-5 text-center cursor-pointer hover:border-indigo-600 transition"
-                @click="$refs.addFileInput.click()">
-                <div class="text-gray-400 text-sm">拖拽或 <span class="text-indigo-400">点击选择</span></div>
-                <div class="text-gray-600 text-xs mt-1">支持 .mp4 .mkv .avi .wmv .mov 等</div>
-              </div>
+              <button type="button" class="upload-picker" @click="$refs.addFileInput.click()">
+                <span class="font-semibold text-indigo-400">选择文件</span>
+                <span class="block text-gray-600 text-xs mt-1">支持 .mp4 .mkv .avi .wmv .mov 等</span>
+              </button>
               <input ref="addFileInput" type="file" multiple class="hidden"
                 accept=".mp4,.mkv,.avi,.wmv,.mov,.ts,.flv,.webm,.m4v"
                 @change="onAddFilesChange" />
@@ -919,12 +673,11 @@
             <input v-model="manualActors" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200" placeholder="演员 A, 演员 B…" />
           </div>
           <div>
-            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Tags</div>
+            <div class="text-xs text-gray-500 mb-1">标签</div>
             <div class="flex flex-wrap gap-2">
               <button v-for="tag in ['机翻中文','中文字幕','JAV 无码破解','LADA 无码破解','LTX 无码破解','无码流出','原装无码']" :key="tag"
                 @click="toggleManualTag(tag)"
-                :class="['px-2.5 py-1 rounded-full text-xs transition',
-                  manualTags.includes(tag) ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+                class="tag-pill" :aria-pressed="manualTags.includes(tag)">
                 {{ tag }}
               </button>
             </div>
@@ -962,19 +715,290 @@
   </div>
   </script>
 
+  <script type="text/x-template" id="tpl-scrape-progress">
+    <section class="scrape-progress-page">
+      <header class="page-head">
+        <div>
+          <h1 class="text-xl font-bold">刮削进度</h1>
+          <p class="text-sm text-gray-600 mt-1">最近 24 小时 · 最新上传或提交的影片在前</p>
+        </div>
+        <button @click="load" class="ui-button">刷新</button>
+      </header>
+      <p v-if="error" role="alert" class="text-sm text-red-800 mb-3">{{ error }}</p>
+      <p v-if="loading" class="text-sm text-gray-600">正在加载…</p>
+      <p v-else-if="!items.length && !error" class="text-sm text-gray-600 py-4">最近 24 小时暂无刮削任务。</p>
+      <div class="space-y-2">
+        <article v-for="item in items" :key="item.id + ':' + item.code" class="site-card scrape-progress-card">
+          <div class="scrape-progress-cover" aria-hidden="true">
+            <img v-if="item.video?.cover_path" :src="'/static/' + item.video.cover_path" alt="" loading="lazy" @error="$event.target.hidden = true">
+            <span v-else>影片</span>
+          </div>
+          <div class="min-w-0">
+            <router-link v-if="item.video" :to="'/video/' + encodeURIComponent(baseVideoCode(item.code))" class="font-semibold text-indigo-800 hover:underline">
+              {{ item.code }}
+            </router-link>
+            <span v-else class="font-semibold">{{ item.code || item.files[0] || '待识别影片' }}</span>
+            <p v-if="item.video?.title_zh || item.video?.title_jp" class="text-sm">{{ item.video.title_zh || item.video.title_jp }}</p>
+            <p v-if="item.files.length && (item.code || item.files.length > 1)" class="text-xs text-gray-600 mt-1">{{ item.files.join(' · ') }}</p>
+            <p class="text-xs text-gray-600 mt-1">{{ sourceLabels[item.kind] }} · {{ formatTime(item.created_at) }}</p>
+            <p v-if="item.message" class="text-xs mt-1" :class="item.status === 'FAILED' ? 'text-red-800' : 'text-gray-600'">{{ item.message }}</p>
+          </div>
+          <div class="scrape-progress-state min-w-0">
+            <span class="scrape-progress-pill" :class="statusTone(item.status)">{{ statusLabels[item.status] || item.status }}</span>
+            <p v-if="isActive(item) && item.phase && item.phase !== 'start'" class="text-xs text-gray-600 mt-1">{{ phaseLabel(item.phase) }}</p>
+            <progress v-if="isActive(item) || item.status === 'DONE'" :value="progress(item)" :max="stages(item).length" aria-label="刮削处理阶段"></progress>
+          </div>
+        </article>
+      </div>
+    </section>
+  </script>
+
+<script type="text/x-template" id="tpl-admin">
+  <div class="admin-view" ref="root">
+    <div class="page-head">
+        <div><p class="section-kicker">OPERATIONS / AVIDEO</p><h1>服务管理</h1><p>查看后台服务、浏览器会话和任务状态。</p></div>
+        <div class="admin-head-actions">
+          <router-link to="/" class="ui-button">媒体库概览</router-link>
+          <router-link to="/admin/series" class="ui-button">系列聚合</router-link>
+          <button class="back jump" id="jump-to-records" type="button">查看工作流 ↓</button>
+          <span id="notice" role="status">正在读取状态…</span>
+        </div>
+      </div>
+
+      <section aria-labelledby="overview-heading">
+        <div class="section-head"><h2 id="overview-heading">服务概览</h2></div>
+        <div class="grid overview">
+          <div id="services" class="services"></div>
+          <article class="card session-card">
+            <div class="card-top"><span class="pill amber">会话</span></div>
+            <h3>浏览器登录</h3>
+            <dl id="cooldown" class="metrics"></dl>
+            <div class="actions">
+              <button data-browser="login-status">检查登录</button>
+              <button data-browser="open-login">打开登录页</button>
+            </div>
+            <p class="hint">登录或完成验证码后，恢复 Browser Service。</p>
+            <p id="login-result" class="muted" role="status"></p>
+          </article>
+          <article class="card">
+            <div class="card-top"><span class="pill amber">设置</span></div>
+            <h3>浏览器访问节奏</h3>
+            <form id="settings" class="settings"></form>
+            <div class="actions"><button class="primary" type="submit" form="settings" id="save" disabled>保存设置</button></div>
+            <p class="hint">单位为秒，新参数从下一次访问生效。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panels" aria-label="浏览器余额与管理活动">
+        <article class="card browser-card">
+          <div class="usage-header">
+            <div><h2>浏览器服务余额</h2><p class="hint" id="balance-state">正在读取状态…</p></div>
+            <label for="usage-date">日期 <input id="usage-date" type="date"></label>
+          </div>
+          <p class="usage-total" id="usage-total">正在读取小时数据…</p>
+          <div class="usage-legend"><span class="usage-allowed">访问允许量</span><span class="usage-used">已使用量</span><span id="usage-scale" class="muted"></span></div>
+          <div class="usage-scroll"><div id="usage-chart" class="usage-chart" role="group" aria-label="逐小时浏览器访问量"></div></div>
+          <p id="usage-hour-detail" class="usage-detail" aria-live="polite"></p>
+          <p id="usage-note" class="hint"></p>
+          <details class="quota-editor">
+            <summary>配置每日额度曲线</summary>
+            <form id="quota-form">
+              <p class="hint">拖动紫色峰值和灰色宽度手柄。保存后从下个整点生效，额度为 0 的小时暂停访问。</p>
+              <svg id="quota-curve" viewBox="0 0 600 172" role="img" aria-label="每日访问额度钟形曲线">
+                <path class="quota-axis" d="M20 146H580"></path>
+                <path id="quota-line"></path>
+                <circle id="quota-peak" data-handle="peak" r="10"></circle>
+                <circle id="quota-width" data-handle="spread" r="10"></circle>
+                <text x="20" y="166">00:00</text><text x="580" y="166" text-anchor="end">23:00</text>
+              </svg>
+              <div class="quota-fields">
+                <label>峰值小时 <input name="peak_hour" type="number" min="0" max="23" required></label>
+                <label>峰值额度 <input name="peak_limit" type="number" min="1" max="3600" required></label>
+                <label>宽度（小时） <input name="spread" type="number" min="0.5" max="12" step="any" required></label>
+              </div>
+              <p id="quota-preview" class="hint"></p>
+              <button class="primary" type="submit">保存额度曲线</button>
+            </form>
+          </details>
+        </article>
+        <article class="card">
+          <h2>最近管理操作</h2>
+          <ul id="activity" class="activity"></ul>
+        </article>
+      </section>
+
+      <section aria-labelledby="records-heading">
+        <div class="section-head"><h2 id="records-heading">工作流与事件</h2></div>
+        <form id="filters" class="filters">
+          <select id="resource" aria-label="列表类型">
+            <option value="workflows">工作流</option>
+            <option value="commands">外部命令</option>
+            <option value="events">结果事件</option>
+            <option value="history">执行历史</option>
+            <option value="audit">管理操作记录</option>
+          </select>
+          <input id="status" placeholder="状态，如 WAITING" aria-label="状态筛选">
+          <input id="task-filter" placeholder="工作流 ID" aria-label="工作流 ID 筛选">
+          <button class="primary" type="submit">查询</button>
+        </form>
+        <div id="rows" class="grid"></div>
+        <div class="pagination">
+          <span id="total" class="muted"></span>
+          <button id="previous" disabled>上一页</button>
+          <button id="next" disabled>下一页</button>
+        </div>
+      </section>
+
+    <dialog id="detail" aria-labelledby="detail-heading">
+      <div class="card-top"><h2 id="detail-heading">记录详情</h2><form method="dialog"><button>关闭</button></form></div>
+      <pre id="detail-body"></pre>
+    </dialog>
+    <dialog id="priority-dialog" aria-labelledby="priority-heading">
+      <form id="priority-form">
+        <h2 id="priority-heading">调整优先级</h2>
+        <label class="muted" for="priority-value">−10000 至 10000，数值越大越优先</label>
+        <input id="priority-value" type="number" min="-10000" max="10000" step="1" required>
+        <p id="priority-error" class="record-error muted" role="status"></p>
+        <div class="actions">
+          <button type="button" id="priority-cancel">返回</button>
+          <button type="submit" class="primary">保存优先级</button>
+        </div>
+      </form>
+    </dialog>
+  </div>
+</script>
+
+  <script type="text/x-template" id="tpl-series-review">
+    <section class="admin-view">
+      <header class="page-head">
+        <div>
+          <p class="section-kicker">OPERATIONS / SERIES</p>
+          <h1>系列聚合审核</h1>
+          <p>模型生成候选。审核发布后，所选成员才会合并显示。</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <router-link to="/admin" class="ui-button">返回管理</router-link>
+          <button class="primary" @click="generate" :disabled="busy || hasActive">生成系列聚合报告</button>
+        </div>
+      </header>
+
+      <div class="card">
+        <div class="flex flex-wrap gap-2 items-center">
+          <label for="series-report">报告</label>
+          <select id="series-report" v-model="reportId" @change="loadReport" class="min-w-0 max-w-full">
+            <option value="">选择报告</option>
+            <option v-for="item in reports" :key="item.id" :value="item.id">
+              {{ formatDate(item.created_at) }} · {{ reportStatus(item) }}
+            </option>
+          </select>
+          <button @click="refresh" :disabled="busy">刷新</button>
+        </div>
+        <p class="hint" role="status">{{ message }}</p>
+        <p v-if="error" class="record-error" role="alert">{{ error }}</p>
+      </div>
+
+      <template v-if="report?.result">
+        <div v-if="report.published_at" class="card mt-4">
+          <h2>已发布</h2>
+          <p class="hint">本报告已发布 {{ report.published_groups.length }} 组。继续调整时请生成新报告。</p>
+          <ul class="mt-3 space-y-2">
+            <li v-for="(group, i) in report.published_groups" :key="i">
+              <strong>{{ group.name }}</strong> · {{ group.member_ids.map(id => members[id].raw_name).join('、') }}
+            </li>
+          </ul>
+        </div>
+        <template v-else>
+          <div class="library-heading mt-6">
+            <div><h2>聚合候选</h2><p class="hint">{{ report.result.members.length }} 个来源条目 · {{ report.result.groups.length }} 组模型候选</p></div>
+            <div class="flex flex-wrap gap-2">
+              <button @click="addGroup">手工新建组</button>
+              <button class="primary" @click="publish" :disabled="busy || !selectedCount">发布审核结果（{{ selectedCount }} 组）</button>
+            </div>
+          </div>
+          <p v-if="!drafts.length" class="card">暂无模型候选。可以手工建立审核组。</p>
+          <div class="space-y-3">
+            <article class="card" v-for="(group, index) in drafts.slice(0, visible)" :key="group.key">
+              <label class="flex gap-2 items-center" :for="'review-group-' + index">
+                <input :id="'review-group-' + index" type="checkbox" v-model="group.accept">
+                <strong>{{ group.name || '手工审核组' }}</strong>
+              </label>
+              <p class="hint">{{ group.score == null ? '手工添加' : 'BGE-M3 ' + group.score.toFixed(4) + ' · ' + group.reason }}</p>
+              <ul class="mt-3 space-y-2">
+                <li v-for="id in group.ids" :key="id" class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="min-w-0">
+                    <div>{{ members[id].raw_name }} <span v-if="members[id].name_zh" class="text-indigo-300">· {{ members[id].name_zh }}</span></div>
+                    <p class="hint">{{ members[id].maker || '片商未知' }} · {{ members[id].films }} 部 ·
+                      <router-link :to="'/video/' + encodeURIComponent(members[id].sample)" class="text-indigo-300">{{ members[id].sample }}</router-link>
+                      <span v-if="members[id].source_ref"> · {{ members[id].source_ref }}</span>
+                      <span v-if="members[id].final_name"> · 已归入 {{ members[id].final_name }}</span>
+                    </p>
+                  </div>
+                  <button v-if="group.accept" @click="removeMember(group, id)" :aria-label="'移除 ' + members[id].raw_name">移除</button>
+                </li>
+              </ul>
+              <div v-if="group.accept" class="series-review-fields mt-4">
+                <label>最终名称 <input v-model.trim="group.name" maxlength="300"></label>
+                <label>发布到
+                  <select v-model="group.finalId">
+                    <option :value="null">新建最终系列</option>
+                    <option v-for="id in existingGroups(group)" :key="id" :value="id">{{ finalNames[id] }}</option>
+                  </select>
+                </label>
+                <label>搜索可添加的成员 <input v-model.trim="group.query" placeholder="原名、译名、片商或番号"></label>
+                <label v-if="group.query">匹配的成员
+                  <select :value="''" @change="addMember(group, $event)">
+                    <option value="">选择后加入此组</option>
+                    <option v-for="row in availableMembers(group)" :key="row.id" :value="row.id">
+                      {{ row.raw_name }} · {{ row.maker || '片商未知' }} · {{ row.sample }}
+                    </option>
+                  </select>
+                </label>
+              </div>
+            </article>
+          </div>
+          <button class="mt-4" v-if="visible < drafts.length" @click="visible += 30">查看更多候选</button>
+          <button class="primary mt-4" v-if="selectedCount" @click="publish" :disabled="busy">发布审核结果（{{ selectedCount }} 组）</button>
+        </template>
+      </template>
+    </section>
+  </script>
+
+  <script type="text/x-template" id="tpl-subtitle-review">
+    <section>
+      <header class="page-head">
+        <h1 class="text-xl font-bold">中文字幕人工分类</h1>
+        <span class="text-sm text-gray-500">{{ loading ? '加载中…' : items.length + ' 个待分类' }}</span>
+      </header>
+      <p v-if="error" role="alert" class="text-red-800 mb-3">{{ error }}</p>
+      <p v-if="!loading && !items.length && !error" class="site-card p-5 text-gray-500">没有待分类影片。</p>
+      <div class="space-y-2">
+        <article v-for="item in items" :key="item.code" class="site-card subtitle-card p-3">
+          <div class="min-w-0 break-words">
+            <router-link :to="'/video/' + encodeURIComponent(baseVideoCode(item.code))" class="font-semibold text-indigo-800 hover:underline">{{ item.code }}</router-link>
+            <p class="text-xs text-gray-500 mt-1">{{ item.file_count }} 个文件 · {{ item.size_gib }} GiB</p>
+          </div>
+          <p class="text-sm min-w-0 break-words">{{ item.title || '无标题' }}</p>
+          <div class="grid grid-cols-2 gap-2">
+            <button v-for="label in ['机翻中文', '中文字幕']" :key="label" @click="classify(item, label)"
+              :disabled="saving.has(item.code)" :aria-pressed="item.classification === label"
+              class="tag-pill justify-center">{{ label }}</button>
+          </div>
+        </article>
+      </div>
+    </section>
+  </script>
+
   <!-- ========== DashboardView ========== -->
   <script type="text/x-template" id="tpl-dashboard">
   <div>
-    <div class="flex justify-end gap-2 mb-4">
-      <a href="/static/subtitle-review.html" target="_blank" rel="noopener"
-        class="px-3 py-1.5 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-100 font-medium">
-        字幕分类
-      </a>
-      <button @click="openBatchModal"
-        class="px-3 py-1.5 text-sm rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white font-medium">
-        ⚡ 批量添加/替换
-      </button>
-    </div>
+    <header class="page-head">
+      <h1>媒体库概览</h1>
+      <div class="flex flex-wrap gap-2">
+        <router-link to="/subtitle-review" class="ui-button">字幕分类</router-link>
+        <button @click="openBatchModal" class="ui-button ui-primary">批量添加/替换</button>
+      </div>
+    </header>
     <batch-modal v-if="showBatchModal" @close="closeBatchModal" />
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else>
@@ -1179,9 +1203,9 @@
           <h2 class="text-sm font-semibold text-gray-300 mb-4">Top 15 类别</h2>
           <div class="flex flex-wrap gap-2">
             <router-link v-for="t in stats.top_tags" :key="t.id" :to="'/tag/' + t.id"
-              class="flex items-center gap-1 bg-gray-800 hover:bg-gray-700 rounded-full px-3 py-1 text-sm transition">
-              <span class="text-gray-200">{{ t.name }}</span>
-              <span class="text-gray-500 text-xs">{{ t.count }}</span>
+              class="tag-pill">
+              <span>{{ t.name }}</span>
+              <span class="tag-count">{{ t.count }}</span>
             </router-link>
           </div>
         </div>
@@ -1193,13 +1217,16 @@
   <!-- ========== SearchView ========== -->
   <script type="text/x-template" id="tpl-search">
   <div>
-    <div class="text-gray-400 mb-4 text-sm" v-if="!loading">
-      「{{ q }}」共 {{ total }} 条结果
-    </div>
+    <header class="page-head">
+      <div>
+        <h1>搜索结果</h1>
+        <p v-if="!loading">「{{ q }}」共 {{ total }} 条结果</p>
+      </div>
+    </header>
     <div v-if="loading" class="text-center py-20 text-gray-500">搜索中…</div>
     <div v-else-if="items.length === 0" class="text-center py-20 text-gray-500">无结果</div>
     <div v-else>
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+      <div class="film-grid">
         <video-card v-for="v in items" :key="v.id" :video="v" />
       </div>
       <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
@@ -1212,15 +1239,14 @@
   <div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else-if="!video" class="text-center py-20 text-gray-500">未找到该番号</div>
-    <div v-else>
-      <!-- Back + Edit toggle -->
-      <div class="flex items-center justify-between mb-4">
-        <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm">← 返回</button>
-        <div class="flex gap-2">
+    <div v-else class="film-detail">
+      <div class="film-detail-toolbar">
+        <button @click="backToLibrary" class="ui-button">← 返回</button>
+        <div class="flex flex-wrap gap-2">
           <template v-if="!editing">
             <button v-if="!video.deleted" @click="startRescrape" :disabled="rescraping"
               class="px-3 py-1 text-sm rounded bg-amber-700 hover:bg-amber-600 text-white disabled:opacity-50">
-              {{ rescraping ? '刮削中…' : '重新刮削' }}
+              {{ rescraping ? '提交中…' : '重新刮削' }}
             </button>
             <button v-if="!video.deleted" @click="startEdit" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200">编辑</button>
             <button v-if="!video.deleted" @click="confirmDelete"
@@ -1243,14 +1269,16 @@
       <div v-if="rescrapeMessage" class="mb-4 px-4 py-2 rounded text-sm"
         :class="rescrapeError ? 'bg-red-900 bg-opacity-40 border border-red-800 text-red-300' : 'bg-gray-800 text-gray-300'">
         {{ rescrapeMessage }}
+        <router-link v-if="!rescraping && !rescrapeError" to="/scrape-progress" class="ml-2 text-indigo-300">查看刮削进度</router-link>
       </div>
 
-      <!-- Title -->
-      <div class="mb-4">
+      <div class="film-detail-grid">
+      <header class="film-detail-title">
+        <p class="section-kicker">FILM DETAILS</p>
         <div class="flex items-center gap-3 mb-1">
           <!-- Code: click to edit -->
           <template v-if="!editingCode">
-            <span class="font-mono text-indigo-400 text-lg font-bold cursor-pointer hover:underline" @click="startEditCode" title="点击修改番号">{{ video.code }}</span>
+            <button class="film-code film-code-edit" @click="startEditCode" :aria-label="'修改番号 ' + video.code">{{ video.code }}</button>
           </template>
           <template v-else>
             <input v-ltrim v-model="codeDraft" @keydown.enter="saveCode" @keydown.esc="cancelEditCode"
@@ -1260,49 +1288,43 @@
           </template>
           <span v-if="!editing && video.score" class="score-badge text-white text-sm font-bold px-2 py-0.5 rounded">{{ Number(video.score).toFixed(1) }}</span>
         </div>
-        <h1 class="text-xl font-semibold leading-snug">{{ video.title_zh || video.title_jp }}</h1>
+        <h1>{{ video.title_zh || video.title_jp || video.code }}</h1>
         <p v-if="video.title_zh && video.title_jp" class="text-sm text-gray-500 mt-0.5">{{ video.title_jp }}</p>
-      </div>
-
-      <!-- Cover + Info: side-by-side on md+, stacked on mobile -->
-      <div class="flex flex-col md:flex-row gap-4 md:gap-6">
-        <!-- Cover with upload overlay -->
-        <div class="w-full md:w-3/5 flex-shrink-0">
-          <div class="relative group cursor-pointer" @click="triggerCoverUpload">
-            <img v-if="video.cover_path" :src="coverSrc || ('/static/' + video.cover_path)" class="w-full rounded-lg" @error="imgErr" />
-            <div v-else class="w-full h-48 bg-gray-800 rounded-lg flex items-center justify-center text-gray-600">无封面</div>
-            <div class="absolute inset-0 rounded-lg bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-              <span class="text-white text-sm">{{ coverUploading ? '上传中…' : '更换封面' }}</span>
-            </div>
-            <input ref="coverFileInput" type="file" accept="image/*" class="hidden" @change="uploadCover" />
-          </div>
-          <!-- Playback buttons -->
-          <div class="flex items-center gap-2 mt-2">
-            <select v-if="fileParts.length > 1" v-model="selectedPart"
-              class="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none">
-              <option value="">全部</option>
-              <option v-for="f in fileParts" :key="f.part" :value="f.part || ''">{{ f.part || '完整' }}</option>
-            </select>
-            <button @click="playVideo"
-              class="flex-1 px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium">▶ Play</button>
-            <button @click="copyStreamUrl"
-              class="flex-1 px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm">
-              {{ copied ? '已复制 ✓' : '复制 URL' }}
+      </header>
+      <div class="film-detail-media">
+        <div class="watch-stage">
+          <video v-if="playing && canPlay" :key="streamUrl()" :src="streamUrl()" controls playsinline autoplay preload="metadata"
+            :aria-label="video.title_zh || video.title_jp || video.code" @error="playbackError = true"></video>
+          <template v-else>
+            <span class="art-fallback" aria-hidden="true">{{ video.code }}</span>
+            <img v-if="coverSrc || video.cover_path" :src="coverSrc || ('/static/' + video.cover_path)" alt="" @error="imgErr" />
+            <button v-if="canPlay" type="button" class="watch-trigger" @click="playVideo" aria-label="播放影片">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
             </button>
-            <button @click="openReplaceModal"
-              class="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm">替换视频</button>
-          </div>
+          </template>
         </div>
-
-        <!-- Info -->
-        <div class="w-full md:w-2/5 min-w-0">
-
+        <p v-if="playbackError" role="status" class="playback-message">当前浏览器无法播放此文件。可以尝试打开直链，或复制链接到外部播放器。</p>
+        <div class="watch-actions">
+          <select v-if="fileParts.length > 1 && canPlay" v-model="selectedPart" aria-label="播放分集">
+            <option value="">默认分集</option>
+            <option v-for="f in fileParts" :key="f.part" :value="f.part || ''">{{ f.part || '完整' }}</option>
+          </select>
+          <button v-if="canPlay && !playing" @click="playVideo" class="ui-button ui-primary">播放</button>
+          <a v-if="canPlay" :href="streamUrl()" target="_blank" rel="noopener" class="ui-button">打开直链</a>
+          <button v-if="canPlay" @click="copyStreamUrl" class="ui-button">{{ copied ? '已复制' : '复制 URL' }}</button>
+          <button v-if="!video.deleted" @click="openReplaceModal" class="ui-button">替换视频</button>
+          <button v-if="!video.deleted" @click="triggerCoverUpload" :disabled="coverUploading" class="ui-button">{{ coverUploading ? '上传中…' : '更换封面' }}</button>
+          <input ref="coverFileInput" type="file" accept="image/*" class="hidden" @change="uploadCover" />
+        </div>
+      </div>
+      <div class="film-detail-info">
           <!-- View mode -->
           <template v-if="!editing">
-            <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-base mb-4">
+            <h2>影片资料</h2>
+            <dl class="film-metadata">
               <template v-for="row in meta" :key="row.label">
                 <dt class="text-gray-500">{{ row.label }}</dt>
-                <dd class="truncate">
+                <dd>
                   <router-link v-if="row.link" :to="row.link"
                     class="text-indigo-400 hover:text-indigo-300 hover:underline">{{ row.val }}</router-link>
                   <span v-else class="text-gray-200">{{ row.val }}</span>
@@ -1337,12 +1359,12 @@
 
           <!-- Actors -->
           <div class="mb-3">
-            <div class="text-gray-500 text-sm mb-1">演员</div>
+            <h2>演员</h2>
             <template v-if="!editing">
               <div class="flex flex-wrap gap-2">
                 <router-link v-for="a in video.actors" :key="a.id" :to="'/actor/' + a.id"
                   class="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 rounded-full px-2 py-1 text-sm transition">
-                  <img v-if="a.avatar_path" :src="'/static/' + a.avatar_path" class="w-6 h-6 rounded-full object-cover" @error="imgErr" />
+                  <img v-if="a.avatar_path && a.avatar_path !== 'no_avatar'" :src="'/static/' + a.avatar_path" class="w-6 h-6 rounded-full object-cover" alt="" loading="lazy" @error="imgErr" />
                   <span class="w-6 h-6 rounded-full bg-gray-600 flex items-center justify-center text-xs" v-else>?</span>
                   <span>{{ a.name_zh || a.name }}</span>
                 </router-link>
@@ -1366,7 +1388,7 @@
                   <li v-for="a in actorSuggestions" :key="a.id"
                     @mousedown.prevent="pickActor(a)"
                     class="flex items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 cursor-pointer">
-                    <img v-if="a.avatar_path" :src="'/static/' + a.avatar_path" class="w-6 h-6 rounded-full object-cover" @error="imgErr" />
+                    <img v-if="a.avatar_path && a.avatar_path !== 'no_avatar'" :src="'/static/' + a.avatar_path" class="w-6 h-6 rounded-full object-cover" alt="" loading="lazy" @error="imgErr" />
                     <span class="w-6 h-6 rounded-full bg-gray-600 flex items-center justify-center text-xs flex-shrink-0" v-else>?</span>
                     <span>{{ a.name_zh || a.name }}</span>
                     <span v-if="a.name_zh" class="text-gray-500 text-xs">{{ a.name }}</span>
@@ -1378,18 +1400,18 @@
 
           <!-- Tags -->
           <div class="mb-4">
-            <div class="text-gray-500 text-sm mb-1">标签</div>
+            <h2>标签</h2>
             <template v-if="!editing">
-              <div class="flex flex-wrap">
-                <router-link v-for="t in video.tags" :key="t.id" :to="'/tag/' + t.id" class="tag-pill text-gray-300 hover:text-white">{{ t.name }}</router-link>
+              <div class="flex flex-wrap gap-2">
+                <router-link v-for="t in video.tags" :key="t.id" :to="'/tag/' + t.id" class="tag-pill">{{ t.name }}</router-link>
               </div>
             </template>
             <template v-else>
               <div class="flex flex-wrap gap-2 mb-2">
                 <span v-for="(t, i) in form.tags" :key="t.name"
-                  class="flex items-center gap-1 bg-gray-700 rounded px-2 py-1 text-sm">
-                  {{ t.name }}
-                  <button @click="removeTag(i)" class="text-gray-400 hover:text-red-400 ml-1 leading-none">×</button>
+                  class="tag-pill">
+                  <span>{{ t.name }}</span>
+                  <button @click="removeTag(i)" class="tag-remove" :aria-label="'移除标签 ' + t.name">×</button>
                 </span>
               </div>
               <div class="relative flex gap-2">
@@ -1484,10 +1506,10 @@
                 <svg class="w-4 h-4 text-indigo-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                 </svg>
-                <h2 class="text-sm font-semibold text-gray-100 tracking-wide">替换视频</h2>
+                <h2>替换视频</h2>
               </div>
               <button @click="closeReplaceModal" :disabled="replaceUploading"
-                class="w-7 h-7 flex items-center justify-center rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-40">
+                class="ui-button ui-icon-button" aria-label="关闭窗口">
                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -1552,11 +1574,10 @@
                 <!-- 无码破解分类 -->
                 <div class="px-4 py-3">
                   <span class="text-sm text-gray-300">无码破解</span>
-                  <div class="flex gap-2 mt-2">
+                  <div class="flex flex-wrap gap-2 mt-2">
                     <button v-for="tag in ['JAV 无码破解','LADA 无码破解','LTX 无码破解']" :key="tag"
                       @click="replaceUncensoredCrackTag = tag" :disabled="replaceUploading"
-                      :class="['flex-1 px-2 py-1.5 rounded text-xs transition-colors disabled:opacity-50',
-                        replaceUncensoredCrackTag === tag ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600']">
+                      class="tag-pill" :aria-pressed="replaceUncensoredCrackTag === tag">
                       {{ tag.replace(' 无码破解', '') }}
                     </button>
                   </div>
@@ -1656,26 +1677,19 @@
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else-if="!data" class="text-center py-20 text-gray-500">未找到该演员</div>
     <div v-else>
-      <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm mb-4">← 返回</button>
-      <div class="flex items-center gap-4 mb-6">
-        <!-- Avatar + upload overlay -->
-        <div class="relative flex-shrink-0 group cursor-pointer" @click="triggerUpload">
-          <img v-if="data.actor.avatar_path" :src="avatarSrc || ('/static/' + data.actor.avatar_path)"
-            class="w-32 h-32 rounded-full object-cover ring-2 ring-indigo-500" @error="imgErr" />
-          <div v-else class="w-32 h-32 rounded-full bg-gray-700 flex items-center justify-center text-2xl">{{ avatarSrc ? '' : '?' }}
-            <img v-if="avatarSrc" :src="avatarSrc" class="w-32 h-32 rounded-full object-cover absolute inset-0" />
-          </div>
-          <div class="absolute inset-0 rounded-full bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-            <span class="text-white text-xs">{{ uploading ? '上传中…' : '更换头像' }}</span>
-          </div>
-          <input ref="fileInput" type="file" accept="image/*" class="hidden" @change="uploadAvatar" />
+      <router-link to="/actors" class="ui-button mb-4">← 演员目录</router-link>
+      <header class="actor-profile">
+        <div class="actor-portrait">
+          <span class="art-fallback" aria-hidden="true">{{ (data.actor.name_zh || data.actor.name).slice(0, 1) }}</span>
+          <img v-if="avatarSrc || (data.actor.avatar_path && data.actor.avatar_path !== 'no_avatar')"
+            :src="avatarSrc || ('/static/' + data.actor.avatar_path)" alt="" @error="imgErr" />
         </div>
-        <div>
+        <div class="min-w-0">
+          <p class="section-kicker">CAST / FILMOGRAPHY</p>
           <!-- Chinese name -->
           <div class="flex items-center gap-2 mb-0.5">
             <template v-if="!editingName">
               <h1 class="text-xl font-bold">{{ data.actor.name_zh || data.actor.name }}</h1>
-              <button @click="startEditName" class="text-gray-500 hover:text-gray-300 text-sm" title="修改名字">✏️</button>
             </template>
             <template v-else>
               <div class="flex flex-col gap-1">
@@ -1698,23 +1712,23 @@
           </div>
           <p v-if="!editingName" class="text-gray-500 text-sm">{{ data.actor.name }}</p>
           <p class="text-gray-500 text-sm mt-1">{{ data.videos.length }} 部作品</p>
+          <div class="actor-actions">
+            <button v-if="!editingName" @click="startEditName" class="ui-button">修改名字</button>
+            <button @click="triggerUpload" :disabled="uploading" class="ui-button">{{ uploading ? '上传中…' : '更换头像' }}</button>
+            <input ref="fileInput" type="file" accept="image/*" class="hidden" @change="uploadAvatar" />
+          </div>
         </div>
-      </div>
+      </header>
+      <div class="library-heading"><h2>作品列表</h2><sort-bar :sort="sort" @change="changeSort" /></div>
       <!-- Tag filter -->
       <div v-if="allTags.length" class="flex flex-wrap gap-2 mb-3">
         <button v-for="t in allTags" :key="t"
           @click="toggleTag(t)"
-          :class="['text-xs px-2 py-0.5 rounded-full border transition',
-            selectedTags.has(t)
-              ? 'bg-indigo-600 border-indigo-500 text-white'
-              : 'bg-gray-800 border-gray-600 text-gray-300 hover:border-gray-400']">
+          class="tag-pill" :aria-pressed="selectedTags.has(t)">
           {{ t }}
         </button>
       </div>
-      <div class="flex justify-end mb-3">
-        <sort-bar :sort="sort" @change="changeSort" />
-      </div>
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+      <div class="film-grid">
         <video-card v-for="v in sortedVideos" :key="v.id" :video="v" />
       </div>
     </div>
@@ -1728,14 +1742,14 @@
     <div v-else-if="!data" class="text-center py-20 text-gray-500">未找到该标签</div>
     <div v-else>
       <button @click="$router.back()" class="text-indigo-400 hover:text-indigo-300 text-sm mb-4">← 返回</button>
-      <div class="flex items-center justify-between mb-6">
-        <div class="flex items-center gap-3">
+      <div class="page-head">
+        <div>
           <h1 class="text-xl font-bold">{{ data.tag.name }}</h1>
-          <span class="text-gray-500 text-sm">{{ data.videos.length }} 部作品</span>
+          <p>{{ data.videos.length }} 部作品</p>
         </div>
         <sort-bar :sort="sort" @change="changeSort" />
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+      <div class="film-grid">
         <video-card v-for="v in sortedVideos" :key="v.id" :video="v" />
       </div>
     </div>
@@ -1745,18 +1759,17 @@
   <!-- ========== AllTagsView ========== -->
   <script type="text/x-template" id="tpl-all-tags">
   <div>
-    <div class="flex items-center gap-4 mb-6">
-      <h1 class="text-xl font-bold">所有类别</h1>
-      <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
+    <header class="page-head">
+      <div><h1>所有类别</h1><p>{{ filtered.length }} 个</p></div>
       <input :value="q" @input="!$event.isComposing && updateQ($event.target.value)" @compositionend="updateQ($event.target.value)" placeholder="过滤类别…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-48" />
-    </div>
+    </header>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
-    <div v-else class="flex flex-wrap">
+    <div v-else class="flex flex-wrap gap-2">
       <router-link v-for="t in filtered" :key="t.id" :to="'/tag/' + t.id"
-        class="tag-pill text-gray-300 hover:text-white flex items-center gap-1">
-        {{ t.name }}
-        <span class="text-gray-500 text-xs">{{ t.count }}</span>
+        class="tag-pill">
+        <span>{{ t.name }}</span>
+        <span class="tag-count">{{ t.count }}</span>
       </router-link>
     </div>
   </div>
@@ -1765,21 +1778,22 @@
   <!-- ========== AllActorsView ========== -->
   <script type="text/x-template" id="tpl-all-actors">
   <div>
-    <div class="flex items-center gap-4 mb-6 flex-wrap">
-      <h1 class="text-xl font-bold">所有演员</h1>
-      <span class="text-gray-500 text-sm">{{ filtered.length }} 人</span>
-      <input :value="q" @input="!$event.isComposing && updateQ($event.target.value)" @compositionend="updateQ($event.target.value)" placeholder="搜索演员名…"
+    <header class="page-head">
+      <div><p class="section-kicker">CAST DIRECTORY</p><h1>演员目录</h1><p>{{ filtered.length }} 人 · 按演员浏览影片</p></div>
+      <input :value="q" @input="!$event.isComposing && updateQ($event.target.value)" @compositionend="updateQ($event.target.value)" aria-label="搜索演员名" placeholder="搜索演员名…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-52" />
-    </div>
+    </header>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
-    <div v-else class="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-4">
-      <router-link v-for="a in filtered" :key="a.id" :to="'/actor/' + a.id"
-        class="flex flex-col items-center gap-2 bg-gray-900 hover:bg-gray-800 rounded-lg py-5 px-2 text-center transition card-hover">
-        <img v-if="a.avatar_path && a.avatar_path !== 'no_avatar'"
-          :src="'/static/' + a.avatar_path" class="w-32 h-32 rounded-full object-cover" @error="imgErr" />
-        <span v-else class="w-32 h-32 rounded-full bg-gray-700 flex items-center justify-center text-2xl flex-shrink-0">?</span>
-        <span class="text-xs text-gray-200 leading-tight line-clamp-2 w-full">{{ a.name_zh || a.name }}</span>
-        <span class="text-xs text-gray-500">{{ a.count }} 部</span>
+    <p v-else-if="!filtered.length" class="text-gray-500 py-10">没有符合条件的演员。</p>
+    <div v-else class="actor-grid">
+      <router-link v-for="a in filtered" :key="a.id" :to="'/actor/' + a.id" class="actor-tile">
+        <div class="actor-portrait">
+          <span class="art-fallback" aria-hidden="true">{{ (a.name_zh || a.name).slice(0, 1) }}</span>
+          <img v-if="a.avatar_path && a.avatar_path !== 'no_avatar'" :src="'/static/' + a.avatar_path"
+            alt="" loading="lazy" decoding="async" @error="imgErr" />
+        </div>
+        <strong>{{ a.name_zh || a.name }}</strong>
+        <span class="text-gray-500 text-xs">{{ a.count }} 部作品</span>
       </router-link>
     </div>
   </div>
@@ -1788,18 +1802,22 @@
   <!-- ========== AllSeriesView ========== -->
   <script type="text/x-template" id="tpl-all-series">
   <div>
-    <div class="flex items-center gap-4 mb-6 flex-wrap">
-      <h1 class="text-xl font-bold">所有系列</h1>
-      <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
+    <header class="page-head">
+      <div><h1>所有系列</h1><p>{{ filtered.length }} 个</p></div>
       <input :value="q" @input="!$event.isComposing && updateQ($event.target.value)" @compositionend="updateQ($event.target.value)" placeholder="搜索系列名…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-52" />
-    </div>
+    </header>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-      <router-link v-for="s in filtered" :key="s.id != null ? 'c' + s.id : s.series"
+      <router-link v-for="s in filtered" :key="s.final_id ? 'f' + s.final_id : s.jp_id ? 'j' + s.jp_id : s.raw_name"
         :to="seriesLink(s)"
         class="flex items-center justify-between bg-gray-900 hover:bg-gray-800 rounded px-4 py-3 transition">
-        <span class="text-sm text-gray-200 truncate">{{ s.series }}</span>
+        <span class="min-w-0 break-words">
+          <span class="text-sm text-gray-200">{{ s.series }}</span>
+          <small v-if="s.maker" class="block text-gray-500">{{ s.maker }}</small>
+          <small v-if="s.translation_status === 'TRANSLATING'" class="block text-gray-500">翻译中</small>
+          <small v-else-if="s.translation_status === 'FAILED'" class="block text-gray-500">翻译失败</small>
+        </span>
         <span class="text-xs text-gray-500 ml-3 flex-shrink-0">{{ s.count }} 部</span>
       </router-link>
     </div>
@@ -1821,7 +1839,7 @@
       </div>
       <div v-if="items.length === 0" class="text-center py-20 text-gray-500">暂无作品</div>
       <div v-else>
-        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+        <div class="film-grid">
           <video-card v-for="v in items" :key="v.id" :video="v" />
         </div>
         <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
@@ -1833,12 +1851,11 @@
   <!-- ========== AllPrefixesView ========== -->
   <script type="text/x-template" id="tpl-all-prefixes">
   <div>
-    <div class="flex items-center gap-4 mb-6 flex-wrap">
-      <h1 class="text-xl font-bold">所有番号前缀</h1>
-      <span class="text-gray-500 text-sm">{{ filtered.length }} 个</span>
+    <header class="page-head">
+      <div><h1>所有番号前缀</h1><p>{{ filtered.length }} 个</p></div>
       <input :value="q" @input="!$event.isComposing && updateQ($event.target.value)" @compositionend="updateQ($event.target.value)" placeholder="过滤前缀…"
         class="ml-auto bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 w-40" />
-    </div>
+    </header>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else class="flex flex-wrap gap-2">
       <router-link v-for="p in filtered" :key="p.prefix" :to="'/prefix/' + p.prefix"
@@ -1865,7 +1882,7 @@
       </div>
       <div v-if="items.length === 0" class="text-center py-20 text-gray-500">暂无作品</div>
       <div v-else>
-        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+        <div class="film-grid">
           <video-card v-for="v in items" :key="v.id" :video="v" />
         </div>
         <pagination :page="page" :total="total" :limit="limit" @change="changePage" />
@@ -1877,22 +1894,19 @@
   <!-- ========== RecommendView ========== -->
   <script type="text/x-template" id="tpl-recommend">
   <div>
-    <div class="flex items-center justify-between mb-6">
-      <h1 class="text-xl font-bold">每日推荐</h1>
-      <button @click="load"
-        class="flex items-center gap-1.5 px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition">
-        <span>换一批</span>
-      </button>
-    </div>
+    <header class="page-head">
+      <h1>每日推荐</h1>
+      <button @click="load" class="ui-button">换一批</button>
+    </header>
     <div class="flex items-center gap-2 flex-wrap mb-4">
       <button v-for="tag in filterTags" :key="tag" @click="toggleTag(tag)"
-        :class="['px-2.5 py-1 rounded text-xs transition', selectedTags.includes(tag) ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+        class="tag-pill" :aria-pressed="selectedTags.includes(tag)">
         {{ tag }}
       </button>
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else-if="items.length === 0" class="text-center py-20 text-gray-500">暂无符合条件的推荐影片</div>
-    <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+    <div v-else class="film-grid">
       <video-card v-for="v in items" :key="v.code" :video="v" />
     </div>
   </div>
@@ -2039,23 +2053,24 @@
 
   <!-- ========== SortBar ========== -->
   <script type="text/x-template" id="tpl-sort-bar">
-  <div class="flex items-center gap-1">
-    <span class="text-gray-500 text-xs mr-1">排序</span>
+  <div class="flex flex-wrap items-center gap-2" role="group" aria-label="排序">
+    <span class="text-gray-500 text-sm mr-1">排序</span>
     <button @click="$emit('change', 'date')"
-      :class="['px-2.5 py-1 rounded text-xs transition', sort === 'date' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+      class="ui-button" :class="{ 'ui-primary': sort === 'date' }" :aria-pressed="sort === 'date'">
       时间
     </button>
     <button @click="$emit('change', 'score')"
-      :class="['px-2.5 py-1 rounded text-xs transition', sort === 'score' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+      class="ui-button" :class="{ 'ui-primary': sort === 'score' }" :aria-pressed="sort === 'score'">
       评分
     </button>
     <button @click="$emit('change', 'mtime')"
-      :class="['px-2.5 py-1 rounded text-xs transition', sort === 'mtime' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700']">
+      class="ui-button" :class="{ 'ui-primary': sort === 'mtime' }" :aria-pressed="sort === 'mtime'">
       文件时间
     </button>
   </div>
 </script>
 
+  <script src="/static/admin.js"></script>
   <script>
     const { createApp, ref, computed, watch, onMounted } = Vue;
     const { createRouter, createWebHashHistory } = VueRouter;
@@ -2117,11 +2132,7 @@
       name: 'VideoCard',
       template: '#tpl-video-card',
       props: { video: Object },
-      setup(props) {
-        const router = VueRouter.useRouter();
-        function go() { router.push('/video/' + baseVideoCode(props.video.code)); }
-        return { go, imgErr };
-      }
+      setup: () => ({ baseVideoCode, imgErr })
     };
 
     // ── Pagination ────────────────────────────────────────────
@@ -2152,21 +2163,105 @@
       return Array.isArray(raw) ? raw : [raw];
     }
 
-    // ── Shared auto-pipeline constants ───────────────────────
-    const AUTO_STEPS = [
-      'parse_code','calc_dir','upload','db_insert','tags',
-      'scrape','actors','translate','short_title',
-      'calc_filename','rename','db_update',
-    ];
-    function autoStepLabel(step) {
-      const map = {
-        parse_code: '解析番号', calc_dir: '计算目标目录', upload: '上传文件',
-        db_insert: '写入数据库', tags: '同步标签', scrape: '刮削影片信息',
-        actors: '获取演员信息', translate: '翻译标题', short_title: '计算短标题',
-        calc_filename: '计算文件名', rename: '重命名文件', db_update: '更新数据库',
-      };
-      return map[step] || step;
-    }
+    const SubtitleReviewView = {
+      template: '#tpl-subtitle-review',
+      setup() {
+        const items = ref([]);
+        const loading = ref(true);
+        const error = ref('');
+        const saving = ref(new Set());
+        onMounted(async () => {
+          try {
+            const response = await fetch('/api/videos/subtitle-review');
+            if (!response.ok) throw new Error('加载失败');
+            items.value = await response.json();
+          } catch (e) {
+            error.value = e.message;
+          } finally {
+            loading.value = false;
+          }
+        });
+        async function classify(item, classification) {
+          if (saving.value.has(item.code)) return;
+          saving.value.add(item.code);
+          error.value = '';
+          try {
+            await postJson('/api/videos/' + encodeURIComponent(item.code) + '/subtitle-classification', { classification });
+            items.value = items.value.filter(candidate => candidate.code !== item.code);
+          } catch (e) {
+            error.value = e.message;
+          } finally {
+            saving.value.delete(item.code);
+          }
+        }
+        return { items, loading, error, saving, classify, baseVideoCode };
+      }
+    };
+
+    const ScrapeProgressView = {
+      template: '#tpl-scrape-progress',
+      setup() {
+        const items = ref([]);
+        const loading = ref(true);
+        const error = ref('');
+        let fetching = false;
+        let disposed = false;
+
+        async function load() {
+          if (fetching) return;
+          fetching = true;
+          try {
+            const response = await fetch('/api/scrape-progress', { cache: 'no-store' });
+            if (!response.ok) throw new Error('无法读取刮削进度');
+            const data = await response.json();
+            if (!disposed) {
+              items.value = data;
+              error.value = '';
+            }
+          } catch (e) {
+            if (!disposed) error.value = e.message;
+          } finally {
+            fetching = false;
+            if (!disposed) loading.value = false;
+          }
+        }
+
+        const sourceLabels = {pipeline_auto: '自动上传', pipeline_rescrape: '重新刮削', video: '后台刮削'};
+        const statusLabels = {
+          PREPARING: '正在入库', PENDING: '已排队', WAITING: '等待后台处理', RUNNING: '处理中',
+          DONE: '已完成', FAILED: '失败', CANCELLED: '已取消', SKIPPED: '已跳过'
+        };
+        function statusTone(status) {
+          if (status === 'DONE') return 'bg-green-100 text-green-800';
+          if (status === 'FAILED') return 'bg-red-100 text-red-800';
+          if (['RUNNING', 'PREPARING'].includes(status)) return 'bg-indigo-100 text-indigo-800';
+          if (status === 'WAITING') return 'bg-yellow-100 text-yellow-900';
+          return 'bg-gray-100 text-gray-700';
+        }
+        const isActive = item => ['PREPARING', 'PENDING', 'WAITING', 'RUNNING'].includes(item.status);
+        const stages = item => item.kind === 'video'
+          ? ['scrape', 'assets']
+          : ['scrape', 'assets', 'translate', 'short_title', 'rename'];
+        const progress = item => item.status === 'DONE' || item.phase === 'complete'
+          ? stages(item).length : Math.max(0, stages(item).indexOf(item.phase));
+        const phaseLabel = phase => ({
+          scrape: '刮削影片信息', assets: '处理封面及系列信息', translate: '翻译标题',
+          short_title: '生成短标题', rename: '重命名影片', complete: '收尾中'
+        })[phase] || phase;
+        const formatTime = time => new Date(time * 1000).toLocaleString('zh-CN');
+        let timer;
+        onMounted(() => {
+          load();
+          timer = setInterval(() => { if (!document.hidden) load(); }, 5000);
+        });
+        Vue.onUnmounted(() => {
+          disposed = true;
+          clearInterval(timer);
+        });
+        return { items, loading, error, load, baseVideoCode, sourceLabels, statusLabels, statusTone,
+          isActive, stages, progress, phaseLabel, formatTime };
+      }
+    };
 
     // The tag suffix (-C/-U/-UC) belongs on the code, i.e. the first '.'-separated
     // component of the stem — e.g. ABW-123-C.女优.[标题] — not at the end. Mirrors
@@ -2382,9 +2477,7 @@
             message: '',
             progress: 0,
             speed: '',
-            uploaded: false,
             viewCode: null,
-            progressSteps: g.exists ? [] : AUTO_STEPS.map(s => ({ step: s, status: 'pending', message: '' })),
           }));
 
           for (let i = 0; i < batchGroups.value.length; i++) {
@@ -2418,37 +2511,13 @@
             const s = speed(loaded);
             if (s) result.speed = s;
           });
-          const data = await postJson('/api/videos/add-auto', {
+          await postJson('/api/videos/add-auto', {
             upload_id: uploadId,
             volume_path: batchVolume.value,
             uncensored_crack_tag: group.uncensored_crack_tag,
             subtitle_classification: group.subtitle_classification,
           });
-          const jobId = data.job_id;
-          result.uploaded = true;  // switch UI from progress bar to step list
-
-          // Phase 2: stream pipeline steps.
-          await new Promise((resolve, reject) => {
-            const es = new EventSource(`/api/jobs/${jobId}/stream`);
-            es.onmessage = (e) => {
-              let event;
-              try { event = JSON.parse(e.data); } catch { return; }
-              if (event.step === 'ping') return;
-              const idx = result.progressSteps.findIndex(s => s.step === event.step);
-              if (idx >= 0) {
-                result.progressSteps[idx] = { ...result.progressSteps[idx], ...event };
-              }
-              if (event.step === 'done') {
-                result.viewCode = event.code || group.code;
-                es.close();
-                resolve();
-              } else if (event.step === 'error') {
-                es.close();
-                reject(new Error(event.message || '处理失败'));
-              }
-            };
-            es.onerror = () => { es.close(); reject(new Error('连接中断')); };
-          });
+          result.message = '已加入刮削队列';
         }
 
         // POST a raw file body with progress; resolves with parsed JSON, rejects on error.
@@ -2530,7 +2599,6 @@
           batchGroups, batchVolume, mediaLibraries,
           batchProcessing, batchResults,
           batchStepNum, hasNewGroups, hasWarnings, canStartUpload,
-          autoStepLabel,
           onBatchFilesChange, runBatchCheck, buildGroups, toggleGroupTag, expectedFinalNames,
           startBatchProcess, processNewGroup, processReplaceGroup,
         };
@@ -2558,18 +2626,12 @@
         const addFileInput = ref(null);
 
         // ── Auto mode state ─────────────────────────────────────
-        const autoProgressSteps = ref([]);
         const autoFinished = ref(false);
 
         // Shared upload progress (single auto/manual add).
         const addUploading  = ref(false);
         const addUploadPct  = ref(0);
         const addUploadSpeed = ref('');
-
-        const autoProgressPct = computed(() => {
-          const done = autoProgressSteps.value.filter(s => s.status === 'done').length;
-          return Math.round((done / AUTO_STEPS.length) * 100);
-        });
 
         // ── Manual mode state ────────────────────────────────────
         const manualCodeType    = ref('WEST');
@@ -2626,9 +2688,6 @@
           addStep.value = 'auto-progress';
           autoFinished.value = false;
           addError.value = '';
-          autoProgressSteps.value = AUTO_STEPS.map(s => ({ step: s, status: 'pending', message: '' }));
-
-          let jobId;
           try {
             const totalBytes = addFileSorted.value.reduce((s, f) => s + f.size, 0) || 1;
             const speed = makeUploadSpeed();
@@ -2641,45 +2700,17 @@
               if (s) addUploadSpeed.value = s;
             });
             addUploading.value = false;
-            const data = await postJson('/api/videos/add-auto', {
+            await postJson('/api/videos/add-auto', {
               upload_id: uploadId,
               volume_path: addVolume.value,
               subtitle_classification: addSubtitleClassification.value,
             });
-            jobId = data.job_id;
           } catch (e) {
-            addUploading.value = false;
             addError.value = e.message;
+          } finally {
+            addUploading.value = false;
             autoFinished.value = true;
-            return;
           }
-
-          const es = new EventSource(`/api/jobs/${jobId}/stream`);
-          es.onmessage = (e) => {
-            const event = JSON.parse(e.data);
-            if (event.step === 'ping') return;
-            const idx = autoProgressSteps.value.findIndex(s => s.step === event.step);
-            if (idx >= 0) {
-              autoProgressSteps.value[idx] = { ...autoProgressSteps.value[idx], ...event };
-            } else {
-              autoProgressSteps.value.push(event);
-            }
-            if (event.step === 'done') {
-              addDoneCode.value = event.code || '';
-              autoFinished.value = true;
-              addStep.value = 'done';
-              es.close();
-            } else if (event.step === 'error') {
-              addError.value = event.message;
-              autoFinished.value = true;
-              es.close();
-            }
-          };
-          es.onerror = () => {
-            addError.value = '连接中断';
-            autoFinished.value = true;
-            es.close();
-          };
         }
 
         async function startManualUpload() {
@@ -2771,9 +2802,8 @@
         return {
           addStep, addFiles, addFileSorted, addVolume, addMode, addSubtitleClassification, addDoneCode, addError,
           mediaLibraries, addFileInput,
-          autoProgressSteps, autoProgressPct, autoFinished,
+          autoFinished,
           addUploading, addUploadPct, addUploadSpeed,
-          autoStepLabel,
           manualCodeType, manualCodeNumber, manualMaxNumber, manualIsMultipart,
           manualUploading, manualCode, manualTitleJp, manualTitleZh, manualTitleShort,
           manualActors, manualTags, manualSaving, manualMetaError,
@@ -2860,62 +2890,42 @@
         const showRescrape    = ref(false);
         const rescrapeStarted = ref(false);
         const rescrapeRunning = ref(false);
-        const rescrapeItems   = ref([]);
+        const rescrapeFailed = ref(false);
         const rescrapeSummary = ref('');
         function openRescrape() {
           rescrapeStarted.value = false;
           rescrapeRunning.value = false;
-          rescrapeItems.value = [];
+          rescrapeFailed.value = false;
           rescrapeSummary.value = '';
           showRescrape.value = true;
         }
         function closeRescrape() {
           if (rescrapeRunning.value) return;
           showRescrape.value = false;
-          if (rescrapeStarted.value) load();  // refresh list after a run
         }
         async function startRescrape() {
           rescrapeStarted.value = true;
           rescrapeRunning.value = true;
+          rescrapeSummary.value = '正在提交刮削任务…';
           try {
-            const res = await fetch('/api/videos/rescrape', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ scrape_status: rescrapeFilterStatus.value }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || '启动失败');
-            rescrapeItems.value = data.codes.map(c => ({ code: c, status: 'pending', message: '' }));
-            const es = new EventSource(`/api/jobs/${data.job_id}/stream`);
-            es.onmessage = (e) => {
-              let event; try { event = JSON.parse(e.data); } catch { return; }
-              if (event.step === 'ping') return;
-              if (event.step === 'done') {
-                rescrapeSummary.value = event.message || '';
-                rescrapeRunning.value = false;
-                es.close();
-                return;
-              }
-              const idx = rescrapeItems.value.findIndex(r => r.code === event.step);
-              if (idx >= 0) {
-                rescrapeItems.value[idx] = { code: event.step, status: event.status, message: event.message };
-              }
-            };
-            es.onerror = () => { rescrapeRunning.value = false; es.close(); };
+            const data = await postJson('/api/videos/rescrape', { scrape_status: rescrapeFilterStatus.value });
+            rescrapeSummary.value = `已将 ${data.codes.length} 部影片加入刮削队列。`;
           } catch (e) {
+            rescrapeFailed.value = true;
             rescrapeSummary.value = e.message;
+          } finally {
             rescrapeRunning.value = false;
           }
         }
 
-        return {
+        return { hideImage: imgErr,
           items, total, page, limit, loading, sort, filterLabel,
           filterTags: FILTER_TAGS, selectedTags, changePage, changeSort, toggleTag,
           showAddModal, openAddModal, closeAddModal,
           showManualModal, openManualModal, closeManualModal,
           showBatchModal, openBatchModal, closeBatchModal,
           rescrapeFilterStatus, showRescrape, rescrapeStarted, rescrapeRunning,
-          rescrapeItems, rescrapeSummary, openRescrape, closeRescrape, startRescrape,
+          rescrapeFailed, rescrapeSummary, openRescrape, closeRescrape, startRescrape,
         };
       }
     };
@@ -2991,15 +3001,15 @@
         }
 
         function remainingColor(percent) {
-          if (percent <= 10) return '#fca5a5';
-          if (percent <= 20) return '#fcd34d';
-          return '#6ee7b7';
+          if (percent <= 10) return '#a33b4c';
+          if (percent <= 20) return '#805214';
+          return '#22654c';
         }
 
         function diskPieStyle(percent) {
           const value = Math.max(0, Math.min(100, Number(percent) || 0));
           const color = value <= 10 ? '#dc2626' : value <= 20 ? '#f59e0b' : '#059669';
-          return { background: `conic-gradient(${color} 0% ${value}%, #374151 ${value}% 100%)` };
+          return { background: `conic-gradient(${color} 0% ${value}%, #e3e9f2 ${value}% 100%)` };
         }
 
         function actorDiskBarStyle(sizeBytes) {
@@ -3079,7 +3089,6 @@
         const seriesSuggestions = ref([]);
         const allTags = ref([]);
         const tagSuggestions = ref([]);
-        const pickedSeriesClusterId = ref(null);
         let actorTimer = null, seriesTimer = null;
 
         // Streaming
@@ -3091,10 +3100,22 @@
             ? (video.value.parts.find(p => p.part === selectedPart.value) || video.value.parts[0]).original_file_path
             : video.value.original_file_path;
           const ext = filePath ? filePath.split('.').pop().toLowerCase() : 'mp4';
-          const base = window.location.origin + '/api/videos/' + baseVideoCode(video.value.code) + '/stream.' + ext;
+          const base = window.location.origin + '/api/videos/' + encodeURIComponent(baseVideoCode(video.value.code)) + '/stream.' + ext;
           return selectedPart.value ? base + '?part=' + encodeURIComponent(selectedPart.value) : base;
         }
-        function playVideo() { window.open(streamUrl(), '_blank'); }
+        const playing = ref(false), playbackError = ref(false);
+        const canPlay = computed(() => Boolean(video.value && !video.value.deleted &&
+          (video.value.original_file_path || video.value.parts?.some(part => part.original_file_path))));
+        function backToLibrary() {
+          if (router.options.history.state.back) router.back();
+          else router.push('/videos');
+        }
+        watch(selectedPart, () => { playbackError.value = false; });
+        function playVideo() {
+          playbackError.value = false;
+          playing.value = true;
+          Vue.nextTick(() => document.querySelector('.watch-stage video')?.focus());
+        }
         async function copyStreamUrl() {
           const url = streamUrl();
           try {
@@ -3360,7 +3381,10 @@
             { label: '时长', val: v.duration, link: null },
             { label: '制片方', val: v.maker, link: v.maker ? { path: '/search', query: { q: v.maker } } : null },
             { label: '发行商', val: v.publisher, link: v.publisher ? { path: '/search', query: { q: v.publisher } } : null },
-            { label: '系列', val: v.series_zh || v.series, link: v.series ? (v.series_cluster_id ? { path: '/series-detail', query: { cid: v.series_cluster_id, name: v.series_zh || v.series } } : { path: '/series-detail', query: { s: v.series } }) : null },
+            { label: '系列', val: v.series_zh || v.series, link: v.series ? {
+              path: '/series-detail', query: v.series_final_id ? { final: v.series_final_id } :
+                v.series_jp_id ? { jp: v.series_jp_id } : { s: v.series }
+            } : null },
           ];
           return rows.filter(r => r.val);
         });
@@ -3421,39 +3445,12 @@
           rescrapeError.value = false;
           rescrapeMessage.value = '正在启动重新刮削…';
           try {
-            const res = await fetch('/api/videos/' + encodeURIComponent(video.value.code) + '/rescrape', {
-              method: 'POST',
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || '启动失败');
-
-            const es = new EventSource('/api/jobs/' + data.job_id + '/stream');
-            es.onmessage = async (e) => {
-              let event; try { event = JSON.parse(e.data); } catch { return; }
-              if (event.step === 'ping') return;
-              if (event.step === 'error') {
-                rescrapeError.value = true;
-                rescrapeMessage.value = event.message || '重新刮削失败';
-                rescraping.value = false;
-                es.close();
-                return;
-              }
-              rescrapeMessage.value = event.message || rescrapeMessage.value;
-              if (event.step === 'done') {
-                rescraping.value = false;
-                es.close();
-                await load();
-              }
-            };
-            es.onerror = () => {
-              rescrapeError.value = true;
-              rescrapeMessage.value = '连接中断';
-              rescraping.value = false;
-              es.close();
-            };
+            await postJson('/api/videos/' + encodeURIComponent(video.value.code) + '/rescrape', {});
+            rescrapeMessage.value = '已加入刮削队列。';
           } catch (e) {
             rescrapeError.value = true;
             rescrapeMessage.value = e.message;
+          } finally {
             rescraping.value = false;
           }
         }
@@ -3510,7 +3507,6 @@
         }
 
         function onSeriesInput() {
-          pickedSeriesClusterId.value = null;
           clearTimeout(seriesTimer);
           const q = form.value.series.trim();
           if (!q) { seriesSuggestions.value = []; return; }
@@ -3521,9 +3517,7 @@
         }
         function closeSeriesDropdown() { setTimeout(() => { seriesSuggestions.value = []; }, 150); }
         function pickSeries(s) {
-          // s is {name, name_zh, cluster_id}
-          form.value.series = s.name_zh || s.name;
-          pickedSeriesClusterId.value = s.cluster_id || null;
+          form.value.series = s.name;
           seriesSuggestions.value = [];
         }
 
@@ -3569,12 +3563,9 @@
             actors: f.actors.map(a => ({ name: a.name || '', name_zh: a.name_zh || '' })),
             tags: f.tags.map(t => t.name),
           };
-          if (pickedSeriesClusterId.value) {
-            payload.series_cluster_id = pickedSeriesClusterId.value;
-          }
           if (f.score !== '' && f.score !== null) payload.score = parseFloat(f.score);
           try {
-            const r = await fetch('/api/videos/' + route.params.code, {
+            const r = await fetch('/api/videos/' + encodeURIComponent(video.value.code), {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload),
@@ -3667,7 +3658,7 @@
               copiedPaths.value = next;
             }, 2000);
           },
-          selectedPart, copied, playVideo, copyStreamUrl,
+          selectedPart, copied, playVideo, copyStreamUrl, streamUrl, playing, playbackError, canPlay, backToLibrary,
           coverFileInput, coverUploading, coverSrc, triggerCoverUpload, uploadCover,
           editingCode, codeDraft, startEditCode, cancelEditCode, saveCode,
           confirmDelete,
@@ -3860,7 +3851,8 @@
           const lower = q.value.toLowerCase();
           return items.value.filter(a =>
             a.name.toLowerCase().includes(lower) ||
-            (a.name_zh && a.name_zh.toLowerCase().includes(lower))
+            (a.name_zh && a.name_zh.toLowerCase().includes(lower)) ||
+            a.search_names?.some(name => name.toLowerCase().includes(lower))
           );
         });
         function updateQ(v) { router.replace({ query: { ...route.query, q: v || undefined } }); }
@@ -3884,13 +3876,12 @@
         const filtered = computed(() => {
           if (!q.value) return items.value;
           const lower = q.value.toLowerCase();
-          return items.value.filter(s => s.series.toLowerCase().includes(lower));
+          return items.value.filter(s => s.series.toLowerCase().includes(lower) || s.raw_name?.toLowerCase().includes(lower));
         });
         function updateQ(v) { router.replace({ query: { ...route.query, q: v || undefined } }); }
         function seriesLink(s) {
-          return s.id != null
-            ? { path: '/series-detail', query: { cid: s.id, name: s.series } }
-            : { path: '/series-detail', query: { s: s.series } };
+          return { path: '/series-detail', query: s.final_id ? { final: s.final_id } :
+            s.jp_id ? { jp: s.jp_id } : { s: s.raw_name } };
         }
         onMounted(async () => {
           items.value = await apiFetch('/api/series/all') || [];
@@ -3911,21 +3902,23 @@
         const items = ref([]), total = ref(0), limit = 24, loading = ref(true);
         const page = computed(() => parseInt(route.query.page) || 1);
         const sort = computed(() => route.query.sort || 'date');
-        const displayName = computed(() => route.query.name || route.query.s || '');
+        const displayName = ref('系列');
         async function load() {
-          const cid = route.query.cid;
-          const s = route.query.s;
-          if (!cid && !s) return;
+          const { jp, final, s } = route.query;
+          const query = new URLSearchParams({page: page.value, limit, sort: sort.value});
+          if (final) query.set('final', final);
+          else if (jp) query.set('jp', jp);
+          else if (s) query.set('s', s);
+          else { loading.value = false; return; }
           loading.value = true;
-          const qs = cid ? `cid=${cid}` : `s=${encodeURIComponent(s)}`;
-          const d = await apiFetch(`/api/series/videos?${qs}&page=${page.value}&limit=${limit}&sort=${sort.value}`);
-          if (d) { items.value = d.items; total.value = d.total; }
+          const d = await apiFetch('/api/series/videos?' + query);
+          if (d) { items.value = d.items; total.value = d.total; displayName.value = d.name || '系列'; }
           loading.value = false;
           restoreScroll();
         }
         function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
         function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
-        watch(() => [route.query.cid, route.query.s, route.query.page, route.query.sort], load);
+        watch(() => [route.query.jp, route.query.final, route.query.s, route.query.page, route.query.sort], load);
         onMounted(load);
         return { items, total, page, limit, loading, sort, displayName, changePage, changeSort };
       }
@@ -4247,6 +4240,127 @@
       }
     };
 
+    const SeriesReviewView = {
+      template: '#tpl-series-review',
+      setup() {
+        const reports = ref([]), reportId = ref(''), report = ref(null), drafts = ref([]);
+        const busy = ref(false), error = ref(''), message = ref(''), visible = ref(30);
+        const activeStates = ['PENDING', 'RUNNING', 'WAITING'];
+        const hasActive = computed(() => reports.value.some(item => activeStates.includes(item.status)));
+        const members = computed(() => Object.fromEntries((report.value?.result?.members || []).map(row => [row.id, row])));
+        const finalNames = computed(() => Object.fromEntries(Object.values(members.value)
+          .filter(row => row.id_final).map(row => [row.id_final, row.final_name])));
+        const selectedCount = computed(() => drafts.value.filter(group => group.accept).length);
+        const base = '/api/admin/series/reports';
+        let sequence = 0, nextKey = 0;
+        const formatDate = value => new Date(value * 1000).toLocaleString('zh-CN');
+        const reportStatus = item => item.published_at ? '已发布' : ({
+          PENDING: '待执行', RUNNING: '生成中', WAITING: '等待模型', DONE: '待审核',
+          FAILED: '生成失败', CANCELLED: '已取消', SKIPPED: '已跳过'
+        }[item.status] || item.status);
+        const createDraft = group => ({
+          ...group, key: nextKey++, ids: [...group.member_ids], accept: false, finalId: null, query: ''
+        });
+        async function request(url, options) {
+          const response = await fetch(url, options);
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || '请求失败');
+          return data;
+        }
+        async function loadReport() {
+          const version = ++sequence;
+          const id = reportId.value;
+          report.value = null;
+          drafts.value = [];
+          visible.value = 30;
+          error.value = '';
+          if (!id) return;
+          try {
+            const data = await request(base + '/' + encodeURIComponent(id));
+            if (version !== sequence) return;
+            report.value = data;
+            message.value = reportStatus(data);
+            error.value = data.error || '';
+            drafts.value = (data.result?.groups || []).map(createDraft);
+          } catch (err) { if (version === sequence) error.value = err.message; }
+        }
+        async function refresh() {
+          try {
+            reports.value = await request(base);
+            if (!reportId.value && reports.value.length) {
+              reportId.value = reports.value[0].id;
+              await loadReport();
+            } else {
+              const current = reports.value.find(item => item.id === reportId.value);
+              if (current && (current.status !== report.value?.status || current.published_at !== report.value?.published_at)) {
+                await loadReport();
+              }
+            }
+          } catch (err) { error.value = err.message; }
+        }
+        async function generate() {
+          busy.value = true;
+          error.value = '';
+          try {
+            const result = await request(base, {method: 'POST'});
+            reportId.value = result.id;
+            await loadReport();
+            await refresh();
+          } catch (err) { error.value = err.message; }
+          finally { busy.value = false; }
+        }
+        function addGroup() {
+          drafts.value.unshift({...createDraft({member_ids: [], name: ''}), accept: true});
+        }
+        function existingGroups(group) {
+          return [...new Set(group.ids.map(id => members.value[id].id_final).filter(Boolean))];
+        }
+        function removeMember(group, id) {
+          group.ids = group.ids.filter(value => value !== id);
+          if (!existingGroups(group).includes(group.finalId)) group.finalId = null;
+        }
+        function availableMembers(group) {
+          const query = group.query.toLowerCase();
+          return Object.values(members.value).filter(row => !group.ids.includes(row.id) &&
+            [row.raw_name, row.name_zh, row.maker, row.sample].some(value => value?.toLowerCase().includes(query))).slice(0, 30);
+        }
+        function addMember(group, event) {
+          const id = Number(event.target.value);
+          if (id && !group.ids.includes(id)) group.ids.push(id);
+          event.target.value = '';
+          group.query = '';
+        }
+        async function publish() {
+          const groups = drafts.value.filter(group => group.accept)
+            .map(group => ({name: group.name, member_ids: group.ids, final_id: group.finalId}));
+          if (groups.some(group => !group.name || !group.member_ids.length)) {
+            error.value = '请为每个选中的组填写名称并选择成员。';
+            return;
+          }
+          if (!window.confirm(`发布 ${groups.length} 组审核结果？系列页面将立即按新归属显示。`)) return;
+          busy.value = true;
+          error.value = '';
+          try {
+            await request(base + '/' + encodeURIComponent(reportId.value) + '/publish', {
+              method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({groups})
+            });
+            await loadReport();
+            await refresh();
+          } catch (err) { error.value = err.message; }
+          finally { busy.value = false; }
+        }
+        let timer;
+        onMounted(() => {
+          refresh();
+          timer = setInterval(() => { if (!busy.value && !document.hidden) refresh(); }, 5000);
+        });
+        Vue.onUnmounted(() => clearInterval(timer));
+        return {reports, reportId, report, drafts, busy, error, message, visible, hasActive, members, finalNames,
+          selectedCount, formatDate, reportStatus, loadReport, refresh, generate, addGroup, existingGroups,
+          removeMember, availableMembers, addMember, publish};
+      }
+    };
+
     const router = createRouter({
       history: createWebHashHistory(),
       scrollBehavior(to, from, savedPosition) {
@@ -4258,7 +4372,12 @@
       },
       routes: [
         { path: '/', component: DashboardView },
+        { path: '/library-stats', redirect: '/' },
         { path: '/videos', component: HomeView },
+        { path: '/admin', component: AdminView },
+        { path: '/admin/series', component: SeriesReviewView },
+        { path: '/subtitle-review', component: SubtitleReviewView },
+        { path: '/scrape-progress', component: ScrapeProgressView },
         { path: '/search', component: SearchView },
         { path: '/video/:code', component: VideoDetail },
         { path: '/actor/:id', component: ActorView },
@@ -4270,7 +4389,7 @@
         { path: '/prefixes', component: AllPrefixesView },
         { path: '/prefix/:code', component: PrefixDetailView },
         { path: '/recommend', component: RecommendView },
-        { path: '/ltx-scrape', component: LtxScrapeView },
+        { path: '/ltx-scrape', redirect: '/videos' },
       ]
     });
 
@@ -4295,30 +4414,36 @@
       },
       template: `
     <div class="min-h-screen">
-      <div class="sticky top-0 z-50">
+      <a class="skip-link" href="#main-content" @click.prevent="$refs.main.focus()">跳到主要内容</a>
+      <div class="site-chrome sticky top-0 z-50">
         <!-- Navbar -->
         <header class="glass-nav px-4 py-3 flex items-center gap-4">
-          <router-link to="/" class="text-indigo-400 font-bold text-lg tracking-tight flex-shrink-0">AVideo</router-link>
-          <form @submit.prevent="doSearch" class="flex-1 max-w-xl">
+          <router-link to="/" class="brand">
+            <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></span>
+            AVideo
+          </router-link>
+          <form @submit.prevent="doSearch" class="site-search-form" role="search">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.2" /><path d="m16 16 4 4" /></svg>
             <input v-model="searchQ" type="text" placeholder="搜索番号、标题、片商…"
               @compositionstart="composing = true"
               @compositionend="composing = false"
-              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
+              aria-label="搜索影片" class="site-search w-full border rounded-lg px-4 py-1.5 text-sm" />
           </form>
         </header>
         <!-- Sub-nav -->
-        <nav class="glass-subnav px-4 flex overflow-x-auto">
-          <router-link to="/videos"    class="nav-tab">影片</router-link>
-          <router-link to="/tags"     class="nav-tab">类别</router-link>
-          <router-link to="/actors"   class="nav-tab">演员</router-link>
-          <router-link to="/series"   class="nav-tab">系列</router-link>
-          <router-link to="/prefixes" class="nav-tab">番号</router-link>
+        <nav class="glass-subnav px-4 flex overflow-x-auto" aria-label="主导航">
+          <router-link to="/videos" class="nav-tab" :class="{ 'nav-current': $route.path.startsWith('/video/') || $route.path === '/search' }">影片</router-link>
+          <router-link to="/tags" class="nav-tab" :class="{ 'nav-current': $route.path.startsWith('/tag/') }">类别</router-link>
+          <router-link to="/actors" class="nav-tab" :class="{ 'nav-current': $route.path.startsWith('/actor/') }">演员</router-link>
+          <router-link to="/series" class="nav-tab" :class="{ 'nav-current': $route.path === '/series-detail' }">系列</router-link>
+          <router-link to="/prefixes" class="nav-tab" :class="{ 'nav-current': $route.path.startsWith('/prefix/') }">番号</router-link>
           <router-link to="/recommend" class="nav-tab">推荐</router-link>
-          <router-link to="/ltx-scrape" class="nav-tab">LTX</router-link>
+          <router-link to="/scrape-progress" class="nav-tab nav-operations">刮削进度</router-link>
+          <router-link to="/admin" class="nav-tab" :class="{ 'nav-current': $route.path === '/subtitle-review' || $route.path === '/admin/series' }">管理</router-link>
         </nav>
       </div>
       <!-- Page -->
-      <main class="px-4 py-6 max-w-screen-2xl mx-auto">
+      <main class="site-main" id="main-content" ref="main" tabindex="-1">
         <transition name="fade" mode="out-in">
           <router-view :key="$route.path" />
         </transition>

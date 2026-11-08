@@ -7,8 +7,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 import re
-import requests
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
 
 # 动态引入 config
@@ -17,13 +16,25 @@ project_root = Path(__file__).resolve().parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from config import COVERS_DIR, AVATARS_DIR, JAVDB_COOKIES_FILE
+from config import JAVDB_COOKIES_FILE
 
 logger = logging.getLogger(__name__)
 
 
 class ScrapeInterrupted(Exception):
     pass
+
+
+_browser_operation = ContextVar('browser_operation', default=False)
+
+
+@contextmanager
+def browser_operation():
+    token = _browser_operation.set(True)
+    try:
+        yield
+    finally:
+        _browser_operation.reset(token)
 
 
 _scrape_control = ContextVar('scrape_control', default=None)
@@ -270,90 +281,7 @@ def _is_cloudflare_challenge(page: Page) -> bool:
     except Exception:
         return False
 
-def download_cover(image_url: str, code: str) -> Optional[str]:
-    """下载封面图并返回本地相对路径"""
-    try:
-        # JavDB 的图片通常在 jdbimgs.com，防御相对较弱，直接用 requests 下载即可
-        # 补全可能缺失的协议头
-        if image_url.startswith('//'):
-            image_url = 'https:' + image_url
-        elif image_url.startswith('/'):
-            image_url = BASE_URL + image_url
-            
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://javdb.com/'
-        }
-        response = requests.get(image_url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            # 获取图片后缀，如 .jpg (用 urlparse 避免 query string 污染后缀)
-            ext = Path(urlparse(image_url).path).suffix
-            if not ext:
-                ext = ".jpg"
-                
-            filename = f"{code}{ext}"
-            file_path = COVERS_DIR / filename
-            
-            with open(file_path, 'wb') as f:
-                f.write(response.content)
-            
-            # 返回相对于 web 静态目录的路径，方便后续 Flask 直接调用
-            return f"covers/{filename}"
-        else:
-            logger.warning(f"⚠️ 下载封面失败，HTTP 状态码: {response.status_code}")
-            return None
-    except Exception as e:
-        logger.error(f"❌ 下载封面发生异常: {e}")
-        return None
-
-def download_avatar(image_url: str, actor_name: str) -> Optional[str]:
-    """下载演员头像并返回本地相对路径"""
-    # 如果是没有头像的占位图，直接跳过节约空间
-    if not image_url or "noavatar" in image_url.lower() or "default" in image_url.lower():
-        logger.warning(f"⚠️ {actor_name} 似乎使用了系统默认占位图，跳过下载。")
-        return None
-
-    try:
-        # 补全可能缺失的协议头
-        if image_url.startswith('//'):
-            image_url = 'https:' + image_url
-        elif image_url.startswith('/'):
-            image_url = BASE_URL + image_url
-            
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://javdb.com/'
-        }
-        response = requests.get(image_url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            # 核心升级：利用 JavDB 图片 URL 自身的特征路径来生成文件名 (如 avatars/y8/y8A.jpg -> y8_y8A.jpg)
-            parsed_url = urlparse(image_url)
-            path_obj = Path(parsed_url.path)
-            
-            if len(path_obj.parts) >= 2:
-                filename = f"{path_obj.parts[-2]}_{path_obj.name}"
-            else:
-                filename = path_obj.name
-                
-            file_path = AVATARS_DIR / filename
-            
-            # 物理去重：如果文件已经存在，说明之前另一个马甲已经下载过这张图了，直接跳过写入，减少磁盘损耗
-            if not file_path.exists():
-                with open(file_path, 'wb') as f:
-                    f.write(response.content)
-                logger.info(f"🖼️ 成功下载头像: {filename}")
-            else:
-                logger.info(f"⏭️ 头像物理文件已存在，跳过下载: {filename}")
-            
-            return f"avatars/{filename}"
-        else:
-            logger.warning(f"⚠️ 下载头像失败，HTTP 状态码: {response.status_code} [{actor_name}]")
-        return None
-    except Exception as e:
-        logger.error(f"❌ 下载头像发生异常 [{actor_name}]: {e}")
-        return None
+from .assets import download_cover, download_avatar
 
 
 def _female_actor_names_from_block(block) -> list[str]:
@@ -433,6 +361,15 @@ def parse_detail_page(page: Page, code: str) -> Dict:
         'actors': '',
         'cover_path': ''
     }
+    text_fields = {
+        '日期': 'release_date',
+        '時長': 'duration',
+        '时长': 'duration',
+        '片商': 'maker',
+        '發行': 'publisher',
+        '发行': 'publisher',
+        '系列': 'series',
+    }
 
     try:
         # 1. 抓取日文原标题 (后续留给大模型翻译)
@@ -450,44 +387,39 @@ def parse_detail_page(page: Page, code: str) -> Dict:
             if cover_url:
                 logger.info(f"正在下载封面图: {cover_url}")
                 # 调用下载图片的函数（这一步我们之前已经写好了）
-                data['cover_path'] = download_cover(cover_url, code)
+                if _browser_operation.get():
+                    data['cover_url'] = cover_url
+                else:
+                    data['cover_path'] = download_cover(cover_url, code)
 
         # 3. 抓取面板信息 (日期、片商、演员等)
         panel_blocks = page.locator("div.panel-block")
         for i in range(panel_blocks.count()):
             block = panel_blocks.nth(i)
-            # block_text 形如: "日期: 2023-01-01" 或 "演員: 三上悠亞, 橋本有菜"
-            block_text = block.inner_text().strip()
-            
-            if "日期:" in block_text:
-                data['release_date'] = block.locator("span.value").inner_text().strip()
-            elif "時長:" in block_text:
-                data['duration'] = block.locator("span.value").inner_text().strip()
-            elif "片商:" in block_text:
-                data['maker'] = block.locator("span.value").inner_text().strip()
-            elif "發行:" in block_text:
-                data['publisher'] = block.locator("span.value").inner_text().strip()
-            elif "系列:" in block_text:
-                data['series'] = block.locator("span.value").inner_text().strip()
-            elif "評分:" in block_text:
+            label = re.split(r'[:：]', block.inner_text(), maxsplit=1)[0].strip()
+            if label in text_fields:
+                data[text_fields[label]] = block.locator("span.value").inner_text().strip()
+                if label == "系列":
+                    for link in block.locator("span.value a[href]").all():
+                        try:
+                            href = urlsplit(link.get_attribute("href") or "")
+                        except ValueError:
+                            continue
+                        if href.netloc in ("", "javdb.com", "www.javdb.com") and re.fullmatch(r"/series/[^/]+/?", href.path):
+                            data['series_source_ref'] = href.path.rstrip("/")
+                            break
+            elif label in ('評分', '评分'):
                 score_text = block.locator("span.value").inner_text().strip()
                 # 提取评分数字，如 "4.5分, 由..." -> "4.5"
                 try:
                     data['score'] = float(score_text.split('分')[0].strip())
-                except:
+                except ValueError:
                     pass
-            elif "類別:" in block_text:
+            elif label in ('類別', '类别'):
                 tags = block.locator("span.value a").all_inner_texts()
                 data['categories'] = ",".join([t.strip() for t in tags])
-            elif "演員:" in block_text:
-                actors = _female_actor_names_from_block(block)
-                
-                # 如果过滤后还有演员，再进行拼装
-                if actors:
-                    data['actors'] = ",".join([a.strip() for a in actors])
-                else:
-                    data['actors'] = ""
-                
+            elif label in ('演員', '演员'):
+                data['actors'] = ",".join(_female_actor_names_from_block(block))
                 logger.info(f"提取到女演员: {data['actors']}")
 
         return data
@@ -978,6 +910,8 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
                 if match:
                     avatar_url = match.group(1)
         
+        if _browser_operation.get():
+            return {'avatar_url': avatar_url, 'name_zh': name_zh}
         avatar_path = None
         if avatar_url:
             avatar_path = download_avatar(avatar_url, actor_name)
@@ -994,30 +928,5 @@ def scrape_actor_info(page: Page, actor_name: str) -> Tuple[Optional[str], Optio
 
 # ----------- 本地独立测试块 -----------
 if __name__ == "__main__":
-    from playwright_stealth import Stealth
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    
-    # 找一个极其标准的番号进行打样测试
-    test_code = "CJOD-503" 
-    
-    print("="*50)
-    print(f"🚀 开始单兵测试刮削器: {test_code}")
-    print("="*50)
-    
-    # 补充：为单兵测试提供启动浏览器的支持
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, args=['--disable-blink-features=AutomationControlled'])
-        context = browser.new_context(
-            viewport={'width': 1280, 'height': 800}
-        )
-        page = context.new_page()
-        Stealth().apply_stealth_sync(page)
-        
-        result = scrape_video_info(page, test_code)
-    
-        if result:
-            print("\n🎉 最终提取到的数据结构：")
-            for k, v in result.items():
-                print(f"  {k:<15}: {v}")
-        else:
-            print("\n💀 刮削失败。请检查日志。")
+    from core.worker_client import WorkerClient
+    print(WorkerClient().scrape('RBD-918'))

@@ -290,3 +290,29 @@ class QueueStore:
             row = dict(conn.execute('SELECT * FROM scrape_worker WHERE id=1').fetchone())
         row['alive'] = bool(row['heartbeat'] and time.time() - row['heartbeat'] < 20)
         return row
+
+
+class StoredJob:
+    def __init__(self, store, task_id, execution_id=None):
+        self.store, self.job_id = store, task_id
+        self.execution_id = execution_id
+        self.queue = self
+
+    def put(self, event):
+        if self.execution_id is None:
+            self.store.event(self.job_id, event)
+        else:
+            self.store.event(self.job_id, event, execution_id=self.execution_id)
+
+    def checkpoint(self, value=None):
+        if self.execution_id is None:
+            return self.store.checkpoint(self.job_id, value)
+        with self.store.connect(write=value is not None) as conn:
+            row = conn.execute('SELECT * FROM scrape_tasks WHERE id=?', (self.job_id,)).fetchone()
+            if not row or row['execution_id'] != self.execution_id or row['cancel_requested']:
+                from core.task_policy import TargetChanged
+                raise TargetChanged('任务已取消或执行版本已改变')
+            if value is not None:
+                conn.execute('UPDATE scrape_tasks SET checkpoint_json=? WHERE id=?', (json.dumps(value, ensure_ascii=False), self.job_id))
+                return value
+            return json.loads(row['checkpoint_json'])

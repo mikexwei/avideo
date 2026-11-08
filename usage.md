@@ -109,29 +109,11 @@ playwright install chromium
 
 ## 高级工具
 
-### 系列名聚类（去重合并）
+### 系列翻译与聚合审核
 
-将数据库中拼写相近或属于同一系列的 `series` 字段合并为统一名称，分两步走：
+影片保留来源系列名。系统先查已有的简体译名，缺少时创建「翻译中」记录并提交异步任务。翻译失败的任务可以在服务管理的工作流列表重试。
 
-**Step 1：发现并生成聚类方案**
-
-```bash
-.venv/bin/python utils/cluster_series.py
-```
-
-- 使用 NLP 相似度 + Ollama（qwen2.5:32b）双重验证
-- 结果写入 `series_clusters` 表（`is_reviewed=0`）和 `data/logs/cluster_series_dryrun_zh.md`
-- 需要人工审查表中数据，确认无误的行将 `is_reviewed` 改为 `1`
-
-**Step 2：应用已审核的结果**
-
-```bash
-# 先确认（开启 DRY_RUN=True，默认）
-.venv/bin/python utils/cluster_series.py --apply
-
-# 在 cluster_series.py 中将 DRY_RUN 改为 False 后再执行
-.venv/bin/python utils/cluster_series.py --apply
-```
+进入「管理 → 系列聚合」，点击「生成系列聚合报告」。BGE-M3 只生成候选。管理员核对原名、译名、片商和代表番号，可调整成员与最终名称，再点击「发布审核结果」应用归属。历史聚合表仅用于复用精确对应的译文。
 
 ---
 

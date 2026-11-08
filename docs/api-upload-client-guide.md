@@ -478,3 +478,11 @@ http://10.0.0.30:8000/#/video/<code>
 - `add-auto` 一次只能处理一个番号组。
 - JavDB 刮削依赖服务端常驻浏览器状态。
 - 当前接口无认证、无 API key、无访问频率限制。
+
+## Three-process workflow update
+
+Automatic upload performs file placement and initial database insertion synchronously, then returns HTTP 202 with the existing `job_id`. Batch and single-video rescrape also return 202. Continue using the existing SSE URL, or poll `GET /api/jobs/<job_id>` for status and result. Check HTTP success with a 2xx range rather than an exact 200 comparison for these operations.
+
+Browser and model operations are asynchronous. A queued job can remain waiting while either background service is stopped or the browser is cooling down. Open `/admin` to view and control Event Consumer and Browser Service separately. Manual upload, replacement, deletion and local renaming retain their synchronous responses.
+
+All LTX endpoints return HTTP 410 during this phase. General browser login operations have moved to `POST /api/admin/browser/login-status` and `POST /api/admin/browser/open-login`; both return 202 with a task ID and observe the browser cooldown.
