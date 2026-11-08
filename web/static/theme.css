@@ -19,7 +19,7 @@
   --text-small: 13px;
   --text-body: 16px;
   --text-section: 18px;
-  --text-title: clamp(27px, 3.6vw, 42px);
+  --text-title: clamp(21px, 2.25vw, 26px);
   --control-height: 36px;
   --control-radius: 8px;
   --radius: 12px;
@@ -350,28 +350,8 @@ button.ui-icon-button { min-width: var(--control-height); }
 .site-main :focus-visible { scroll-margin-top: 160px; }
 .section-kicker, .page-head .section-kicker { color: var(--primary); font-size: 12px; font-weight: 700; letter-spacing: .14em; margin-bottom: 8px; }
 
-.library-hero {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  display: grid;
-  align-items: end;
-  min-height: clamp(236px, 28vw, 348px);
-  padding: clamp(20px, 4vw, 56px);
-  margin-bottom: clamp(24px, 4vw, 44px);
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  background: radial-gradient(ellipse at 90% 0%, #45302a 0%, #211d25 40%, #17171e 80%);
-}
-.library-hero-compact { min-height: auto; padding-block: 22px; }
-.library-hero-art { position: absolute; inset: 0 0 0 auto; z-index: -2; width: 76%; height: 100%; object-fit: cover; }
-.library-hero::after { content: ""; position: absolute; z-index: -1; inset: 0; background: linear-gradient(90deg, #15151c 2%, #15151cf7 24%, #15151c38 85%), linear-gradient(0deg, #15151cde, transparent 72%); }
-.library-hero h1 { font-size: clamp(42px, 7vw, 85px); line-height: 1.04; letter-spacing: -.035em; }
-.library-hero-compact h1 { font-size: var(--text-title); }
-.library-count { margin-top: 12px; color: var(--muted); }
-.library-destinations, .watch-actions, .actor-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.watch-actions, .actor-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .library-heading, .film-detail-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-.library-heading h2 { font-size: clamp(20px, 2.5vw, 30px); }
 .library-toolbar { border-radius: 12px; margin-bottom: 20px; }
 .film-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(10px, 1.6vw, 22px); }
 .video-card, .actor-tile { display: block; position: relative; min-width: 0; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); transition: border-color .18s, background-color .18s; }
@@ -385,7 +365,18 @@ button.ui-icon-button { min-width: var(--control-height); }
 .video-card-title { font-weight: 650; overflow-wrap: anywhere; }
 .film-detail-grid { display: grid; gap: 18px 26px; }
 .film-detail-grid > * { min-width: 0; }
-.film-detail-title h1 { text-wrap: balance; overflow-wrap: anywhere; }
+.site-main .film-detail-title h1 { font-size: clamp(18px, 2vw, 23px); overflow-wrap: anywhere; }
+.film-playback-history { margin-top: 14px; }
+.film-playback-summary { display: block; padding: 12px 14px; border-radius: inherit; cursor: pointer; list-style: none; }
+.film-playback-summary::-webkit-details-marker { display: none; }
+.film-playback-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 650; }
+.film-playback-chevron { flex: none; color: var(--muted); }
+.film-playback-history[open] .film-playback-chevron { transform: rotate(180deg); }
+.film-playback-stats { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1fr); gap: 8px 12px; margin-top: 10px; }
+.film-playback-stats small { display: block; margin-bottom: 2px; color: var(--muted); font-size: 12px; }
+.film-playback-stats strong, .film-playback-sessions strong { font-size: var(--text-small); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.film-playback-sessions, .film-playback-empty { margin-inline: 14px; padding-block: 10px; border-top: 1px solid var(--line); font-size: var(--text-small); }
+.film-playback-sessions li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding-block: 5px; }
 .film-code-edit { font-size: 15px; min-height: 36px; cursor: pointer; }
 .film-code-edit:hover { text-decoration: underline; }
 .watch-stage { border: 1px solid var(--line); border-radius: 16px; }
@@ -415,10 +406,8 @@ button.ui-icon-button { min-width: var(--control-height); }
 }
 @media (min-width: 900px) {
   .film-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .film-detail-grid { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-rows: auto 1fr; align-items: start; }
-  .film-detail-title { grid-column: 2; grid-row: 1; }
-  .film-detail-media { grid-column: 1; grid-row: 1 / span 2; }
-  .film-detail-info { grid-column: 2; grid-row: 2; }
+  .film-detail-grid { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; }
+  .film-detail-title { grid-column: 1 / -1; }
 }
 @media (min-width: 1100px) {
   .library-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
@@ -426,9 +415,6 @@ button.ui-icon-button { min-width: var(--control-height); }
 }
 @media (max-width: 600px) {
   .glass-nav, .glass-subnav { padding-inline: 12px; }
-  .library-hero { padding: 20px; }
-  .library-hero-art { width: 100%; }
-  .library-hero::after { background: linear-gradient(90deg, #15151cdb, #15151c50), linear-gradient(0deg, #15151cf7 6%, #15151c25 90%); }
   .actor-profile { grid-template-columns: minmax(68px, 26%) minmax(0, 1fr); }
   .watch-actions { margin-top: 10px; }
 }

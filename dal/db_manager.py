@@ -1,4 +1,4 @@
-from contextlib import closing
+from contextlib import closing, nullcontext
 import re
 import sqlite3
 import logging
@@ -14,7 +14,8 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from config import DB_PATH
-from dal.playback import VIDEO_KEY_SQL, ensure_schema as ensure_playback_schema
+from core.task_policy import SPECIAL_CODE_PREFIXES, is_special_code
+from dal.playback import VIDEO_KEY_SQL, ensure_schema as ensure_playback_schema, move_history
 
 logger = logging.getLogger(__name__)
 
@@ -226,8 +227,9 @@ def get_pending_videos(limit: int = 5, status: str = 'PENDING') -> List[Tuple[in
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
-        sql = "SELECT id, code FROM videos WHERE scrape_status = ? ORDER BY created_at ASC LIMIT ?"
-        cursor.execute(sql, (status.upper(), limit))
+        exclusions = ' AND '.join('UPPER(code) NOT LIKE ?' for _ in SPECIAL_CODE_PREFIXES)
+        sql = f"SELECT id, code FROM videos WHERE scrape_status = ? AND {exclusions} ORDER BY created_at ASC LIMIT ?"
+        cursor.execute(sql, (status.upper(), *(prefix + '-%' for prefix in SPECIAL_CODE_PREFIXES), limit))
         results = cursor.fetchall()
 
         return results
@@ -280,23 +282,20 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             ))
             
             # 2. 处理演员 (Actors) 的多对多入库
-            placeholders = ','.join('?' * len(target_video_ids))
-            cursor.execute(
-                f"DELETE FROM video_actor_link WHERE video_id IN ({placeholders})",
-                target_video_ids,
-            )
-            actors_str = data.get('actors', '')
-            if actors_str:
-                # 把逗号分隔的字符串拆成列表，并去掉两边空格
-                actor_list = dict.fromkeys(_actor_name_key(a) for a in actors_str.split(',') if a.strip())
-                for actor_name in actor_list:
-                    actor_id, ignored, actor_created = _get_or_create_actor(cursor, actor_name)
-                    if not ignored:
-                        if actor_created:
-                            new_actors.append((actor_id, actor_name))
-                        # 为所有具有相同 code 的 video_id 插入关联表
-                        for t_v_id in target_video_ids:
-                            cursor.execute("INSERT OR IGNORE INTO video_actor_link (video_id, actor_id) VALUES (?, ?)", (t_v_id, actor_id))
+            actor_list = dict.fromkeys(_actor_name_key(a) for a in (data.get('actors') or '').split(',') if a.strip())
+            actor_ids = []
+            for actor_name in actor_list:
+                actor_id, ignored, actor_created = _get_or_create_actor(cursor, actor_name)
+                if not ignored:
+                    actor_ids.append(actor_id)
+                    if actor_created:
+                        new_actors.append((actor_id, actor_name))
+            # An incomplete scrape must preserve known actor links.
+            if actor_ids:
+                placeholders = ','.join('?' * len(target_video_ids))
+                cursor.execute(f"DELETE FROM video_actor_link WHERE video_id IN ({placeholders})", target_video_ids)
+                cursor.executemany("INSERT OR IGNORE INTO video_actor_link (video_id, actor_id) VALUES (?, ?)",
+                                   [(video_id, actor_id) for video_id in target_video_ids for actor_id in actor_ids])
 
             # 3. 处理标签/类别 (Tags/Categories) 的多对多入库
             tags_str = data.get('categories', '')
@@ -887,55 +886,52 @@ def search_series(q: str, limit: int = 10) -> List[Dict[str, Any]]:
             ORDER BY name LIMIT ?""", (like, like, like, limit)).fetchall())
 
 
+def _patch_video_relations(cursor, code, actor_names, tag_names):
+    cursor.execute("SELECT id FROM videos WHERE code = ?", (code,))
+    video_ids = [r[0] for r in cursor.fetchall()]
+    if not video_ids:
+        return False
+    ph = ','.join('?' * len(video_ids))
+    if actor_names is not None:
+        cursor.execute(f"DELETE FROM video_actor_link WHERE video_id IN ({ph})", video_ids)
+        for entry in actor_names:
+            if isinstance(entry, dict):
+                name = (entry.get('name') or '').strip()
+                name_zh = (entry.get('name_zh') or '').strip()
+            else:
+                name = entry.strip()
+                name_zh = ''
+            if not name:
+                continue
+            actor_id, _, _ = _get_or_create_actor(cursor, name, name_zh)
+            for vid in video_ids:
+                cursor.execute("INSERT OR IGNORE INTO video_actor_link (video_id, actor_id) VALUES (?, ?)", (vid, actor_id))
+    if tag_names is not None:
+        cursor.execute(f"DELETE FROM video_tag_link WHERE video_id IN ({ph})", video_ids)
+        for name in tag_names:
+            name = _to_simplified(name.strip())
+            if not name:
+                continue
+            cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+            cursor.execute("SELECT id FROM tags WHERE name = ?", (name,))
+            row = cursor.fetchone()
+            if row:
+                for vid in video_ids:
+                    cursor.execute("INSERT OR IGNORE INTO video_tag_link (video_id, tag_id) VALUES (?, ?)", (vid, row[0]))
+    return True
+
+
 def patch_video_relations(code: str, actor_names: Optional[List[str]] = None, tag_names: Optional[List[str]] = None) -> bool:
     """Replace actor and/or tag links for all rows sharing the given code."""
     if actor_names is None and tag_names is None:
         return True
-    conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("PRAGMA foreign_keys = ON;")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM videos WHERE code = ?", (code,))
-        video_ids = [r[0] for r in cursor.fetchall()]
-        if not video_ids:
-            return False
-        ph = ','.join('?' * len(video_ids))
-        if actor_names is not None:
-            cursor.execute(f"DELETE FROM video_actor_link WHERE video_id IN ({ph})", video_ids)
-            for entry in actor_names:
-                if isinstance(entry, dict):
-                    name = (entry.get('name') or '').strip()
-                    name_zh = (entry.get('name_zh') or '').strip()
-                else:
-                    name = entry.strip()
-                    name_zh = ''
-                if not name:
-                    continue
-                actor_id, _, _ = _get_or_create_actor(cursor, name, name_zh)
-                for vid in video_ids:
-                    cursor.execute("INSERT OR IGNORE INTO video_actor_link (video_id, actor_id) VALUES (?, ?)", (vid, actor_id))
-        if tag_names is not None:
-            cursor.execute(f"DELETE FROM video_tag_link WHERE video_id IN ({ph})", video_ids)
-            for name in tag_names:
-                name = _to_simplified(name.strip())
-                if not name:
-                    continue
-                cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
-                cursor.execute("SELECT id FROM tags WHERE name = ?", (name,))
-                row = cursor.fetchone()
-                if row:
-                    for vid in video_ids:
-                        cursor.execute("INSERT OR IGNORE INTO video_tag_link (video_id, tag_id) VALUES (?, ?)", (vid, row[0]))
-        conn.commit()
-        logger.info(f"✏️ patch_video_relations [{code}]: actors={actor_names is not None}, tags={tag_names is not None}")
-        return True
+        with closing(_get_conn()) as conn, conn:
+            conn.execute("PRAGMA foreign_keys = ON")
+            return _patch_video_relations(conn.cursor(), code, actor_names, tag_names)
     except sqlite3.Error as e:
         logger.error(f"❌ patch_video_relations 失败 [{code}]: {e}")
         return False
-    finally:
-        if conn:
-            conn.close()
 
 
 def add_existing_tags_to_video(code: str, tag_names: List[str]) -> bool:
@@ -1425,34 +1421,29 @@ def delete_video(code: str) -> Dict[str, Any]:
             conn.close()
 
 
-def get_video_file_path(code: str, part: Optional[str] = None) -> Optional[str]:
+def get_video_file_path(code: str, part: Optional[str] = None, *, connection=None) -> Optional[str]:
     """Return original_file_path for given code (and optionally part)."""
-    conn = None
     try:
-        conn = _get_conn()
-        cursor = conn.cursor()
-        resolved_code = _resolve_video_code(cursor, code)
-        if not resolved_code:
-            return None
-
-        if part:
-            cursor.execute(
-                "SELECT original_file_path FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1",
-                (resolved_code, part),
-            )
-        else:
-            cursor.execute(
-                "SELECT original_file_path FROM videos WHERE code = ? ORDER BY id ASC LIMIT 1",
-                (resolved_code,),
-            )
-        row = cursor.fetchone()
-        return row["original_file_path"] if row else None
+        with (closing(_get_conn()) if connection is None else nullcontext(connection)) as conn:
+            cursor = conn.cursor()
+            resolved_code = _resolve_video_code(cursor, code)
+            if not resolved_code:
+                return None
+            if part:
+                cursor.execute(
+                    "SELECT original_file_path FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1",
+                    (resolved_code, part),
+                )
+            else:
+                cursor.execute(
+                    "SELECT original_file_path FROM videos WHERE code = ? ORDER BY id ASC LIMIT 1",
+                    (resolved_code,),
+                )
+            row = cursor.fetchone()
+            return row["original_file_path"] if row else None
     except sqlite3.Error as e:
         logger.error(f"❌ get_video_file_path 失败 [{code}]: {e}")
         return None
-    finally:
-        if conn:
-            conn.close()
 
 
 def patch_video_file_path(code: str, original_file_path: str, part: Optional[str] = None) -> Dict[str, Any]:
@@ -1561,7 +1552,7 @@ def replace_video_file(
         has_c = subtitle_zh
         has_u = uncensored_leaked or uncensored_native
         suffix = '-UC' if (has_c and has_u) else '-C' if has_c else '-U' if has_u else ''
-        new_code = re.sub(r'(?i)-(?:uc|u|c)$', '', row['code']) + suffix
+        new_code = row['code'] if is_special_code(row['code']) else re.sub(r'(?i)-(?:uc|u|c)$', '', row['code']) + suffix
 
         cursor.execute('SELECT id FROM videos WHERE code = ?', (resolved_code,))
         all_ids = [r['id'] for r in cursor.fetchall()]
@@ -1693,7 +1684,7 @@ def replace_multipart_with_single_file(
         has_c = subtitle_zh
         has_u = uncensored_leaked or uncensored_native
         suffix = '-UC' if (has_c and has_u) else '-C' if has_c else '-U' if has_u else ''
-        new_code = re.sub(r'(?i)-(?:uc|u|c)$', '', keep_row['code']) + suffix
+        new_code = keep_row['code'] if is_special_code(keep_row['code']) else re.sub(r'(?i)-(?:uc|u|c)$', '', keep_row['code']) + suffix
 
         cursor.execute(
             f'SELECT t.name FROM tags t JOIN video_tag_link vtl ON vtl.tag_id = t.id WHERE vtl.video_id IN ({ph})',
@@ -1809,6 +1800,7 @@ def rename_video_file(
             'UPDATE videos SET code = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?',
             (new_code, resolved_code),
         )
+        move_history(conn, resolved_code, new_code)
         conn.commit()
         logger.info(f'✏️  rename_video_file [{code} -> {new_code}]: {new_path}')
         return {'ok': True}
@@ -1820,7 +1812,7 @@ def rename_video_file(
             conn.close()
 
 
-def patch_actor(actor_id: int, fields: Dict[str, Any]) -> Optional[int]:
+def patch_actor(actor_id: int, fields: Dict[str, Any], *, enqueue_rename=None) -> Optional[int]:
     """Update an actor, returning the surviving ID if the new name matches another actor."""
     allowed = {key: _actor_name_key(value) if isinstance(value, str) else value
                for key, value in fields.items() if key in {'name', 'name_zh'}}
@@ -1833,16 +1825,32 @@ def patch_actor(actor_id: int, fields: Dict[str, Any]) -> Optional[int]:
         cursor = conn.cursor()
         if not cursor.execute("SELECT 1 FROM actors WHERE id = ?", (actor_id,)).fetchone():
             return None
-        if 'name' in allowed:
-            conflict = _actor_by_name(cursor, fields['name'].strip(), exclude_id=actor_id, include_display=True)
-            if conflict is not None:
-                _merge_actor_rows(conn, actor_id, conflict[0])
-                conn.commit()
-                return conflict[0]
-        set_clause = ', '.join(f"{key} = ?" for key in allowed)
-        cursor.execute(f"UPDATE actors SET {set_clause} WHERE id = ?", [*allowed.values(), actor_id])
+        conflict = (_actor_by_name(cursor, fields['name'].strip(), exclude_id=actor_id, include_display=True)
+                    if 'name' in allowed else None)
+        target_id = conflict[0] if conflict is not None else actor_id
+        if enqueue_rename is not None:
+            from core.workflows import video_file_record
+            from utils.rename_and_move_videos import build_filename
+            videos = conn.execute("""SELECT v.* FROM videos v WHERE v.deleted=0 AND EXISTS (
+                SELECT 1 FROM video_actor_link l WHERE l.video_id=v.id AND l.actor_id IN (?,?))
+                ORDER BY v.id""", (actor_id, target_id)).fetchall()
+            old_names = {row['id']: build_filename(video_file_record(conn, row)) for row in videos}
+        if conflict is not None:
+            _merge_actor_rows(conn, actor_id, target_id)
+        else:
+            set_clause = ', '.join(f"{key} = ?" for key in allowed)
+            cursor.execute(f"UPDATE actors SET {set_clause} WHERE id = ?", [*allowed.values(), actor_id])
+        if enqueue_rename is not None:
+            groups = {}
+            for row in videos:
+                record = video_file_record(conn, row)
+                name = build_filename(record)
+                if name != old_names[record.id] and name != record.original_file_path.name:
+                    groups.setdefault(record.code, []).append(record.id)
+            for code, video_ids in groups.items():
+                enqueue_rename(conn, code, video_ids)
         conn.commit()
-        return actor_id
+        return target_id
     except sqlite3.Error as e:
         logger.error(f"❌ patch_actor 失败 [actor_id={actor_id}]: {e}")
         return None
@@ -1917,57 +1925,68 @@ def patch_video_cover(code: str, cover_path: str) -> bool:
             conn.close()
 
 
-def rename_video_code(old_code: str, new_code: str) -> bool:
-    """Rename code for all rows sharing old_code. Fails if new_code already exists."""
-    conn = None
-    try:
-        conn = _get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM videos WHERE code = ? LIMIT 1", (new_code,))
-        if cursor.fetchone():
-            logger.warning(f"rename_video_code: new_code '{new_code}' already exists")
-            return False
-        cursor.execute("UPDATE videos SET code = ? WHERE code = ?", (new_code, old_code))
-        conn.commit()
-        logger.info(f"✏️ rename_video_code: {old_code} → {new_code}")
-        return cursor.rowcount > 0
-    except sqlite3.Error as e:
-        logger.error(f"❌ rename_video_code 失败: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
+PATCHABLE_FIELDS = {
+    'title_jp', 'title_zh', 'title_zh_short', 'release_date', 'duration',
+    'maker', 'publisher', 'series', 'score',
+}
 
 
-def patch_video(code: str, fields: Dict[str, Any], *, series_store=None) -> bool:
-    """Update simple scalar fields for all rows sharing the given code."""
+def patch_video(code, fields, *, runtime, actor_names=None, tag_names=None, new_code=None,
+                manual_name=None):
+    """Save metadata and enqueue the corresponding file updates in one transaction."""
+    from core.workflows import video_file_record
+    from utils.rename_and_move_videos import build_filename, sanitize_component
+
     allowed = {k: v for k, v in fields.items() if k in PATCHABLE_FIELDS}
-    if not allowed:
-        return False
-    conn = None
-    try:
-        conn = _get_conn()
+    if new_code is not None:
+        if not isinstance(new_code, str) or not (new_code := new_code.strip()) or new_code != sanitize_component(new_code):
+            raise ValueError('无效的番号')
+    with closing(_get_conn()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         code = _resolve_video_code(cursor, code)
         if code is None:
-            return False
-        set_clause = ', '.join(f"{k} = ?" for k in allowed)
-        values = list(allowed.values()) + [code]
-        cursor.execute(
-            f"UPDATE videos SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE code = ?",
-            values,
-        )
-        changed = cursor.rowcount > 0
-        if changed and series_store is not None:
+            raise ValueError('影片不存在')
+        target_code = new_code or code
+        code_changed = target_code != code
+        if not (allowed or actor_names is not None or tag_names is not None or code_changed or manual_name):
+            raise ValueError('没有可保存的修改')
+        if code_changed and conn.execute(
+            'SELECT 1 FROM videos WHERE UPPER(code)=UPPER(?) AND code<>?', (target_code, code)
+        ).fetchone():
+            raise ValueError('目标番号已存在')
+        rows = conn.execute('SELECT * FROM videos WHERE code=? AND deleted=0 ORDER BY id', (code,)).fetchall()
+        if not rows:
+            raise ValueError('影片不存在')
+        track_names = actor_names is not None or bool(allowed.keys() & {'title_jp', 'title_zh', 'title_zh_short'})
+        old_names = {row['id']: build_filename(video_file_record(conn, row)) for row in rows} if track_names else {}
+        if allowed:
+            set_clause = ', '.join(f"{key}=?" for key in allowed)
+            cursor.execute(f"UPDATE videos SET {set_clause}, updated_at=CURRENT_TIMESTAMP WHERE code=?",
+                           [*allowed.values(), code])
+        if actor_names is not None or tag_names is not None:
+            _patch_video_relations(cursor, code, actor_names, tag_names)
+        if code_changed:
+            cursor.execute('UPDATE videos SET code=?,updated_at=CURRENT_TIMESTAMP WHERE code=?', (target_code, code))
+            move_history(conn, code, target_code)
+        if 'series' in allowed:
             from core.series_catalog import attach
-            row = conn.execute('SELECT series FROM videos WHERE code=? ORDER BY id LIMIT 1', (code,)).fetchone()
-            attach(conn, series_store, code, row['series'])
-        conn.commit()
-        logger.info(f"✏️ patch_video [{code}]: {list(allowed.keys())}")
-        return changed
-    except sqlite3.Error as e:
-        logger.error(f"❌ patch_video 失败 [{code}]: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
+            attach(conn, runtime, target_code, allowed['series'])
+
+        video_ids = []
+        payload = {'video_ids': video_ids}
+        if code_changed:
+            payload['move_to_prefix'] = True
+        if not is_special_code(target_code) and (code_changed or track_names or manual_name):
+            for row in conn.execute('SELECT * FROM videos WHERE code=? AND deleted=0 ORDER BY id', (target_code,)):
+                record = video_file_record(conn, row)
+                name = build_filename(record)
+                if manual_name and str(record.original_file_path) == manual_name[0]:
+                    payload['manual_name'] = {'video_id': record.id, 'canonical': name, 'name': manual_name[1]}
+                    video_ids.append(record.id)
+                elif code_changed or (track_names and name != old_names[record.id] and name != record.original_file_path.name):
+                    video_ids.append(record.id)
+        if manual_name and 'manual_name' not in payload:
+            raise ValueError('原文件路径已改变')
+        jobs = [runtime.submit('rename_files', target_code, payload, connection=conn)] if video_ids else []
+        return target_code, jobs

@@ -15,6 +15,7 @@ from werkzeug.utils import secure_filename
 
 from config import DB_PATH, MEDIA_LIBRARIES
 from core import subtitle_cache
+from core.task_policy import is_special_code
 from core.scanner import VIDEO_EXTENSIONS, extract_video_code
 from core.worker_client import ensure_worker
 from core.browser_queue import RuntimeStore
@@ -49,9 +50,6 @@ from dal.db_manager import (
     patch_video,
     patch_video_cover,
     patch_video_file_path,
-    patch_video_relations,
-    rename_video_code,
-    rename_video_file,
     replace_multipart_with_single_file,
     replace_video_file,
     search_actors,
@@ -387,6 +385,12 @@ def _missing_existing_tags(tag_names: list[str]) -> list[str]:
     return [name for name in tag_names if name not in existing]
 
 
+def _literal_video_filename(name):
+    if not name or name.startswith('.') or name.endswith(('.', ' ')) or re.search(r'[\x00-\x1f/:"<>|?*]', name) or chr(92) in name:
+        raise ValueError('无效的文件名')
+    return name
+
+
 @app.post('/api/videos/upload-part')
 def api_upload_part():
     from urllib.parse import unquote
@@ -397,7 +401,11 @@ def api_upload_part():
         return jsonify({'error': 'invalid volume_path or upload_id'}), 400
 
     raw_name = unquote(request.headers.get('X-Dest-Name') or '').strip()
-    safe_name = secure_filename(raw_name)
+    special_upload = is_special_code(request.headers.get('X-Manual-Code-Type'))
+    try:
+        safe_name = _literal_video_filename(raw_name) if special_upload else secure_filename(raw_name)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     if not safe_name:
         return jsonify({'error': 'invalid filename'}), 400
 
@@ -406,7 +414,7 @@ def api_upload_part():
     # (e.g. 489155.com\\@MIAB-679-UC.mp4 -> COMMIAB-679-UC).
     parsed_code, parsed_part = extract_video_code(Path(raw_name).stem)
     safe_code, _ = extract_video_code(Path(safe_name).stem)
-    if parsed_code and safe_code != parsed_code:
+    if not special_upload and parsed_code and safe_code != parsed_code:
         suffix = Path(raw_name).suffix.lower()
         part_suffix = f'.{parsed_part}' if parsed_part else ''
         safe_name = secure_filename(f'{parsed_code}{part_suffix}{suffix}')
@@ -418,6 +426,8 @@ def api_upload_part():
     tmp_dir.mkdir(parents=True, exist_ok=True)
     dest = tmp_dir / safe_name
     written = 0
+    if special_upload and (dest.exists() or dest.is_symlink()):
+        return jsonify(error='上传批次有重名文件'), 409
     with open(str(dest), 'wb') as dst:
         while chunk := request.stream.read(4 * 1024 * 1024):
             dst.write(chunk)
@@ -465,8 +475,16 @@ def api_add_manual():
         part_paths = []
         if files:
             tmp_dir.mkdir(parents=True, exist_ok=True)
-            for i, f in enumerate(sorted(files, key=lambda f: secure_filename(f.filename) or '')):
-                p = tmp_dir / (secure_filename(f.filename) or f'file_{i}.bin')
+            for i, f in enumerate(sorted(files, key=lambda f: (f.filename or '') if is_special_code(code_type)
+                                         else secure_filename(f.filename) or '')):
+                try:
+                    name = (_literal_video_filename(f.filename) if is_special_code(code_type)
+                            else secure_filename(f.filename) or f'file_{i}.bin')
+                except ValueError as exc:
+                    return jsonify(error=str(exc)), 400
+                p = tmp_dir / name
+                if is_special_code(code_type) and p.exists():
+                    return jsonify(error='上传批次有重名文件'), 409
                 f.save(str(p))
                 part_paths.append(p)
     if not part_paths:
@@ -474,6 +492,10 @@ def api_add_manual():
 
     code = f'{code_type}-{code_number:03d}'
     scanned = []
+    if is_special_code(code_type):
+        folder = volume_path / code_type
+        if any((folder / path.name).exists() or (folder / path.name).is_symlink() for path in part_paths):
+            return jsonify(error='目标目录有重名文件'), 409
     try:
         for i, tmp_path in enumerate(part_paths):
             part = f'part{i + 1}' if is_multipart else None
@@ -678,7 +700,7 @@ def api_rescrape():
         ).fetchall()
     finally:
         conn.close()
-    codes = [r[0] for r in rows]
+    codes = [r[0] for r in rows if not is_special_code(r[0])]
     if not codes:
         return jsonify({'error': '没有符合条件的影片'}), 400
 
@@ -701,6 +723,8 @@ def api_video_rescrape(code: str):
     if not row:
         return jsonify({'error': 'not found'}), 404
     main_code = row[0]
+    if is_special_code(main_code):
+        return jsonify(error='特殊番号不参与刮削'), 400
 
     job_id = str(uuid.uuid4())
     scrape_store().submit('pipeline_rescrape', main_code, payload={'codes': [main_code]}, task_id=job_id)
@@ -986,28 +1010,26 @@ def api_video_download_url(code: str):
 
 @app.patch('/api/videos/<string:code>')
 def api_video_patch(code: str):
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify(error='无效的影片信息'), 400
     actor_names = body.pop('actors', None)
     tag_names = body.pop('tags', None)
     new_code = body.pop('code', None)
-    changed = False
     if 'series' in body and body['series'] is not None and not isinstance(body['series'], str):
         return jsonify(error='系列名必须是文本'), 400
-    if body:
-        series_store = scrape_store() if 'series' in body else None
-        changed = patch_video(code, body, series_store=series_store) if series_store else patch_video(code, body)
-        if changed and series_store:
-            ensure_worker()
-    if actor_names is not None or tag_names is not None:
-        changed = patch_video_relations(code, actor_names, tag_names) or changed
-    if new_code and new_code != code:
-        if not rename_video_code(code, new_code):
-            return jsonify({'error': 'code already exists or not found'}), 400
-        changed = True
-        code = new_code
-    if not changed:
-        return jsonify({'error': 'no valid fields or not found'}), 400
-    return jsonify({'new_code': code, **get_video_by_code(code)})
+    try:
+        code, jobs = patch_video(code, body, runtime=scrape_store(), actor_names=actor_names,
+                                 tag_names=tag_names, new_code=new_code)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except sqlite3.Error:
+        app.logger.exception('保存影片信息失败')
+        return jsonify(error='保存影片信息失败'), 500
+    if jobs or 'series' in body:
+        from core.service_manager import ensure_service
+        ensure_service('consumer')
+    return jsonify({'new_code': code, 'rename_job_ids': jobs, **get_video_by_code(code)})
 
 
 @app.patch('/api/videos/<string:code>/file-path')
@@ -1029,6 +1051,8 @@ def _replacement_filename(video, source_name, subtitle_zh, uncensored, part):
         raise ValueError('不支持的影片扩展名')
     if part and not re.fullmatch(r'(?:part)?0*[1-9][0-9]*', part, re.IGNORECASE):
         raise ValueError('无效的分集编号')
+    if is_special_code(video['code']):
+        return _literal_video_filename(source_name)
     suffix = '-UC' if subtitle_zh and uncensored else '-C' if subtitle_zh else '-U' if uncensored else ''
     code = re.sub(r'(?i)-(?:uc|u|c)$', '', video['code']) + suffix
     actors = sorted(video.get('actors', []), key=lambda actor: actor.get('id', 0))
@@ -1246,27 +1270,28 @@ def api_video_rename_file(code: str):
     new_name = '.'.join(c for c in components if c) + ext
     new_path = old_path.parent / new_name
 
-    if new_path == old_path:
-        return jsonify({'ok': True, **get_video_by_code(code)})
+    video = get_video_by_code(code)
+    if not video or video.get('deleted'):
+        return jsonify({'error': 'not found'}), 404
+    if is_special_code(video['code']) or is_special_code(new_code):
+        return jsonify(error='特殊番号不使用文件名模板，请在影片资料中修改番号'), 400
     if not old_path.exists():
         return jsonify({'error': 'source file missing'}), 400
-    if new_path.exists():
+    if new_code == video['code'] and new_path != old_path and new_path.exists() and not old_path.samefile(new_path):
         return jsonify({'error': 'target exists'}), 409
-
+    if new_path == old_path and new_code == video['code']:
+        return jsonify({'ok': True, 'rename_job_ids': [], **video})
     try:
-        old_path.rename(new_path)
-    except OSError as e:
-        return jsonify({'error': str(e)}), 500
-
-    result = rename_video_file(code, part, str(new_path), new_code)
-    if not result['ok']:
-        try:
-            new_path.rename(old_path)
-        except OSError:
-            pass
-        return jsonify({'error': result.get('error', 'db update failed')}), 500
-
-    return jsonify({'ok': True, **get_video_by_code(new_code)})
+        new_code, jobs = patch_video(code, {}, runtime=scrape_store(), new_code=new_code,
+                                     manual_name=(str(old_path), new_name))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except sqlite3.Error:
+        app.logger.exception('登记文件重命名失败')
+        return jsonify(error='登记文件重命名失败'), 500
+    from core.service_manager import ensure_service
+    ensure_service('consumer')
+    return jsonify({'ok': True, 'rename_job_ids': jobs, **get_video_by_code(new_code)})
 
 
 _MIME_MAP = {
@@ -1376,8 +1401,6 @@ def api_playback_history(code: str):
 
 @app.post('/api/videos/<string:code>/playback/<string:session_id>')
 def api_playback_report(code: str, session_id: str):
-    if not get_video_file_path(code):
-        return jsonify(error='video not found'), 404
     try:
         payload = request.get_json(silent=True)
         if payload is None and request.form.get('source') == 'iina':
@@ -1385,6 +1408,10 @@ def api_playback_report(code: str, session_id: str):
             for name in ('started_at', 'last_played_at', 'watched_ms', 'position_ms', 'sequence'):
                 payload[name] = int(request.form.get(name, ''))
         with closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute('BEGIN IMMEDIATE')
+            if not get_video_file_path(code, connection=conn):
+                return jsonify(error='video not found'), 404
             playback.report(conn, code, session_id, payload)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
@@ -1507,13 +1534,25 @@ def api_actor(actor_id: int):
 @app.patch('/api/actors/<int:actor_id>')
 def api_actor_patch(actor_id: int):
     body = request.get_json(silent=True) or {}
-    target_id = patch_actor(actor_id, body)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'no valid fields or not found'}), 400
+    runtime = scrape_store()
+    rename_jobs = []
+
+    def enqueue_rename(conn, code, video_ids):
+        rename_jobs.append(runtime.submit('rename_files', code, {'video_ids': video_ids}, connection=conn))
+
+    target_id = patch_actor(actor_id, body, enqueue_rename=enqueue_rename)
     if target_id is None:
         return jsonify({'error': 'no valid fields or not found'}), 400
+    if rename_jobs:
+        from core.service_manager import ensure_service
+        ensure_service('consumer')
     data = get_actor_with_videos(target_id)
+    result = {'merged': target_id != actor_id, 'actor': data['actor'], 'rename_job_ids': rename_jobs}
     if target_id != actor_id:
-        return jsonify({'merged': True, 'actor': data['actor'], 'redirect_id': target_id})
-    return jsonify({'merged': False, 'actor': data['actor']})
+        result['redirect_id'] = target_id
+    return jsonify(result)
 
 
 _AVATARS_DIR = os.path.join(os.path.dirname(__file__), '..', 'static', 'avatars')

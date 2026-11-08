@@ -12,6 +12,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from config import DB_PATH
+from core.task_policy import is_special_code
 
 
 SCAN_ROOT = Path("/Volumes/T73")
@@ -52,6 +53,8 @@ def code_prefix(code: str) -> str:
 
 
 def build_filename(record: VideoRecord) -> str:
+    if is_special_code(record.code):
+        return record.original_file_path.name
     ext = record.original_file_path.suffix
     components = [sanitize_component(record.code)]
     components.extend(name for name in (sanitize_component(a) for a in record.actors) if name)
@@ -136,6 +139,8 @@ def load_records(db_path: Path, scan_root: Path = SCAN_ROOT, count: Optional[int
 
 def plan_move(record: VideoRecord, db_path: Path, dest_root: Path = DEST_ROOT) -> MovePlan:
     source = record.original_file_path
+    if is_special_code(record.code):
+        return MovePlan(record, source, source, "skip", "special code")
     dest = build_destination(record, dest_root)
 
     if not source.exists():

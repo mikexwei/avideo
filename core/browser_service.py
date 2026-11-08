@@ -4,6 +4,7 @@ import random
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from core.task_policy import TargetChanged, validate_command
 from core.scraper.video_scraper import ScrapeInterrupted, scrape_control, browser_operation
@@ -90,6 +91,27 @@ class Browser:
         self.live_page().goto('https://javdb.com/login?locale=zh-CN', timeout=30000)
         return True
 
+    def session_status(self):
+        from playwright.sync_api import Error
+        from core.scraper.video_scraper import _is_login_required
+
+        if self.context is None:
+            return False, None
+        pages = [page for page in self.context.pages if not page.is_closed()]
+        if not pages:
+            return False, None
+        page = self.page if self.page in pages else pages[-1]
+        if urlsplit(page.url).hostname not in ('javdb.com', 'www.javdb.com'):
+            return True, None
+        try:
+            if _is_login_required(page):
+                return True, False
+            if page.locator('nav').count():
+                return True, page.locator("a.navbar-item[href*='/users/']").count() > 0
+        except Error:
+            pass
+        return True, None
+
     def close(self):
         try:
             if self.context:
@@ -113,6 +135,7 @@ class BrowserService:
         self.browser = browser or Browser(self.progress)
         self.current = None
         self.terminate = threading.Event()
+        self.session_read_at = float('-inf')
 
     def checkpoint(self):
         if self.terminate.is_set():
@@ -135,6 +158,13 @@ class BrowserService:
     def tick(self):
         control = self.store.service('browser')
         settings = self.store.settings('browser')
+        now = time.monotonic()
+        if now - self.session_read_at >= 3:
+            self.session_read_at = now
+            opened, logged_in = self.browser.session_status()
+            session = dict(session_open=opened, session_logged_in=logged_in, session_generation=control['generation'])
+            if any(settings.get(key) != value for key, value in session.items()):
+                self.store.set_settings('browser', session)
         if time.time() < settings['next_allowed_at']:
             self.store.service('browser', state='cooling_down', message=settings.get('cooldown_reason', '等待统一冷却结束'), current_id=None)
             return False
@@ -153,7 +183,7 @@ class BrowserService:
             # Reserve before any network access, so crashes and preemption retain the interval.
             until = self.store.reserve_browser_access(command['kind'], random.uniform(settings['interval_min'], settings['interval_max']))
             if until:
-                self.store.publish(command, 'INTERRUPTED', error='本小时访问额度已用尽', retry_at=until)
+                self.store.publish(command, 'INTERRUPTED', error='等待浏览器冷却或小时额度恢复', retry_at=until)
                 return True
             code = payload.get('code', '')
             self.browser.last_status = None
@@ -182,7 +212,7 @@ class BrowserService:
             self.store.publish(command, 'INTERRUPTED', error=str(exc), retry_at=0)
         except PermissionError as exc:
             self.store.publish(command, 'LOGIN_REQUIRED', error=str(exc), retry_at=0)
-            self.store.set_settings('browser', {'logged_in': False, 'login_checked_at': time.time()})
+            self.store.set_settings('browser', {'logged_in': False, 'login_checked_at': time.time(), 'session_logged_in': False})
             self.store.service('browser', paused=1, state='waiting_verification' if isinstance(exc, BrowserBlocked) else 'waiting_login', message=str(exc))
         except Exception as exc:
             logging.exception('Browser command %s failed', command['id'])

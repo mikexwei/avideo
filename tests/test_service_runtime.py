@@ -13,7 +13,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from core.browser_queue import BROWSER_TIMEZONE, RuntimeStore
-from core.browser_service import BrowserService
+from core.browser_service import Browser, BrowserService
 from core.event_consumer import Consumer, StoredJob
 from core.task_policy import snapshot
 from core import series_catalog, workflows
@@ -53,6 +53,7 @@ class RuntimeTests(unittest.TestCase):
         self.browser = MagicMock()
         self.browser.scrape.return_value = {'title_jp': '作品', 'actors': '', 'categories': ''}
         self.browser.check_login.return_value = True
+        self.browser.session_status.return_value = (False, None)
         self.service = BrowserService(self.store, self.browser)
         for target in ('core.workflows.DB_PATH', 'dal.db_manager.DB_PATH'):
             guard = patch(target, self.path)
@@ -331,6 +332,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(restarted.tick())
         self.browser.check_login.assert_not_called()
         self.assertEqual(self.store.get(task_id)['status'], 'WAITING')
+
+    def test_cooldown_is_checked_before_quota_when_reserving_access(self):
+        start = int(datetime(2026, 10, 12, 14, tzinfo=BROWSER_TIMEZONE).timestamp())
+        with self.store.connect(write=True) as conn:
+            conn.execute('INSERT INTO browser_quota(effective_at,profile_json) VALUES (?,?)',
+                         (start, json.dumps({'limits': [8] * 24})))
+        with patch('time.time', return_value=start + 1) as clock:
+            self.assertIsNone(self.store.reserve_browser_access('refresh', 30))
+            task_id = self.store.submit('login_status', forced=True)
+            self.consumer.tick()
+            self.assertFalse(self.service.tick())
+            self.assertEqual(self.store.service('browser')['state'], 'cooling_down')
+            self.assertEqual(self.store.reserve_browser_access('refresh', 30), start + 31)
+            self.assertEqual(self.store.reserve_browser_access('login_status', 30), start + 31)
+            with self.store.connect() as conn:
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM browser_access').fetchone()[0], 1)
+            self.assertEqual(self.store.get(task_id)['status'], 'WAITING')
+            self.browser.check_login.assert_not_called()
+            clock.return_value = start + 31
+            self.assertTrue(self.service.tick())
+            self.browser.check_login.assert_called_once()
 
     def test_browser_rechecks_deleted_target_before_network_access(self):
         task_id, _ = self.dispatch('video', 'RBD-001')
@@ -648,6 +670,52 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(response.get_json()['next_allowed_at'], future)
             self.assertEqual(client.post('/api/admin/services/browser/control', json={'action':'stop'}, headers={'Origin':'https://foreign.example'}).status_code, 403)
 
+    def test_admin_only_reports_browser_session_from_current_generation(self):
+        app = importlib.import_module('web.backend.app').app
+        self.store.service('browser', generation='first', heartbeat=time.time())
+        self.browser.session_status.return_value = (True, True)
+        self.store.set_settings('browser', {'next_allowed_at': time.time() + 60})
+        self.assertFalse(self.service.tick())
+        self.browser.check_login.assert_not_called()
+        with patch('web.backend.admin_api.store', return_value=self.store):
+            client = app.test_client()
+            browser = client.get('/api/admin/services').get_json()['browser']
+            self.assertIs(browser['session_open'], True)
+            self.assertIs(browser['session_logged_in'], True)
+            self.store.service('browser', generation='next')
+            browser = client.get('/api/admin/services').get_json()['browser']
+            self.assertIs(browser['session_open'], False)
+            self.assertIsNone(browser['session_logged_in'])
+
+    def test_browser_session_status_reads_current_page_without_navigating(self):
+        browser = Browser(None)
+        self.assertEqual(browser.session_status(), (False, None))
+        page = MagicMock(url='https://javdb.com/')
+        page.is_closed.return_value = False
+        page.locator.side_effect = lambda selector: MagicMock(
+            count=lambda: int(selector in ('nav', "a.navbar-item[href*='/users/']")))
+        browser.context = MagicMock(pages=[page])
+        browser.page = page
+        self.assertEqual(browser.session_status(), (True, True))
+        page.url = 'https://javdb.com/login'
+        self.assertEqual(browser.session_status(), (True, False))
+        page.is_closed.return_value = True
+        self.assertEqual(browser.session_status(), (False, None))
+        page.goto.assert_not_called()
+        page.reload.assert_not_called()
+
+    def test_new_browser_quota_curve_wraps_across_midnight(self):
+        app = importlib.import_module('web.backend.app').app
+        with patch('web.backend.admin_api.store', return_value=self.store):
+            client = app.test_client()
+            response = client.put('/api/admin/browser/quota', json={'peak_hour': 0, 'peak_limit': 30, 'spread': 3})
+        self.assertEqual(response.status_code, 200)
+        limits = response.get_json()['quota']['limits']
+        self.assertEqual((len(limits), limits[0]), (24, 30))
+        self.assertGreater(limits[23], 0)
+        self.assertEqual(limits[23], limits[1])
+        self.assertEqual(limits[22], limits[2])
+
     def test_browser_quota_blocks_pending_commands_and_preserves_hourly_usage(self):
         app = importlib.import_module('web.backend.app').app
         peak = int(datetime(2026, 10, 12, 14, tzinfo=BROWSER_TIMEZONE).timestamp())
@@ -729,6 +797,7 @@ if sys.argv[3] == 'browser':
         page = None
         def __init__(self, progress): pass
         def check_login(self): return True
+        def session_status(self): return False, None
         def close(self): pass
     browser.Browser = FakeBrowser
 manager.run_service(sys.argv[3])
@@ -802,6 +871,209 @@ manager.run_service(sys.argv[3])
             path = conn.execute('SELECT original_file_path FROM videos').fetchone()[0]
         self.assertTrue(Path(path).exists())
         self.assertIn('Recovered', path)
+
+    def test_rename_recovers_when_filename_changes_between_interrupted_attempts(self):
+        task_id = self.task('rename_files', 'RBD-001', video_ids=[1])
+        self.store.claim_workflow('test')
+        with self.store.connect(write=True) as conn:
+            conn.execute("UPDATE videos SET title_zh_short='first'")
+        job = StoredJob(self.store, task_id)
+        rename = Path.rename
+
+        def interrupt_after_move(source, target):
+            rename(source, target)
+            raise RuntimeError('exit after the first move')
+
+        with patch.object(Path, 'rename', interrupt_after_move):
+            with self.assertRaises(RuntimeError):
+                workflows._rename_files_for_code('RBD-001', job, video_ids=[1])
+        with self.store.connect(write=True) as conn:
+            conn.execute("UPDATE videos SET title_zh_short='latest'")
+        with patch.object(Path, 'rename', side_effect=RuntimeError('exit before the next move')):
+            with self.assertRaises(RuntimeError):
+                workflows._rename_files_for_code('RBD-001', job, video_ids=[1])
+
+        self.assertEqual(workflows._rename_files_for_code('RBD-001', job, video_ids=[1]), 1)
+        self.assertEqual((self.root / 'RBD-001.[latest].mp4').read_bytes(), b'video')
+        self.assertFalse((self.root / 'RBD-001.[first].mp4').exists())
+
+    def test_video_detail_patch_removes_actor_when_saving_metadata(self):
+        app = importlib.import_module('web.backend.app').app
+        with self.store.connect(write=True) as conn:
+            conn.execute("INSERT INTO videos(code,original_file_path) VALUES ('RBD-002','other.mp4')")
+            conn.execute("INSERT INTO actors(id,name) VALUES (1,'示例演员')")
+            conn.execute("INSERT INTO video_actor_link(video_id,actor_id) VALUES (1,1),(2,1)")
+        with patch('web.backend.app.scrape_store', return_value=self.store), patch('core.service_manager.ensure_service'):
+            response = app.test_client().patch('/api/videos/RBD-001', json={
+                'actors': [], 'tags': [], 'title_zh': '保留的标题', 'title_jp': '原題',
+                'release_date': '', 'duration': '', 'maker': '', 'publisher': '', 'series': '',
+                'score': 4, 'original_file_path': 'ignored.mp4',
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['actors'], [])
+        self.assertEqual(response.get_json()['title_zh'], '保留的标题')
+        self.assertEqual(response.get_json()['original_file_path'], str(self.file))
+        with self.store.connect() as conn:
+            links = conn.execute('SELECT video_id,actor_id FROM video_actor_link').fetchall()
+            self.assertEqual([tuple(row) for row in links], [(2, 1)])
+            self.assertEqual(conn.execute('SELECT name FROM actors WHERE id=1').fetchone()[0], '示例演员')
+
+    def test_special_codes_skip_scrape_and_automatic_rename(self):
+        app = importlib.import_module('web.backend.app').app
+        with self.store.connect(write=True) as conn:
+            conn.execute("UPDATE videos SET code='CN-001'")
+        with patch('web.backend.app.scrape_store', return_value=self.store), patch('web.backend.app.DB_PATH', self.path):
+            client = app.test_client()
+            self.assertEqual(client.post('/api/videos/CN-001/rescrape').status_code, 400)
+            response = client.patch('/api/videos/CN-001', json={'code': 'DUMMY-001', 'title_zh_short': '自定义标题'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['rename_job_ids'], [])
+        task_id = self.task('pipeline_rescrape', codes=['DUMMY-001'])
+        self.consumer.tick()
+        self.consumer.tick()
+        self.assertEqual(self.store.get(task_id)['status'], 'DONE')
+        self.assertEqual(self.file.read_bytes(), b'video')
+        with self.store.connect() as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM dependency_commands').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT original_file_path FROM videos').fetchone()[0], str(self.file))
+
+    def test_actor_repair_preserves_other_parts_when_scrape_returns_no_cast(self):
+        with self.store.connect(write=True) as conn:
+            conn.execute("UPDATE videos SET part='part1' WHERE id=1")
+            conn.execute("INSERT INTO videos(code,part,original_file_path) VALUES ('RBD-001','part2','two.mp4')")
+            conn.execute("INSERT INTO actors(id,name) VALUES (1,'原演员')")
+            conn.execute("INSERT INTO video_actor_link(video_id,actor_id) VALUES (2,1)")
+        task_id, _ = self.dispatch('pipeline_rescrape', codes=['RBD-001'], require_actors=True)
+        self.service.tick()
+        for _ in range(3):
+            self.consumer.tick()
+        task = self.store.get(task_id)
+        self.assertEqual(task['status'], 'DONE')
+        self.assertEqual(json.loads(task['checkpoint_json'])['items'], [{
+            'code': 'RBD-001', 'ok': False, 'message': '来源未提供可用演员，保留原文件名',
+        }])
+        self.assertTrue(self.file.exists())
+        with self.store.connect() as conn:
+            self.assertEqual([tuple(r) for r in conn.execute('SELECT video_id,actor_id FROM video_actor_link')], [(2, 1)])
+
+    def test_video_code_edit_moves_all_parts_and_playback_with_the_same_commit(self):
+        from dal import playback
+        app = importlib.import_module('web.backend.app').app
+        folder = self.root / 'avideo' / 'RBD'
+        folder.mkdir(parents=True)
+        first, second = (folder / f'RBD-001.part{i}.mp4' for i in (1, 2))
+        self.file.rename(first)
+        second.write_bytes(b'second')
+        with self.store.connect(write=True) as conn:
+            conn.execute("UPDATE videos SET part='part1',original_file_path=? WHERE id=1", (str(first),))
+            conn.execute("INSERT INTO videos(code,part,original_file_path) VALUES ('RBD-001','part2',?)", (str(second),))
+            conn.execute("INSERT INTO videos(code,original_file_path) VALUES ('OTHER-001','other.mp4')")
+            playback.ensure_schema(conn)
+            conn.execute("INSERT INTO playback_sessions VALUES ('session','RBD-001','web','part2',1,10,5,6,2)")
+        with patch('web.backend.app.scrape_store', return_value=self.store), patch('core.service_manager.ensure_service'):
+            client = app.test_client()
+            rejected = client.patch('/api/videos/RBD-001', json={'code': 'OTHER-001', 'title_zh_short': '错误'})
+            self.assertEqual(rejected.status_code, 400)
+            with patch.object(self.store, 'submit', side_effect=sqlite3.OperationalError('cannot enqueue')):
+                response = client.patch('/api/videos/RBD-001', json={'code': 'NEXT-001-UC'})
+            self.assertEqual(response.status_code, 500)
+            with self.store.connect() as conn:
+                self.assertEqual(playback.history(conn, 'RBD-001')['play_count'], 1)
+                self.assertIsNone(conn.execute('SELECT title_zh_short FROM videos WHERE id=1').fetchone()[0])
+            response = client.patch('/api/videos/RBD-001', json={
+                'code': 'NEXT-001-UC', 'title_zh_short': '短标题', 'actors': ['新演员'],
+            })
+        self.assertEqual(response.status_code, 200)
+        task_id, = response.get_json()['rename_job_ids']
+        self.assertTrue(first.exists())
+        with self.store.connect() as conn:
+            old = playback.history(conn, 'RBD-001')
+            new = playback.history(conn, 'NEXT-001')
+            self.assertEqual(old['play_count'], 0)
+            self.assertEqual((new['play_count'], new['watched_ms'], new['last_played_at']), (1, 5, 10))
+            self.assertEqual(new['sessions'][0]['part'], 'part2')
+        self.consumer.tick()
+        self.assertEqual(self.store.get(task_id)['status'], 'DONE')
+        with self.store.connect() as conn:
+            paths = [Path(row[0]) for row in conn.execute(
+                "SELECT original_file_path FROM videos WHERE code='NEXT-001-UC' ORDER BY part")]
+        self.assertEqual([p.name for p in paths], [
+            'NEXT-001-UC.新演员.[短标题].part1.mp4', 'NEXT-001-UC.新演员.[短标题].part2.mp4',
+        ])
+        self.assertEqual(paths[0].parent, self.root / 'avideo' / 'NEXT')
+        self.assertEqual([p.read_bytes() for p in paths], [b'video', b'second'])
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
+
+    def test_actor_name_api_queues_only_affected_files_and_uses_latest_name(self):
+        app = importlib.import_module('web.backend.app').app
+        folder = self.root / 'avideo' / '手工目录'
+        folder.mkdir(parents=True)
+        original = folder / 'RBD-001.旧译名.part1.mp4'
+        self.file.rename(original)
+        unrelated = folder / 'RBD-001.手工命名.part2.mp4'
+        unrelated.write_bytes(b'other part')
+        with self.store.connect(write=True) as conn:
+            conn.execute("UPDATE videos SET part='part1',original_file_path=? WHERE id=1", (str(original),))
+            conn.execute("INSERT INTO videos(code,part,original_file_path) VALUES ('RBD-001','part2',?)", (str(unrelated),))
+            conn.execute("INSERT INTO actors(id,name,name_zh) VALUES (1,'旧原名','旧译名')")
+            conn.execute("INSERT INTO video_actor_link(video_id,actor_id) VALUES (1,1)")
+        with patch('web.backend.app.scrape_store', return_value=self.store), patch('core.service_manager.ensure_service') as ensure:
+            client = app.test_client()
+            unchanged = client.patch('/api/actors/1', json={'name': '新原名'})
+            self.assertEqual(unchanged.get_json()['rename_job_ids'], [])
+            ensure.assert_not_called()
+            with patch.object(self.store, 'submit', side_effect=sqlite3.OperationalError('cannot enqueue')):
+                self.assertEqual(client.patch('/api/actors/1', json={'name_zh': '提交失败'}).status_code, 400)
+            with self.store.connect() as conn:
+                self.assertEqual(conn.execute('SELECT name_zh FROM actors WHERE id=1').fetchone()[0], '旧译名')
+            first = client.patch('/api/actors/1', json={'name_zh': '中间名'})
+            latest = client.patch('/api/actors/1', json={'name_zh': '最新名'})
+        self.assertEqual((first.status_code, latest.status_code), (200, 200))
+        first_id, = first.get_json()['rename_job_ids']
+        latest_id, = latest.get_json()['rename_job_ids']
+        self.assertEqual(json.loads(self.store.get(first_id)['payload_json']), {'video_ids': [1]})
+        self.assertTrue(original.exists())
+        with self.store.connect() as conn:
+            self.assertEqual(conn.execute('SELECT original_file_path FROM videos WHERE id=1').fetchone()[0], str(original))
+        self.consumer.tick()
+        self.consumer.tick()
+        target = folder / 'RBD-001.最新名.part1.mp4'
+        self.assertEqual(target.read_bytes(), b'video')
+        self.assertFalse(original.exists())
+        self.assertFalse((folder / 'RBD-001.中间名.part1.mp4').exists())
+        self.assertEqual(unrelated.read_bytes(), b'other part')
+        with self.store.connect() as conn:
+            paths = [row[0] for row in conn.execute('SELECT original_file_path FROM videos ORDER BY id')]
+            self.assertEqual(paths, [str(target), str(unrelated)])
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM dependency_commands').fetchone()[0], 0)
+        self.assertEqual(self.store.get(first_id)['status'], 'DONE')
+        self.assertEqual(self.store.get(latest_id)['status'], 'DONE')
+        self.assertEqual(json.loads(self.store.get(first_id)['result_json']), {'renamed': 1})
+        self.assertEqual(json.loads(self.store.get(latest_id)['result_json']), {'renamed': 0})
+
+    def test_actor_merge_rename_conflict_leaves_original_and_can_be_retried(self):
+        app = importlib.import_module('web.backend.app').app
+        target = self.root / 'RBD-001.正式名.mp4'
+        target.write_bytes(b'conflicting file')
+        with self.store.connect(write=True) as conn:
+            conn.execute("INSERT INTO actors(id,name) VALUES (1,'别名'),(2,'正式名')")
+            conn.execute("INSERT INTO video_actor_link(video_id,actor_id) VALUES (1,1)")
+        with patch('web.backend.app.scrape_store', return_value=self.store), patch('core.service_manager.ensure_service'):
+            response = app.test_client().patch('/api/actors/1', json={'name': '正式名'})
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()
+        self.assertEqual(result['redirect_id'], 2)
+        task_id, = result['rename_job_ids']
+        self.consumer.tick()
+        self.assertEqual(self.store.get(task_id)['status'], 'FAILED')
+        self.assertEqual(self.file.read_bytes(), b'video')
+        self.assertEqual(target.read_bytes(), b'conflicting file')
+        target.unlink()
+        self.assertEqual(self.store.retry_task(task_id), task_id)
+        self.consumer.tick()
+        self.assertEqual(self.store.get(task_id)['status'], 'DONE')
+        self.assertEqual(target.read_bytes(), b'video')
 
     def test_cancel_between_result_validation_and_commit_prevents_business_write(self):
         task_id, _ = self.dispatch('video', 'RBD-001')

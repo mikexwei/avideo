@@ -79,27 +79,17 @@
   <!-- ========== HomeView ========== -->
   <script type="text/x-template" id="tpl-home">
   <div>
-    <header class="library-hero" :class="{ 'library-hero-compact': filterLabel || selectedTags.length || page > 1 }">
-      <img v-if="!filterLabel && !selectedTags.length && page === 1 && items[0]?.cover_path" class="library-hero-art"
-        :src="'/static/' + items[0].cover_path" alt="" decoding="async" @error="hideImage" />
-      <div class="library-hero-content">
-        <p class="section-kicker">AVIDEO / FILM LIBRARY</p>
+    <header class="page-head">
+      <div>
         <h1>影片库</h1>
-        <p v-if="!loading" class="library-count">{{ total.toLocaleString() }} 部影片</p>
-        <div class="library-destinations">
-          <router-link to="/recommend" class="ui-button ui-primary">探索推荐</router-link>
-          <router-link to="/actors" class="ui-button">按演员浏览</router-link>
-        </div>
+        <p v-if="!loading">{{ total.toLocaleString() }} 部影片</p>
       </div>
-    </header>
-    <div class="library-heading">
-      <h2>浏览影片</h2>
       <div class="flex flex-wrap items-center gap-2">
         <button @click="openManualModal" class="ui-button">手动添加</button>
         <button @click="openBatchModal" class="ui-button">批量添加/替换</button>
         <button @click="openAddModal" class="ui-button ui-primary">+ 添加影片</button>
       </div>
-    </div>
+    </header>
     <add-video-modal v-if="showAddModal" @close="closeAddModal" />
     <add-video-modal v-if="showManualModal" :initial-step="'manual-code'" @close="closeManualModal" />
     <batch-modal v-if="showBatchModal" @close="closeBatchModal" />
@@ -747,7 +737,7 @@
         <div class="grid overview">
           <div id="services" class="services"></div>
           <article class="card session-card">
-            <div class="card-top"><span class="pill amber">会话</span></div>
+            <div class="card-top"><span class="pill amber">会话</span><span id="session-health" class="pill neutral">读取中</span></div>
             <h3>浏览器登录</h3>
             <dl id="cooldown" class="metrics"></dl>
             <div class="actions">
@@ -781,14 +771,18 @@
           <details class="quota-editor">
             <summary>配置每日额度曲线</summary>
             <form id="quota-form">
-              <p class="hint">拖动紫色峰值和灰色宽度手柄。保存后从下个整点生效，额度为 0 的小时暂停访问。</p>
-              <svg id="quota-curve" viewBox="0 0 600 172" role="img" aria-label="每日访问额度钟形曲线">
-                <path class="quota-axis" d="M20 146H580"></path>
-                <path id="quota-line"></path>
-                <circle id="quota-peak" data-handle="peak" r="10"></circle>
-                <circle id="quota-width" data-handle="spread" r="10"></circle>
-                <text x="20" y="166">00:00</text><text x="580" y="166" text-anchor="end">23:00</text>
-              </svg>
+              <p class="hint" id="quota-help">左右拖动 24 小时时间轴选择峰值时间。上下拖动峰顶调额度，左右拖动右侧手柄调宽度。保存后从下个整点生效。</p>
+              <div class="quota-plot">
+                <svg id="quota-curve" viewBox="0 0 600 148" role="img" aria-label="每日访问额度钟形曲线">
+                  <path class="quota-center" d="M300 16V146"></path>
+                  <path class="quota-axis" d="M20 146H580"></path>
+                  <path id="quota-line"></path>
+                  <circle id="quota-peak" data-handle="peak" r="9"></circle>
+                  <circle id="quota-width" data-handle="spread" r="8"></circle>
+                </svg>
+                <div id="quota-timeline" class="quota-timeline" role="slider" tabindex="-1" aria-disabled="true"
+                  aria-label="24 小时时间轴峰值" aria-describedby="quota-help" aria-valuemin="0" aria-valuemax="23"></div>
+              </div>
               <div class="quota-fields">
                 <label>峰值小时 <input name="peak_hour" type="number" min="0" max="23" required></label>
                 <label>峰值额度 <input name="peak_limit" type="number" min="1" max="3600" required></label>
@@ -1311,7 +1305,6 @@
 
       <div class="film-detail-grid">
       <header class="film-detail-title">
-        <p class="section-kicker">FILM DETAILS</p>
         <div class="flex items-center gap-3 mb-1">
           <!-- Code: click to edit -->
           <template v-if="!editingCode">
@@ -1362,22 +1355,35 @@
           <button v-if="!video.deleted" @click="triggerCoverUpload" :disabled="coverUploading" class="ui-button">{{ coverUploading ? '上传中…' : '更换封面' }}</button>
           <input ref="coverFileInput" type="file" accept="image/*" class="hidden" @change="uploadCover" />
         </div>
+        <details v-if="canPlay" :key="playbackHistoryCode" class="site-card film-playback-history" @toggle="showPlaybackHistory">
+          <summary class="film-playback-summary">
+            <span class="film-playback-heading">
+              <span>播放记录</span>
+              <svg class="film-playback-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                <path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </span>
+            <span class="film-playback-stats">
+              <span><small>总播放时长</small><strong>{{ playbackHistory ? playbackDuration(playbackHistory.watched_ms) : '—' }}</strong></span>
+              <span><small>最近一次播放</small><strong>{{ playbackHistory?.last_played_at ? playbackDate(playbackHistory.last_played_at) : playbackHistory ? '暂无' : '—' }}</strong></span>
+              <span><small>总播放次数</small><strong>{{ playbackHistory ? playbackHistory.play_count + ' 次' : '—' }}</strong></span>
+            </span>
+          </summary>
+          <ul v-if="playbackHistory?.sessions.length" class="film-playback-sessions" aria-label="单次播放明细">
+            <li v-for="session in playbackHistory.sessions" :key="session.id">
+              <span>
+                {{ playbackDate(session.started_at) }}
+                <span v-if="session.part"> · {{ session.part }}</span>
+                <span v-if="session.source === 'iina'"> · IINA</span>
+              </span>
+              <strong>{{ playbackDuration(session.watched_ms) }}</strong>
+            </li>
+          </ul>
+          <p v-else class="film-playback-empty" :class="{ 'text-red-400': playbackHistoryError }" role="status">
+            {{ playbackHistoryError || (playbackHistory ? '暂无播放记录' : '正在读取播放记录…') }}
+          </p>
+        </details>
       </div>
-      <details v-if="canPlay" class="site-card p-4" @toggle="showPlaybackHistory">
-        <summary class="cursor-pointer font-semibold">播放记录</summary>
-        <p v-if="playbackHistory" class="text-sm text-gray-400 mt-2">
-          {{ playbackHistory.play_count }} 次 · 累计 {{ playbackDuration(playbackHistory.watched_ms) }}
-          <span v-if="playbackHistory.last_played_at"> · 最近 {{ new Date(playbackHistory.last_played_at).toLocaleString() }}</span>
-        </p>
-        <ul v-if="playbackHistory?.sessions.length" class="space-y-2 mt-3 text-sm">
-          <li v-for="session in playbackHistory.sessions" :key="session.id">
-            {{ new Date(session.started_at).toLocaleString() }} · {{ playbackDuration(session.watched_ms) }}
-            <span v-if="session.part"> · {{ session.part }}</span>
-            <span v-if="session.source === 'iina'"> · IINA</span>
-          </li>
-        </ul>
-        <p v-if="playbackHistoryError" class="text-sm text-red-400 mt-2" role="status">{{ playbackHistoryError }}</p>
-      </details>
       <div class="film-detail-info">
           <!-- View mode -->
           <template v-if="!editing">
@@ -2361,7 +2367,7 @@
     // (each < the 50GB cap, written straight to the target volume — no /tmp).
     // onProgress receives cumulative bytes across all parts. Returns the
     // upload_id that groups them; pass it to add-auto / add-manual.
-    async function streamUploadParts(files, volumePath, onProgress) {
+    async function streamUploadParts(files, volumePath, onProgress, manualCodeType) {
       const uploadId = genUploadId();
       let priorBytes = 0;
       for (const f of files) {
@@ -2369,6 +2375,7 @@
           const xhr = new XMLHttpRequest();
           xhr.open('POST', '/api/videos/upload-part');
           xhr.setRequestHeader('X-Upload-Id', uploadId);
+          if (manualCodeType) xhr.setRequestHeader('X-Manual-Code-Type', manualCodeType);
           xhr.setRequestHeader('X-Volume-Path', encodeURIComponent(volumePath));
           xhr.setRequestHeader('X-Dest-Name', encodeURIComponent(f.name));
           xhr.setRequestHeader('X-File-Size', String(f.size));
@@ -2783,7 +2790,7 @@
               addUploadPct.value = Math.round(loaded / totalBytes * 100);
               const s = speed(loaded);
               if (s) addUploadSpeed.value = s;
-            });
+            }, manualCodeType.value);
             addUploading.value = false;
             const data = await postJson('/api/videos/add-manual', {
               upload_id: uploadId,
@@ -2836,11 +2843,6 @@
             if (!res1.ok) {
               const err = await res1.json();
               throw new Error(err.error || 'PATCH 失败');
-            }
-            const res2 = await fetch(`/api/videos/${code}/finalize-rename`, { method: 'POST' });
-            if (!res2.ok) {
-              const err2 = await res2.json().catch(() => ({}));
-              throw new Error(err2.error || '重命名失败');
             }
             addDoneCode.value = code;
             addStep.value = 'done';
@@ -2975,7 +2977,7 @@
           }
         }
 
-        return { hideImage: imgErr,
+        return {
           items, total, page, limit, loading, sort, filterLabel,
           filterTags: FILTER_TAGS, selectedTags, changePage, changeSort, toggleTag,
           showAddModal, openAddModal, closeAddModal,
@@ -3124,6 +3126,7 @@
     // ── VideoDetail ───────────────────────────────────────────
     const EDIT_FIELDS = [
       { key: 'title_zh', label: '中文标题' },
+      { key: 'title_zh_short', label: '文件名短标题' },
       { key: 'title_jp', label: '日文标题' },
       { key: 'release_date', label: '发行日期' },
       { key: 'duration', label: '时长' },
@@ -3164,30 +3167,39 @@
         const canPlay = computed(() => Boolean(video.value && !video.value.deleted &&
           (video.value.original_file_path || video.value.parts?.some(part => part.original_file_path))));
         const player = ref(null), playbackHistory = ref(null), playbackHistoryError = ref('');
+        const playbackHistoryCode = computed(() => canPlay.value ? baseVideoCode(video.value.code) : '');
         const subtitleTracks = ref([]), selectedSubtitle = ref(null), subtitleStatus = ref('');
-        let historyOpen = false;
+        let historyRequest = 0;
         function playbackUrl(code) {
           return '/api/videos/' + encodeURIComponent(baseVideoCode(code)) + '/playback';
         }
         async function loadPlaybackHistory() {
-          const code = video.value?.code;
+          const code = playbackHistoryCode.value;
           if (!code) return;
+          const request = ++historyRequest;
           try {
             const response = await fetch(playbackUrl(code));
             if (!response.ok) throw new Error('无法加载播放记录');
             const history = await response.json();
-            if (code === video.value?.code) {
+            if (request === historyRequest && code === playbackHistoryCode.value) {
               playbackHistory.value = history;
               playbackHistoryError.value = '';
             }
           } catch (error) {
-            if (code === video.value?.code) playbackHistoryError.value = error.message;
+            if (request === historyRequest && code === playbackHistoryCode.value) playbackHistoryError.value = error.message;
           }
         }
+        watch(playbackHistoryCode, code => {
+          playbackHistory.value = null;
+          playbackHistoryError.value = '';
+          if (code) loadPlaybackHistory();
+        });
         function showPlaybackHistory(event) {
-          historyOpen = event.currentTarget.open;
-          if (historyOpen) loadPlaybackHistory();
+          if (event.currentTarget.open) loadPlaybackHistory();
         }
+        const playbackDate = new Intl.DateTimeFormat('zh-CN', {
+          year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+        }).format;
         function playbackDuration(milliseconds) {
           const seconds = Math.floor(milliseconds / 1000);
           return seconds >= 3600
@@ -3197,9 +3209,7 @@
         watch(player, (element, _, onCleanup) => {
           if (!element || !video.value) return;
           const part = selectedPart.value || video.value.part || null;
-          onCleanup(trackPlayback(element, playbackUrl(video.value.code), part, () => {
-            if (historyOpen) loadPlaybackHistory();
-          }));
+          onCleanup(trackPlayback(element, playbackUrl(video.value.code), part, loadPlaybackHistory));
         }, { flush: 'post' });
         watch(player, (element, _, onCleanup) => {
           subtitleTracks.value = [];
@@ -3459,17 +3469,12 @@
           });
           editingCode.value = false;
           if (res && res.new_code) {
-            const renameRes = await fetch('/api/videos/' + encodeURIComponent(res.new_code) + '/finalize-rename', {
-              method: 'POST',
-            });
-            if (!renameRes.ok) {
-              const err = await renameRes.json().catch(() => ({}));
-              rescrapeError.value = true;
-              rescrapeMessage.value = err.error || '文件重命名失败';
-            } else {
-              rescrapeMessage.value = '番号和文件路径已更新';
+            video.value = res;
+            const routeCode = baseVideoCode(res.new_code);
+            if (routeCode !== route.params.code) {
+              await router.replace('/video/' + encodeURIComponent(routeCode));
             }
-            router.replace('/video/' + encodeURIComponent(res.new_code));
+            if (res.rename_job_ids?.length) rescrapeMessage.value = '番号已更新，文件改名已排队';
           }
         }
 
@@ -3559,6 +3564,7 @@
           const v = video.value;
           form.value = {
             title_zh: v.title_zh || '',
+            title_zh_short: v.title_zh_short || '',
             title_jp: v.title_jp || '',
             release_date: v.release_date || '',
             duration: v.duration || '',
@@ -3654,6 +3660,7 @@
           const f = form.value;
           const payload = {
             title_zh: f.title_zh,
+            title_zh_short: f.title_zh_short,
             title_jp: f.title_jp,
             release_date: f.release_date,
             duration: f.duration,
@@ -3676,6 +3683,10 @@
             } else {
               video.value = await r.json();
               editing.value = false;
+              if (video.value.rename_job_ids?.length) {
+                rescrapeError.value = false;
+                rescrapeMessage.value = '文件改名已排队';
+              }
             }
           } catch (e) {
             saveError.value = '网络错误';
@@ -3719,21 +3730,24 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
           });
+          if (!res?.ok) return;
           renamingPath.value = null;
           const newCode = res.code || video.value.code;
           const canonicalRouteCode = baseVideoCode(newCode);
           if (canonicalRouteCode !== route.params.code) {
-            router.replace('/video/' + encodeURIComponent(canonicalRouteCode));
+            await router.replace('/video/' + encodeURIComponent(canonicalRouteCode));
           } else {
             video.value = res;
+          }
+          if (res.rename_job_ids?.length) {
+            rescrapeError.value = false;
+            rescrapeMessage.value = '文件改名已排队';
           }
         }
 
         watch(() => route.params.code, () => {
           playing.value = false;
           selectedPart.value = '';
-          playbackHistory.value = null;
-          playbackHistoryError.value = '';
           rescraping.value = false;
           rescrapeMessage.value = '';
           rescrapeError.value = false;
@@ -3763,7 +3777,7 @@
             }, 2000);
           },
           selectedPart, copied, playVideo, copyStreamUrl, streamUrl, playing, playbackError, canPlay, backToLibrary,
-          player, playbackHistory, playbackHistoryError, showPlaybackHistory, playbackDuration,
+          player, playbackHistory, playbackHistoryCode, playbackHistoryError, showPlaybackHistory, playbackDate, playbackDuration,
           subtitleTracks, selectedSubtitle, subtitleStatus,
           coverFileInput, coverUploading, coverSrc, triggerCoverUpload, uploadCover,
           editingCode, codeDraft, startEditCode, cancelEditCode, saveCode,

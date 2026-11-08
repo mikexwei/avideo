@@ -558,21 +558,24 @@ class RenameFileEndpointTests(unittest.TestCase):
     def _post(self, body):
         return self.client.post('/api/videos/ABP-119-C/rename-file', json=body)
 
-    def test_renames_file_and_updates_db(self):
+    def test_queues_rename_without_moving_file_in_request(self):
         with _patch('web.backend.app.get_video_file_path', return_value=str(self.old)), \
-             _patch('web.backend.app.rename_video_file', return_value={'ok': True}) as m_ren, \
-             _patch('web.backend.app.get_video_by_code', return_value={'code': 'ABP-119-UC'}):
+             _patch('web.backend.app.patch_video', return_value=('ABP-119-UC', ['job'])) as save, \
+             _patch('web.backend.app.scrape_store'), \
+             _patch('core.service_manager.ensure_service'), \
+             _patch('web.backend.app.get_video_by_code', side_effect=[{'code': 'ABP-119-C'}, {'code': 'ABP-119-UC'}]):
             resp = self._post({'part': None, 'code': 'ABP-119-UC', 'actors': ['桃谷绘里香'], 'title': '标题'})
         self.assertEqual(resp.status_code, 200)
-        new = Path(self.dir) / 'ABP-119-UC.桃谷绘里香.[标题].mp4'
-        self.assertTrue(new.exists())
-        self.assertFalse(self.old.exists())
-        m_ren.assert_called_once()
+        self.assertEqual(resp.get_json()['rename_job_ids'], ['job'])
+        self.assertTrue(self.old.exists())
+        self.assertEqual(save.call_args.kwargs['new_code'], 'ABP-119-UC')
+        self.assertEqual(save.call_args.kwargs['manual_name'], (str(self.old), 'ABP-119-UC.桃谷绘里香.[标题].mp4'))
 
     def test_target_exists_returns_409(self):
-        (Path(self.dir) / 'ABP-119-UC.[标题].mp4').write_bytes(b'y')
-        with _patch('web.backend.app.get_video_file_path', return_value=str(self.old)):
-            resp = self._post({'part': None, 'code': 'ABP-119-UC', 'actors': [], 'title': '标题'})
+        (Path(self.dir) / 'ABP-119-C.[标题].mp4').write_bytes(b'y')
+        with _patch('web.backend.app.get_video_file_path', return_value=str(self.old)), \
+             _patch('web.backend.app.get_video_by_code', return_value={'code': 'ABP-119-C'}):
+            resp = self._post({'part': None, 'code': 'ABP-119-C', 'actors': [], 'title': '标题'})
         self.assertEqual(resp.status_code, 409)
         self.assertTrue(self.old.exists())
 
@@ -583,6 +586,7 @@ class RenameFileEndpointTests(unittest.TestCase):
 
     def test_source_missing_returns_400(self):
         self.old.unlink()
-        with _patch('web.backend.app.get_video_file_path', return_value=str(self.old)):
+        with _patch('web.backend.app.get_video_file_path', return_value=str(self.old)), \
+             _patch('web.backend.app.get_video_by_code', return_value={'code': 'ABP-119-C'}):
             resp = self._post({'part': None, 'code': 'ABP-119-UC', 'actors': [], 'title': 't'})
         self.assertEqual(resp.status_code, 400)

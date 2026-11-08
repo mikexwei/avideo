@@ -73,6 +73,11 @@ class RuntimeStore(QueueStore):
     def reserve_browser_access(self, kind, interval):
         with self.connect(write=True) as conn:
             now = time.time()
+            settings = json.loads(conn.execute(
+                "SELECT value_json FROM scrape_settings WHERE key='browser'"
+            ).fetchone()[0])
+            if settings['next_allowed_at'] > now:
+                return settings['next_allowed_at']
             until = self.browser_quota_until(connection=conn, now=now)
             if until:
                 return until
@@ -267,9 +272,9 @@ class RuntimeStore(QueueStore):
                 if not codes:
                     raise ValueError('没有失败的影片')
                 new_id = uuid.uuid4().hex
-                journals = {key: checkpoint.get(key, {}) for key in ('rename_moves', 'rename_identity')}
+                journals = {key: checkpoint.get(key, {}) for key in ('rename_moves', 'rename_identity', 'rename_previous')}
                 conn.execute("""INSERT INTO scrape_tasks(id,kind,code,payload_json,checkpoint_json,created_at,queued_at)
-                    VALUES (?,'pipeline_rescrape',?,?,?,?,?)""", (new_id, row['code'], json.dumps({'codes': codes}),
+                    VALUES (?,'pipeline_rescrape',?,?,?,?,?)""", (new_id, row['code'], json.dumps({**json.loads(row['payload_json']), 'codes': codes}),
                     json.dumps(journals), time.time(), time.time()))
                 task_id = new_id
             else:

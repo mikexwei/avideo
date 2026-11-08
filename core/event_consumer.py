@@ -9,7 +9,7 @@ from pathlib import Path
 
 from core import series_catalog, workflows
 from core.scrape_queue import StoredJob
-from core.task_policy import TargetChanged, matches_video_snapshot, snapshot
+from core.task_policy import TargetChanged, is_special_code, matches_video_snapshot, snapshot
 
 
 def execute_dependency(command):
@@ -116,6 +116,22 @@ class Consumer:
         if kind == 'pipeline_rescrape':
             codes = payload['codes']
             target_code = codes[state.get('index', 0)] if state.get('index', 0) < len(codes) else ''
+        elif kind == 'pipeline_auto':
+            target_code = target_code or payload.get('main_code')
+        elif kind == 'rename_files':
+            with self.store.connect() as conn:
+                target = conn.execute("""SELECT code FROM videos WHERE deleted=0
+                    AND id IN (SELECT value FROM json_each(?)) ORDER BY id LIMIT 1""",
+                                      (json.dumps(payload['video_ids']),)).fetchone()
+            if not target:
+                raise TargetChanged('关联影片已删除')
+            target_code = target['code']
+        if kind in ('video', 'pipeline_auto', 'pipeline_rescrape') and is_special_code(target_code):
+            if kind == 'pipeline_rescrape':
+                state['code'] = target_code
+                self.next_item(task, state, False, '特殊番号不参与刮削')
+                return
+            raise TargetChanged('特殊番号不参与刮削')
         if target_code and kind not in ('login_status', 'open_login', 'series_translate', 'series_report', 'subtitle_cache'):
             from core.scrape_queue import base_code
             target = ('actor:' if kind == 'actor' else 'video:') + base_code(target_code)
@@ -136,8 +152,8 @@ class Consumer:
                     return
                 state['code'] = payload['codes'][index]
                 self.emit(task, state['code'], 'running', '刮削中…')
-            elif kind == 'video':
-                state['code'] = task['code']
+            elif kind in ('video', 'rename_files'):
+                state['code'] = target_code
             elif kind == 'subtitle_cache':
                 state['phase'] = 'direct'
                 self.request(task, state, 'subtitle', kind, payload)
@@ -166,7 +182,7 @@ class Consumer:
                 return
             else:
                 raise ValueError('未知工作流类型 ' + kind)
-            state['phase'] = 'scrape'
+            state['phase'] = 'rename' if kind == 'rename_files' else 'scrape'
         if state['phase'] == 'scrape':
             expected = snapshot(self.store, state['code'])
             if 'response' not in state:
@@ -191,6 +207,11 @@ class Consumer:
             return
         if state['phase'] == 'assets':
             result = state.get('metadata_result')
+            if kind == 'pipeline_rescrape' and payload.get('require_actors') and isinstance(result, dict):
+                rows = snapshot(self.store, state['code'])
+                if any(not any(not actor['is_ignored'] for actor in row['_actors']) for row in rows):
+                    self.next_item(task, state, False, '来源未提供可用演员，保留原文件名')
+                    return
             if isinstance(result, dict) and 'response' not in state:
                 self.request(task, state, 'dependency', 'metadata_assets', {'code': state['code'], 'data': result,
                     'snapshot': snapshot(self.store, state['code'])})
@@ -247,12 +268,20 @@ class Consumer:
             self.commit_phase(task, state, apply_short_title)
             return
         if state['phase'] == 'rename':
-            snapshot(self.store, state['code'])
             self.emit(task, 'calc_filename', 'running', '计算文件名…')
-            workflows._rename_files_for_code(state['code'], job=job)
-            state.update({key: value for key, value in job.checkpoint().items() if key in ('rename_moves', 'rename_identity')})
+            if kind == 'rename_files':
+                changed = workflows._rename_files_for_code(
+                    state['code'], job=job, video_ids=payload['video_ids'],
+                    move_to_prefix=payload.get('move_to_prefix', False), manual_name=payload.get('manual_name'))
+                state['result'] = {'renamed': changed}
+                rename_message = '文件与数据库路径已更新' if changed else '文件名已是最新'
+            else:
+                snapshot(self.store, state['code'])
+                workflows._rename_files_for_code(state['code'], job=job)
+                rename_message = '文件与数据库路径已更新'
+            state.update({key: value for key, value in job.checkpoint().items() if key in ('rename_moves', 'rename_identity', 'rename_previous')})
             self.emit(task, 'calc_filename', 'done', '文件名已计算')
-            self.emit(task, 'rename', 'done', '文件与数据库路径已更新')
+            self.emit(task, 'rename', 'done', rename_message)
             self.emit(task, 'db_update', 'done', '数据库已更新')
             if kind == 'pipeline_rescrape':
                 self.next_item(task, state, True, '刮削完成')

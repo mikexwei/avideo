@@ -34,7 +34,12 @@ def register_admin_api(app):
 
     @api.get('/api/admin/services')
     def services():
-        return jsonify(services=[store().service(name) for name in ('consumer', 'browser')], browser=store().settings('browser'))
+        runtime = store()
+        browser = runtime.service('browser')
+        settings = runtime.settings('browser')
+        if not browser['alive'] or settings.get('session_generation') != browser['generation']:
+            settings.update(session_open=False, session_logged_in=None)
+        return jsonify(services=[runtime.service('consumer'), browser], browser=settings)
 
     @api.route('/api/admin/series/reports', methods=['GET', 'POST'])
     def series_reports():
@@ -165,8 +170,9 @@ def register_admin_api(app):
                 type(peak_limit) is not int or not 1 <= peak_limit <= 3600 or
                 type(spread) not in (int, float) or not 0.5 <= spread <= 12):
             raise ValueError('峰值小时须为 0–23，额度 1–3600 次，曲线宽度 0.5–12 小时')
-        limits = [math.floor(peak_limit * math.exp(-0.5 * ((hour - peak_hour) / spread) ** 2) + 0.5)
-                  for hour in range(24)]
+        distances = [min(abs(hour - peak_hour), 24 - abs(hour - peak_hour)) for hour in range(24)]
+        limits = [math.floor(peak_limit * math.exp(-0.5 * (distance / spread) ** 2) + 0.5)
+                  for distance in distances]
         profile = dict(peak_hour=peak_hour, peak_limit=peak_limit, spread=spread, limits=limits)
         runtime = store()
         with runtime.connect(write=True) as conn:
@@ -295,7 +301,7 @@ def register_admin_api(app):
             code = json.loads(command['payload_json']).get('code')
             if not code:
                 raise ValueError('失败事件没有可重试的影片')
-            job_id = store().submit('pipeline_rescrape', code, {'codes': [code]})
+            job_id = store().submit('pipeline_rescrape', code, {**json.loads(task['payload_json']), 'codes': [code]})
         else:
             raise ValueError('工作流尚未结束，或该阶段已经成功')
         store().audit('redeliver', str(event_id), {'job_id': job_id})

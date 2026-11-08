@@ -31,6 +31,13 @@ def ensure_schema(conn):
         ON playback_sessions(video_key,last_played_at DESC)""")
 
 
+def move_history(conn, old_code, new_code):
+    old_key, new_key = video_key(old_code), video_key(new_code)
+    if old_key != new_key:
+        ensure_schema(conn)
+        conn.execute('UPDATE playback_sessions SET video_key=? WHERE video_key=?', (new_key, old_key))
+
+
 def report(conn, code, session_id, payload):
     try:
         session_id = str(uuid.UUID(session_id))

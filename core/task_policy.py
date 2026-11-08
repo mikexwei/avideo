@@ -3,6 +3,13 @@ import json
 from contextlib import nullcontext
 
 
+SPECIAL_CODE_PREFIXES = ('CN', 'DUMMY')
+
+
+def is_special_code(code):
+    return bool(code) and code.upper().partition('-')[0] in SPECIAL_CODE_PREFIXES
+
+
 class TargetChanged(ValueError):
     pass
 
@@ -47,6 +54,8 @@ def validate_command(store, command):
             actor = conn.execute('SELECT * FROM actors WHERE id=?', (payload['actor_snapshot']['id'],)).fetchone()
         if actor is None or dict(actor) != payload['actor_snapshot']:
             raise TargetChanged('演员在等待期间已改变')
+    if command['kind'] == 'video' and is_special_code(payload.get('code')):
+        raise TargetChanged('特殊番号不参与刮削')
     expected = payload.get('snapshot')
     if expected is not None and not matches_video_snapshot(store, payload['code'], expected):
         raise TargetChanged('影片在等待期间已改变，结果需重新请求')

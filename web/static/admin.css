@@ -63,9 +63,9 @@
 .admin-view .usage-header { justify-content: space-between; margin-bottom: 14px; }
 .admin-view .usage-total { font-weight: 700; font-variant-numeric: tabular-nums; }
 .admin-view .usage-legend { margin: 8px 0; font-size: var(--text-small); }
-.admin-view .usage-legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; }
-.admin-view .usage-allowed::before, .admin-view .usage-bars .usage-allowed { background: #7e778c; }
-.admin-view .usage-used::before, .admin-view .usage-bars .usage-used { background: #c2a6f1; }
+.admin-view .usage-legend :is(.usage-allowed, .usage-used)::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; }
+.admin-view .usage-legend .usage-allowed::before, .admin-view .usage-bar .usage-allowed { background: #d9c7f6; }
+.admin-view .usage-legend .usage-used::before, .admin-view .usage-bar .usage-used { background: #8159bd; }
 .admin-view .usage-scroll { overflow-x: auto; padding: 4px; }
 .admin-view .usage-chart { display: grid; grid-template-columns: repeat(var(--hours, 24), minmax(28px, 1fr)); }
 .admin-view button.usage-hour {
@@ -74,18 +74,29 @@
   font-size: 11px; font-variant-numeric: tabular-nums;
 }
 .admin-view button.usage-hour[aria-pressed=true] { border-color: var(--service-accent); background: var(--surface); }
-.admin-view .usage-bars { display: flex; align-items: end; justify-content: center; gap: 2px; height: 115px; border-bottom: 1px solid var(--line); }
-.admin-view .usage-bars span { width: min(11px, 38%); border-radius: 2px 2px 0 0; }
+.admin-view .usage-bar { position: relative; display: block; height: 115px; border-bottom: 1px solid var(--line); }
+.admin-view .usage-bar > span { position: absolute; inset: auto 0 0; width: min(16px, 70%); margin-inline: auto; border-radius: 2px 2px 0 0; }
 .admin-view .usage-detail { margin-top: 8px; font-weight: 650; }
 .admin-view .quota-editor { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .admin-view .quota-editor summary { cursor: pointer; font-weight: 700; padding-block: 8px; }
-.admin-view #quota-curve { display: block; width: 100%; max-width: 760px; margin: 10px 0; touch-action: none; }
-.admin-view #quota-curve text { fill: var(--muted); font-size: 15px; }
+.admin-view .quota-plot { width: min(100%, 760px); margin: 10px 0; }
+.admin-view #quota-curve { display: block; width: 100%; }
 .admin-view .quota-axis { stroke: var(--control-line); }
+.admin-view .quota-center { stroke: var(--control-line); stroke-dasharray: 3 5; }
 .admin-view #quota-line { stroke: #c2a6f1; stroke-width: 3; fill: none; }
-.admin-view #quota-curve circle { fill: #c2a6f1; stroke: transparent; stroke-width: 32; cursor: grab; }
+.admin-view #quota-curve circle { fill: #c2a6f1; stroke: transparent; stroke-width: 32; cursor: grab; touch-action: none; }
 .admin-view #quota-curve circle:active { cursor: grabbing; }
 .admin-view #quota-curve #quota-width { fill: #9d91b0; }
+.admin-view .quota-timeline { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); min-height: 44px; margin-inline: 3.333%; color: var(--muted); cursor: grab; touch-action: pan-y; user-select: none; }
+.admin-view .quota-timeline:active { cursor: grabbing; }
+.admin-view .quota-tick { position: relative; min-width: 0; font-size: 11px; font-variant-numeric: tabular-nums; }
+.admin-view .quota-tick::before { content: ''; position: absolute; inset: 0 auto auto 0; height: 4px; border-left: 1px solid var(--control-line); }
+.admin-view .quota-tick span { position: absolute; inset: 10px auto auto 0; transform: translateX(-50%); }
+.admin-view .quota-tick.is-peak { color: var(--primary); font-weight: 700; }
+.admin-view .quota-tick.is-peak::before { height: 8px; border-color: var(--primary); }
+@media (max-width: 660px) {
+  .admin-view .quota-tick:not(.is-major) span { display: none; }
+}
 .admin-view .quota-fields { display: flex; flex-wrap: wrap; gap: 8px 12px; }
 .admin-view .quota-fields label { display: grid; gap: 4px; font-size: var(--text-small); }
 .admin-view .quota-fields input { width: 100px; }
