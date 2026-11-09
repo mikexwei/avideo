@@ -18,14 +18,14 @@
 | `GET /api/actors` | `q` 模糊匹配原名或中文名 | 最多 10 条 `{id, name, name_zh, avatar_path}`。空查询返回 `[]` |
 | `GET /api/actors/all` | 无 | 有在库影片且未忽略的演员，另含去重作品数 `count`、搜索用名称 `search_names` |
 | `GET /api/actors/{actor_id}` | 整数演员 ID | `{actor, videos}`。作品项含 `code`、`tags` 和 `deleted`。无该演员时返回 `404` |
-| `GET /api/tags/all` | 无 | 在库影片使用的标签，格式为 `[{id, name, count}]`，`count` 为关联的在库番号数 |
+| `GET /api/tags/all` | 默认只返回在库影片使用的标签。传 `include_unused=1` 也返回未使用的标签 | `[{id, name, count}]`，`count` 为关联的在库番号数 |
 | `GET /api/tags/{tag_id}` | 整数标签 ID | `{tag, videos}`。作品项含 `code` 和 `deleted`。无该标签时返回 `404` |
 | `GET /api/series` | `q` 匹配原系列名、译名或归并后的名称 | 最多 10 条 `{name, name_zh}`。旧数据库可能只返回 `name` |
 | `GET /api/series/all` | 无 | 系列名 `series`、原名 `raw_name`、作品数 `count`。启用系列目录时还含 `jp_id`、`final_id`、`translation_status` |
 | `GET /api/series/videos` | `jp` 原系列 ID、`final` 归并系列 ID 或 `s` 原系列名，三选一。支持 `page`、`limit`、`sort` | `{page, limit, total, items, name}` |
 | `GET /api/prefixes/all` | 无 | `[{prefix, count}]`，按番号首段分组 |
 | `GET /api/prefixes/videos` | 必填 `prefix`，如 `DEMO`。支持 `page`、`limit`、`sort` | `{page, limit, total, items}` |
-| `GET /api/recommendations` | `tag`、`tags` 同影片列表 | 最多 8 条随机推荐摘要 |
+| `GET /api/recommendations` | `tag`、`tags`、`exclude` 同影片列表 | 最多 8 条随机推荐摘要 |
 | `GET /api/stats` | 无 | 总数 `total_videos`、`deleted_videos`、`total_actors`、`total_tags`、`total_series`，以及 `scrape_status`、`translated`、`has_cover`、`by_year`、`score_dist`、`top_makers`、`top_actors`、`actor_disk_usage`、`top_tags` |
 
 ### 影片列表筛选
@@ -39,6 +39,7 @@
 | `has_cover=1`、`has_translation=1` | 只保留有封面、已有中文标题的记录 |
 | `scrape_status` | 按影片刮削状态精确匹配，例如 `PENDING`、`SUCCESS`、`FAILED` |
 | `tag`、`tags` | 用标签名称精确匹配。可重复传 `tag`，也可传逗号分隔的 `tags`。默认要求同一个在库文件记录命中所有选中标签 |
+| `exclude=1` | 某番号的任一在库分段命中任一选中标签时，排除整个番号。未提供标签时不应用此筛选 |
 
 列表只筛选未删除记录。响应中的 `total` 是符合条件的不同番号数，`items` 包含 `id`、`code`、`title_jp`、`title_zh`、`release_date`、`score`、`cover_path`、`scrape_status`、`deleted`。按播放排序时还返回 `last_played_at` 和 `watched_ms`。搜索、演员作品、标签作品和前缀作品的摘要可能含已删除记录，取在库影片时请检查 `deleted`。
 

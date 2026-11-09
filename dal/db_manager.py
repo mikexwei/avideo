@@ -135,13 +135,19 @@ def _version_suffix(code: str) -> str:
     return ""
 
 
-def _tag_filter_conditions(alias: str, tags: Optional[List[str]]) -> tuple[list[str], list[str]]:
+def _tag_filter_conditions(alias: str, tags: Optional[List[str]], *, exclude=False) -> tuple[list[str], list[str]]:
+    tags = [tag.strip() for tag in tags or [] if tag.strip()]
+    if exclude and tags:
+        placeholders = ', '.join('?' for _ in tags)
+        # A tag on any active part excludes the film, even if its representative row lacks it.
+        return [f"""{alias}.code NOT IN (
+            SELECT tagged.code FROM videos tagged
+            JOIN video_tag_link link ON link.video_id = tagged.id
+            JOIN tags tag ON tag.id = link.tag_id
+            WHERE tagged.deleted = 0 AND tag.name IN ({placeholders})
+        )"""], tags
     conditions = []
-    params = []
-    for tag in tags or []:
-        tag = tag.strip()
-        if not tag:
-            continue
+    for _ in tags:
         conditions.append(
             f"""EXISTS (
                 SELECT 1
@@ -151,8 +157,7 @@ def _tag_filter_conditions(alias: str, tags: Optional[List[str]]) -> tuple[list[
                   AND t_filter.name = ?
             )"""
         )
-        params.append(tag)
-    return conditions, params
+    return conditions, tags
 
 def batch_insert_scanned_videos(scanned_results: list, scrape_status: str = 'PENDING') -> tuple[int, int]:
     """
@@ -554,6 +559,8 @@ def list_videos(
     has_translation: bool = False,
     scrape_status: str = None,
     tags: Optional[List[str]] = None,
+    *,
+    exclude_tags: bool = False,
 ) -> Dict[str, Any]:
     page = max(1, page)
     limit = max(1, min(limit, 200))
@@ -578,7 +585,7 @@ def list_videos(
     if scrape_status:
         conditions.append("v.scrape_status = ?")
         params.append(scrape_status.upper())
-    tag_conditions, tag_params = _tag_filter_conditions("v", tags)
+    tag_conditions, tag_params = _tag_filter_conditions("v", tags, exclude=exclude_tags)
     conditions.extend(tag_conditions)
     params.extend(tag_params)
 
@@ -1115,7 +1122,7 @@ def get_stats() -> Dict[str, Any]:
             conn.close()
 
 
-def get_recommendations(count: int = 8, tags: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def get_recommendations(count: int = 8, tags: Optional[List[str]] = None, *, exclude_tags: bool = False) -> List[Dict[str, Any]]:
     """Return `count` diverse successful videos with covers (no VR tags).
 
     Uses a single SQL pass: assigns each qualifying video its lexicographically
@@ -1140,7 +1147,7 @@ def get_recommendations(count: int = 8, tags: Optional[List[str]] = None) -> Lis
         vr_ids = {r[0] for r in cursor.fetchall()}
 
         # Candidates: one representative row per code, has cover.
-        tag_conditions, tag_params = _tag_filter_conditions("videos", tags)
+        tag_conditions, tag_params = _tag_filter_conditions("videos", tags, exclude=exclude_tags)
         tag_where = "".join(f"\n              AND {condition}" for condition in tag_conditions)
         cursor.execute(
             f"""
@@ -1216,19 +1223,20 @@ def get_recommendations(count: int = 8, tags: Optional[List[str]] = None) -> Lis
             conn.close()
 
 
-def list_all_tags_with_count() -> List[Dict[str, Any]]:
+def list_all_tags_with_count(*, include_unused: bool = False) -> List[Dict[str, Any]]:
     conn = None
     try:
         conn = _get_conn()
         cursor = conn.cursor()
+        in_use = '' if include_unused else 'HAVING COUNT(v.code) > 0'
         cursor.execute(
-            """
+            f"""
             SELECT t.id, t.name, COUNT(DISTINCT v.code) AS count
             FROM tags t
-            JOIN video_tag_link vtl ON vtl.tag_id = t.id
-            JOIN videos v ON v.id = vtl.video_id
-            WHERE v.deleted = 0
+            LEFT JOIN video_tag_link vtl ON vtl.tag_id = t.id
+            LEFT JOIN videos v ON v.id = vtl.video_id AND v.deleted = 0
             GROUP BY t.id, t.name
+            {in_use}
             ORDER BY count DESC, t.name
             """
         )

@@ -788,7 +788,7 @@ def api_videos():
         page=page, limit=limit, sort=sort,
         year=year, score_min=score_min, score_max=score_max,
         has_cover=has_cover, has_translation=has_translation,
-        scrape_status=scrape_status, tags=tags,
+        scrape_status=scrape_status, tags=tags, exclude_tags=request.args.get('exclude') == '1',
     ))
 
 
@@ -1476,12 +1476,13 @@ def api_stats():
 
 @app.get('/api/recommendations')
 def api_recommendations():
-    return jsonify(get_recommendations(count=8, tags=_selected_tags()))
+    return jsonify(get_recommendations(count=8, tags=_selected_tags(),
+                                       exclude_tags=request.args.get('exclude') == '1'))
 
 
 @app.get('/api/tags/all')
 def api_tags_all():
-    return jsonify(list_all_tags_with_count())
+    return jsonify(list_all_tags_with_count(include_unused=request.args.get('include_unused') == '1'))
 
 
 @app.get('/api/actors/all')
