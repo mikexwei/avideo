@@ -473,7 +473,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(Path(row['original_file_path']).exists())
         self.assertIn('短标题', row['original_file_path'])
 
-    def test_upload_translation_survives_concurrent_actor_avatar_update(self):
+    def test_upload_survives_actor_avatar_and_equivalent_name_updates(self):
         from dal.db_manager import update_actor_avatar
 
         self.browser.scrape.return_value = {'title_jp': '作品', 'actors': 'New Actor', 'categories': ''}
@@ -491,6 +491,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(command['kind'], 'translate')
         self.assertEqual(self.store.get(task_id)['status'], 'PENDING')
         self.consumer.tick()  # Submit short title.
+        with self.store.connect(write=True) as conn:
+            conn.execute('UPDATE actors SET name_zh=name WHERE id=?', (actor_id,))
         self.complete_dependency('短标题')
         self.consumer.tick()  # Rename and finish.
         self.assertEqual(self.store.get(task_id)['status'], 'DONE')

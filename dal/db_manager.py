@@ -311,7 +311,9 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             if tags_str:
                 tag_list = [_to_simplified(t.strip()) for t in tags_str.split(',') if t.strip()]
                 for tag_name in tag_list:
-                    if tag_name in SUBTITLE_TAGS:
+                    if tag_name in SUBTITLE_TAGS or re.sub(r"\s+", "", tag_name).casefold() in {
+                        "ltx破解", "ltx无码破解",
+                    }:
                         continue
                     cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
                     cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
@@ -331,7 +333,7 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
         if owns_connection:
             conn.commit()
         if status == 'SUCCESS' and data:
-            sync_derived_video_tags_for_code(code, connection=connection)
+            sync_derived_video_tags_for_code(code, connection=connection, preserve_crack_tags=True)
         logger.debug(f"💾 数据库多表联动更新完毕: 番号 {code} (包含 {len(target_video_ids)} 个分集记录) -> 状态 {status}")
         return new_actors
         
@@ -382,7 +384,7 @@ def sync_derived_video_tags_for_code(
     code: str,
     uncensored_crack_tag: Optional[str] = None,
     subtitle_classification: Optional[str] = None,
-    *, connection=None,
+    *, connection=None, preserve_crack_tags=False,
 ) -> int:
     conn = connection
     owns_connection = connection is None
@@ -409,13 +411,18 @@ def sync_derived_video_tags_for_code(
         )
         existing_tags = {r["name"] for r in cursor.fetchall()}
 
+        tags_to_remove = _DERIVED_TAGS_TO_REMOVE
+        if preserve_crack_tags:
+            # Scraping refreshes source-derived tags without rewriting the upload's crack choice.
+            tags_to_remove = tuple(tag for tag in tags_to_remove
+                                   if tag not in _UNCENSORED_CRACK_TAGS + _LEGACY_UNCENSORED_CRACK_TAGS)
         cursor.execute(
             f"""
             DELETE FROM video_tag_link
             WHERE video_id IN ({id_placeholders})
-              AND tag_id IN (SELECT id FROM tags WHERE name IN ({",".join("?" * len(_DERIVED_TAGS_TO_REMOVE))}))
+              AND tag_id IN (SELECT id FROM tags WHERE name IN ({",".join("?" * len(tags_to_remove))}))
             """,
-            video_ids + list(_DERIVED_TAGS_TO_REMOVE),
+            video_ids + list(tags_to_remove),
         )
 
         changed = 0
@@ -426,6 +433,8 @@ def sync_derived_video_tags_for_code(
                 uncensored_crack_tag,
             )
             for tag in derived_tags:
+                if preserve_crack_tags and tag in _UNCENSORED_CRACK_TAGS:
+                    continue
                 cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
                 cursor.execute("SELECT id FROM tags WHERE name = ?", (tag,))
                 tag_id = cursor.fetchone()["id"]

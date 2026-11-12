@@ -151,6 +151,28 @@ class UpdateMetadataActorTests(unittest.TestCase):
         self.assertIn(('女教师',), tags)
         self.assertIn(('骑乘位',), tags)
 
+    def test_scrape_ignores_ltx_labels_and_keeps_the_uploaded_choice(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript("""
+                UPDATE videos SET file_birthtime='2024-01-01' WHERE id=1;
+                INSERT INTO videos(id, code, file_birthtime) VALUES (2, 'TEST-002-UC', '2026-10-20');
+                INSERT INTO tags(id, name) VALUES (1, 'LTX 无码破解');
+                INSERT INTO video_tag_link VALUES (1, 1);
+            """)
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            for video_id in (1, 2):
+                update_video_metadata(video_id, 'SUCCESS', {
+                    'categories': 'LTX破解,LTX 破解,ltx 無碼破解,骑乘位',
+                })
+
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(conn.execute(
+                'SELECT name FROM tags ORDER BY name',
+            ).fetchall(), [('LTX 无码破解',), ('骑乘位',)])
+            self.assertEqual(conn.execute(
+                'SELECT video_id, name FROM video_tag_link JOIN tags ON tags.id=tag_id ORDER BY video_id, name',
+            ).fetchall(), [(1, 'LTX 无码破解'), (1, '骑乘位'), (2, '骑乘位')])
+
     def test_actor_variants_reuse_one_record_across_manual_entry_and_scraping(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT INTO actors (id, name) VALUES (10, '橘梨紗')")

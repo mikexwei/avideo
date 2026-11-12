@@ -29,18 +29,19 @@ def snapshot(store, code, connection=None):
 
 
 def matches_video_snapshot(store, code, expected, connection=None):
-    def without_actor_avatars(rows):
+    def normalize_actor_display_names(rows):
         return [
             {**row, '_actors': [
-                {key: value for key, value in actor.items() if key != 'avatar_path'}
+                {**{key: value for key, value in actor.items() if key != 'avatar_path'},
+                 'name_zh': actor.get('name_zh') or actor['name']}
                 for actor in row['_actors']
             ]}
             for row in rows
         ]
 
-    # Actor jobs can update avatars independently. Names and links still matter.
+    # Avatar updates and filling in the existing display name are equivalent here.
     current = snapshot(store, code, connection=connection)
-    return without_actor_avatars(current) == without_actor_avatars(expected)
+    return normalize_actor_display_names(current) == normalize_actor_display_names(expected)
 
 
 def validate_command(store, command):
