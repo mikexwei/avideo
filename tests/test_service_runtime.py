@@ -778,6 +778,107 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(Path(row[0]).exists())
         self.browser.scrape.assert_not_called()
 
+    def test_upload_with_explicit_no_subtitle_keeps_uncensored_suffix_and_skips_west_scrape(self):
+        module = importlib.import_module('web.backend.app')
+        with patch.object(module, 'DB_PATH', self.path), patch.object(module, 'scrape_store', return_value=self.store), \
+             patch.object(module, 'MEDIA_LIBRARIES', [self.root]), patch.object(module, 'ensure_worker'):
+            response = module.app.test_client().post('/api/videos/add-auto', data={
+                'volume_path': str(self.root), 'uncensored_crack_tag': '',
+                'subtitle_classification': '无字幕',
+                'files[]': (io.BytesIO(b'upload'), 'WEST-100-UC.mp4'),
+            })
+        self.assertEqual(response.status_code, 202)
+        task_id = response.get_json()['job_id']
+        self.consumer.tick()
+        self.assertEqual(self.store.get(task_id)['status'], 'DONE')
+        self.browser.scrape.assert_not_called()
+        detail = module.app.test_client().get('/api/videos/WEST-100-U').get_json()
+        self.assertEqual(detail['subtitle_classification'], '无字幕')
+        self.assertEqual(Path(detail['original_file_path']).name, 'WEST-100-U.mp4')
+
+    def test_subtitle_edit_moves_all_parts_and_rolls_back_on_conflict(self):
+        module = importlib.import_module('web.backend.app')
+        first, second = (self.root / f'RBD-001-UC.part{i}.mp4' for i in (1, 2))
+        self.file.rename(first)
+        second.write_bytes(b'second')
+        with self.store.connect(write=True) as conn:
+            conn.execute("UPDATE videos SET code='RBD-001-UC',part='part1',original_file_path=? WHERE id=1", (str(first),))
+            conn.execute("INSERT INTO videos(code,part,original_file_path) VALUES ('RBD-001-UC','part2',?)", (str(second),))
+        client = module.app.test_client()
+        conflict = self.root / 'RBD-001-U.part2.mp4'
+        conflict.write_bytes(b'unrelated')
+        with patch.object(module, 'scrape_store', return_value=self.store):
+            url = '/api/videos/RBD-001-UC'
+            rejected = client.patch(url, json={'subtitle_classification': '无字幕'})
+            self.assertEqual(rejected.status_code, 409)
+            self.assertEqual(client.get(url).get_json()['code'], 'RBD-001-UC')
+            self.assertTrue(first.exists() and second.exists())
+            self.assertEqual(conflict.read_bytes(), b'unrelated')
+            conflict.unlink()
+            response = client.patch(url, json={'subtitle_classification': '无字幕'})
+            self.assertEqual(response.status_code, 200)
+            result = response.get_json()
+            self.assertEqual(result['code'], 'RBD-001-U')
+            self.assertEqual(result['subtitle_classification'], '无字幕')
+            self.assertEqual([Path(p['original_file_path']).read_bytes() for p in result['parts']], [b'video', b'second'])
+
+    def test_replacing_one_part_updates_other_part_filename_and_classification(self):
+        module = importlib.import_module('web.backend.app')
+        first, second = (self.root / f'RBD-001-C.part{i}.mp4' for i in (1, 2))
+        self.file.rename(first)
+        second.write_bytes(b'second')
+        with self.store.connect(write=True) as conn:
+            conn.execute("UPDATE videos SET code='RBD-001-C',part='part1',original_file_path=? WHERE id=1", (str(first),))
+            conn.execute("INSERT INTO videos(code,part,original_file_path) VALUES ('RBD-001-C','part2',?)", (str(second),))
+        response = module.app.test_client().post('/api/videos/RBD-001-C/replace?part=part1', data={
+            'file': (io.BytesIO(b'replacement'), 'RBD-001-C.mp4'),
+            'dest_name': 'RBD-001-C.mp4', 'file_size': '11',
+            'subtitle_classification': '无字幕',
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        result = response.get_json()
+        self.assertEqual(result['code'], 'RBD-001')
+        self.assertEqual(result['subtitle_classification'], '无字幕')
+        paths = [Path(row['original_file_path']) for row in result['parts']]
+        self.assertEqual([path.name for path in paths], ['RBD-001.part1.mp4', 'RBD-001.part2.mp4'])
+        self.assertEqual([path.read_bytes() for path in paths], [b'replacement', b'second'])
+        self.assertFalse(first.exists() or second.exists())
+
+    def test_version_search_keeps_variants_and_excludes_deleted_rows(self):
+        module = importlib.import_module('web.backend.app')
+        with self.store.connect(write=True) as conn:
+            conn.executemany('INSERT INTO videos(code,original_file_path,deleted) VALUES (?,?,?)', [
+                ('RBD-001-C', '/vol/c.mp4', 0), ('RBD-001-C', '/vol/c2.mp4', 0),
+                ('RBD-001-U', '/vol/u.mp4', 0), ('RBD-001-UC', '/vol/uc.mp4', 0),
+                ('RBD-0010', '/vol/other.mp4', 0), ('DEL-001-C', '/vol/deleted.mp4', 1),
+                ('FC2-PPV-123-C', '/vol/fc2.mp4', 0), ('N0783-U', '/vol/n0783.mp4', 0),
+            ])
+        client = module.app.test_client()
+        for query in ('rbd-001', 'RBD-001-C', 'rbd-001-u', 'rbd-001-uc'):
+            result = client.get('/api/search', query_string={'q': query}).get_json()
+            self.assertEqual(result['total'], 4)
+            self.assertEqual({r['code'] for r in result['items']},
+                             {'RBD-001', 'RBD-001-C', 'RBD-001-U', 'RBD-001-UC'})
+        self.assertEqual(client.get('/api/search?q=DEL-001-UC').get_json()['items'], [])
+        for query, expected in [('FC2-PPV-123-U', 'FC2-PPV-123-C'), ('N0783-C', 'N0783-U')]:
+            self.assertEqual([r['code'] for r in client.get('/api/search', query_string={'q': query}).get_json()['items']],
+                             [expected])
+
+    def test_api_rejects_invalid_subtitle_and_vr_with_subtitles(self):
+        module = importlib.import_module('web.backend.app')
+        with patch.object(module, 'scrape_store', return_value=self.store):
+            client = module.app.test_client()
+            for value in (None, '', '中文字幕', ['硬字幕']):
+                result = client.patch('/api/videos/RBD-001', json={'subtitle_classification': value})
+                self.assertEqual(result.status_code, 400)
+            result = client.patch('/api/videos/RBD-001', json={'tags': ['VR'], 'subtitle_classification': '硬字幕'})
+            self.assertEqual(result.status_code, 400)
+            result = client.patch('/api/videos/RBD-001', json={'tags': ['外挂 OCR 字幕']})
+            self.assertEqual(result.status_code, 400)
+            result = client.patch('/api/videos/RBD-001', json={'tags': ['VR'], 'subtitle_classification': '无字幕'})
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(result.get_json()['subtitle_classification'], '无字幕')
+
     def test_service_processes_restart_consumer_without_restarting_browser(self):
         import subprocess
         import sys
@@ -918,24 +1019,26 @@ manager.run_service(sys.argv[3])
             self.assertEqual([tuple(row) for row in links], [(2, 1)])
             self.assertEqual(conn.execute('SELECT name FROM actors WHERE id=1').fetchone()[0], '示例演员')
 
-    def test_special_codes_skip_scrape_and_automatic_rename(self):
+    def test_special_codes_skip_scrape_and_use_standard_rename(self):
         app = importlib.import_module('web.backend.app').app
         with self.store.connect(write=True) as conn:
             conn.execute("UPDATE videos SET code='CN-001'")
-        with patch('web.backend.app.scrape_store', return_value=self.store), patch('web.backend.app.DB_PATH', self.path):
+        with patch('web.backend.app.scrape_store', return_value=self.store), patch('web.backend.app.DB_PATH', self.path), patch('core.service_manager.ensure_service'):
             client = app.test_client()
             self.assertEqual(client.post('/api/videos/CN-001/rescrape').status_code, 400)
             response = client.patch('/api/videos/CN-001', json={'code': 'DUMMY-001', 'title_zh_short': '自定义标题'})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()['rename_job_ids'], [])
+        rename_job, = response.get_json()['rename_job_ids']
+        self.consumer.tick()
+        self.assertEqual(self.store.get(rename_job)['status'], 'DONE')
         task_id = self.task('pipeline_rescrape', codes=['DUMMY-001'])
         self.consumer.tick()
         self.consumer.tick()
         self.assertEqual(self.store.get(task_id)['status'], 'DONE')
-        self.assertEqual(self.file.read_bytes(), b'video')
+        self.assertEqual((self.file.parent / 'DUMMY-001.[自定义标题].mp4').read_bytes(), b'video')
         with self.store.connect() as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM dependency_commands').fetchone()[0], 0)
-            self.assertEqual(conn.execute('SELECT original_file_path FROM videos').fetchone()[0], str(self.file))
+            self.assertEqual(conn.execute('SELECT original_file_path FROM videos').fetchone()[0], str(self.file.parent / 'DUMMY-001.[自定义标题].mp4'))
 
     def test_actor_repair_preserves_other_parts_when_scrape_returns_no_cast(self):
         with self.store.connect(write=True) as conn:

@@ -3,7 +3,7 @@ import json
 from contextlib import nullcontext
 
 
-SPECIAL_CODE_PREFIXES = ('CN', 'DUMMY')
+SPECIAL_CODE_PREFIXES = ('CN', 'DUMMY', 'WEST')
 
 
 def is_special_code(code):

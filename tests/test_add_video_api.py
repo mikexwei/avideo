@@ -528,7 +528,7 @@ class AddAutoEndpointTests(unittest.TestCase):
             )
         self.assertEqual(resp.status_code, 400)
 
-    def test_accepts_any_existing_tags_and_custom_subtitle_classification(self):
+    def test_accepts_explicit_no_subtitles_for_vr(self):
         db_fd, db_path = tempfile.mkstemp(suffix='.db')
         os.close(db_fd)
         conn = sqlite3.connect(db_path)
@@ -547,7 +547,7 @@ class AddAutoEndpointTests(unittest.TestCase):
                     data={
                         'volume_path': self.tmpdir,
                         'files[]': (io.BytesIO(b'video'), 'SSIS-001.mp4'),
-                        'subtitle_classification': '机翻中文 V2',
+                        'subtitle_classification': '无字幕',
                         'tags': json.dumps(['VR']),
                     },
                     content_type='multipart/form-data',
@@ -555,7 +555,7 @@ class AddAutoEndpointTests(unittest.TestCase):
 
             self.assertEqual(resp.status_code, 202)
             payload = json.loads(_queue_mock.connect.return_value.__enter__.return_value.execute.call_args.args[1][1])
-            self.assertEqual(payload['subtitle_classification'], '机翻中文 V2')
+            self.assertEqual(payload['subtitle_classification'], '无字幕')
             self.assertEqual(payload['additional_tags'], ['VR'])
         finally:
             os.unlink(db_path)

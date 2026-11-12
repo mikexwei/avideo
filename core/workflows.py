@@ -1,6 +1,5 @@
 """Local workflow stages. External work is submitted by the Consumer."""
 import json
-import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Optional
 from config import DB_PATH
 from core.scanner import extract_video_code
 from core.task_policy import is_special_code
+from core.subtitle_policy import NO_SUBTITLE, VERSION_SUFFIX, default_subtitle, subtitle_code, validate_subtitle
 from dal.db_manager import (batch_insert_scanned_videos, sync_derived_video_tags_for_code,
                             add_existing_tags_to_video, get_video_by_code, update_video_metadata)
 from utils.rename_and_move_videos import VideoRecord, build_destination, build_filename
@@ -25,17 +25,23 @@ def prepare_upload(job, file_paths, volume_path, uncensored_crack_tag='LTX 无�
         code, part = extract_video_code(fpath.stem)
         if not code:
             raise ValueError(f'无法解析番号: {fpath.name}，请改用手动模式')
-        if is_special_code(code):
-            raise ValueError('CN 和 DUMMY 请使用手动上传')
-        if subtitle_classification is not None:
-            base = re.sub(r'(?i)-(?:uc|u|c)$', '', code)
-            has_u = bool(uncensored_crack_tag) or code.upper().endswith(('-U', '-UC'))
-            has_c = bool(subtitle_classification)
-            code = base + ('-UC' if has_u and has_c else '-U' if has_u else '-C' if has_c else '')
         if len(sorted_paths) > 1 and not part:
             part = f'part{i + 1}'
         codes_parts.append((code, part, fpath))
-    main_code = codes_parts[0][0]
+    base_codes = {VERSION_SUFFIX.sub('', code).upper() for code, _, _ in codes_parts}
+    if len(base_codes) != 1:
+        raise ValueError('一个上传批次只能包含一个番号')
+    vr = 'VR' in (additional_tags or ())
+    classification = subtitle_classification
+    if classification is None:
+        default_code = next((code for code, _, _ in codes_parts if code.upper().endswith(('-C', '-UC'))), '')
+        classification = NO_SUBTITLE if vr else default_subtitle(default_code)
+    validate_subtitle(classification, vr=vr)
+    uncensored = bool(uncensored_crack_tag) or any(code.upper().endswith(('-U', '-UC')) for code, _, _ in codes_parts)
+    main_code = subtitle_code(codes_parts[0][0], classification, uncensored=uncensored)
+    codes_parts = [(main_code, part, path) for _, part, path in codes_parts]
+    if len({part for _, part, _ in codes_parts}) != len(codes_parts):
+        raise ValueError('上传批次有重复分段')
     emit('parse_code', 'done', f'番号: {main_code}')
 
     # ── Steps 2-3: Move to destination ──────────────────────
@@ -57,14 +63,23 @@ def prepare_upload(job, file_paths, volume_path, uncensored_crack_tag='LTX 无�
             checkpoint['upload_files'] = planned
             job.checkpoint(checkpoint)
     for item in planned:
+        source, target = Path(item['source']), Path(item['original_path'])
+        if source.exists() and (target.exists() or target.is_symlink()) and source != target:
+            raise FileExistsError(f'目标文件已存在，保留上传文件: {target}')
+    for item in planned:
         code, part, tmp_path = item['code'], item['part'], Path(item['source'])
         dest_path = Path(item['original_path'])
         dest_dir = dest_path.parent
         dest_dir.mkdir(parents=True, exist_ok=True)
         if tmp_path.exists():
-            if dest_path.exists() and tmp_path != dest_path:
-                raise ValueError(f'目标文件已存在，保留上传文件: {dest_path}')
-            tmp_path.rename(dest_path)
+            if tmp_path != dest_path:
+                with dest_path.open('xb'):
+                    pass
+                try:
+                    tmp_path.replace(dest_path)
+                except OSError:
+                    dest_path.unlink()
+                    raise
         elif not dest_path.exists():
             with sqlite3.connect(DB_PATH) as recovery:
                 row = recovery.execute('SELECT original_file_path FROM videos WHERE UPPER(code)=UPPER(?) AND COALESCE(part,\'\')=COALESCE(?,\'\') AND deleted=0 LIMIT 1', (code, part)).fetchone()
@@ -84,22 +99,11 @@ def prepare_upload(job, file_paths, volume_path, uncensored_crack_tag='LTX 无�
     emit('upload', 'done', '文件已就位')
 
     # ── Steps 4-5: Insert DB + sync derived tags ─────────────
-    batch_insert_scanned_videos(scanned)
-    sync_derived_video_tags_for_code(main_code, uncensored_crack_tag, subtitle_classification)
+    batch_insert_scanned_videos(scanned, scrape_status="SUCCESS" if is_special_code(main_code) else "PENDING")
+    sync_derived_video_tags_for_code(main_code, uncensored_crack_tag, classification)
     if additional_tags and not add_existing_tags_to_video(main_code, additional_tags):
         raise ValueError('添加标签失败')
-    suffix_upper = main_code.upper()
-    if suffix_upper.endswith('-UC'):
-        tag_msg = '标签: 中文字幕、无码破解'
-    elif suffix_upper.endswith('-C'):
-        tag_msg = '标签: 中文字幕'
-    elif suffix_upper.endswith('-U'):
-        tag_msg = '标签: 无码破解'
-    else:
-        tag_msg = '无特殊标签'
-    emit('db_insert', 'done', f'已写入数据库，{tag_msg}')
-    emit('tags', 'done', '标签同步完成')
-
+    emit('db_insert', 'done', f'已写入数据库，字幕分类: {classification}')
     return main_code
 
 
@@ -143,8 +147,6 @@ def _rename_files_for_code(main_code: str, job=None, *, video_ids=None, move_to_
                 AND id IN (SELECT value FROM json_each(?)) ORDER BY id""", (json.dumps(video_ids),)).fetchall()
         for row in rows:
             record = video_file_record(conn, row)
-            if is_special_code(record.code):
-                continue
             source = record.original_file_path
             target = destination(record)
             if target == source and source.is_file():
@@ -212,8 +214,6 @@ def _library_root_for_path(path: Path) -> Optional[Path]:
 
 
 def _build_current_library_destination(record: VideoRecord) -> Path:
-    if is_special_code(record.code):
-        return record.original_file_path
     library_root = _library_root_for_path(record.original_file_path)
     if library_root is None:
         return record.original_file_path.parent / build_filename(record)

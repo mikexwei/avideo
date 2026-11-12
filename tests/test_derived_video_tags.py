@@ -22,10 +22,10 @@ class DerivedVideoTagsTests(unittest.TestCase):
             ['LADA 无码破解'],
         )
 
-    def test_uc_suffix_adds_uncensored_and_subtitle_tags(self):
+    def test_uc_suffix_only_adds_uncensored_tag(self):
         self.assertEqual(
             _derived_tags_for_video('ABP-123-UC', '', set(), '2026-10-10T00:00:00'),
-            ['LTX 无码破解', '中文字幕'],
+            ['LTX 无码破解'],
         )
 
     def test_known_maker_adds_original_uncensored(self):
@@ -34,16 +34,16 @@ class DerivedVideoTagsTests(unittest.TestCase):
             ['原装无码'],
         )
 
-    def test_c_suffix_adds_subtitle_tag(self):
+    def test_c_suffix_does_not_infer_subtitle(self):
         self.assertEqual(
             _derived_tags_for_video('ABP-123-C', '', set()),
-            ['中文字幕'],
+            [],
         )
 
-    def test_machine_translation_survives_c_suffix_sync(self):
+    def test_derived_tags_do_not_include_stored_subtitle_tags(self):
         self.assertEqual(
             _derived_tags_for_video('ABP-123-C', '', {'机翻中文'}),
-            ['机翻中文'],
+            [],
         )
 
     def test_traditional_leaked_tag_is_removed_during_sync(self):

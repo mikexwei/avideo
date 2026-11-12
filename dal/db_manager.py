@@ -1,4 +1,4 @@
-from contextlib import closing, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 import re
 import sqlite3
 import logging
@@ -14,7 +14,11 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from config import DB_PATH
-from core.task_policy import SPECIAL_CODE_PREFIXES, is_special_code
+from core.task_policy import SPECIAL_CODE_PREFIXES
+from core.subtitle_policy import (
+    NO_SUBTITLE, SUBTITLE_TAGS, VERSION_SUFFIX, default_subtitle,
+    stored_subtitle, subtitle_code, validate_subtitle,
+)
 from dal.playback import VIDEO_KEY_SQL, ensure_schema as ensure_playback_schema, move_history
 
 logger = logging.getLogger(__name__)
@@ -81,7 +85,7 @@ def _order_clause(sort: str) -> str:
 _VERSION_SUFFIXES = ("-UC", "-C", "-U")
 _UNCENSORED_CRACK_TAGS = ("JAV 无码破解", "LADA 无码破解", "LTX 无码破解")
 _LEGACY_UNCENSORED_CRACK_TAGS = ("无码破解", "無碼破解")
-_DERIVED_TAGS = ("无码流出",) + _UNCENSORED_CRACK_TAGS + ("原装无码", "中文字幕", "机翻中文")
+_DERIVED_TAGS = ("无码流出",) + _UNCENSORED_CRACK_TAGS + ("原装无码",)
 _DERIVED_TAGS_TO_REMOVE = _DERIVED_TAGS + ("無碼流出",) + _LEGACY_UNCENSORED_CRACK_TAGS
 _ORIGINAL_UNCENSORED_MAKERS = {
     "一本道",
@@ -307,6 +311,8 @@ def update_video_metadata(video_id: int, status: str, data: Optional[Dict] = Non
             if tags_str:
                 tag_list = [_to_simplified(t.strip()) for t in tags_str.split(',') if t.strip()]
                 for tag_name in tag_list:
+                    if tag_name in SUBTITLE_TAGS:
+                        continue
                     cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
                     cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
                     tag_row = cursor.fetchone()
@@ -354,7 +360,6 @@ def _derived_tags_for_video(
     existing_tags: set[str],
     file_birthtime: Optional[str] = None,
     uncensored_crack_tag: Optional[str] = None,
-    subtitle_classification: Optional[str] = None,
 ) -> list[str]:
     tags = []
     suffix = _version_suffix(code)
@@ -370,14 +375,6 @@ def _derived_tags_for_video(
     elif maker in _ORIGINAL_UNCENSORED_MAKERS:
         tags.append("原装无码")
 
-    if subtitle_classification == "":
-        pass
-    elif subtitle_classification:
-        tags.append(subtitle_classification)
-    elif "机翻中文" in existing_tags:
-        tags.append("机翻中文")
-    elif suffix in {"-C", "-UC"}:
-        tags.append("中文字幕")
     return tags
 
 
@@ -427,7 +424,6 @@ def sync_derived_video_tags_for_code(
                 video_row["code"], video_row["maker"] or "", existing_tags,
                 video_row["file_birthtime"] or video_row["file_mtime"],
                 uncensored_crack_tag,
-                subtitle_classification,
             )
             for tag in derived_tags:
                 cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
@@ -439,6 +435,8 @@ def sync_derived_video_tags_for_code(
                 )
                 changed += cursor.rowcount
 
+        if subtitle_classification is not None:
+            set_subtitle_links(cursor, video_ids, subtitle_classification)
         if owns_connection:
             conn.commit()
         return changed
@@ -652,6 +650,7 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
             (resolved_code,),
         )
         video_rows = cursor.fetchall()
+        video_rows = [r for r in video_rows if not r['deleted']] or video_rows
         if not video_rows:
             return None
 
@@ -701,6 +700,13 @@ def get_video_by_code(code: str) -> Optional[Dict[str, Any]]:
 
         base["actors"] = actors
         base["tags"] = tags
+        active_tags = conn.execute(
+            'SELECT DISTINCT t.name FROM tags t JOIN video_tag_link l ON l.tag_id=t.id '
+            'JOIN videos v ON v.id=l.video_id WHERE v.code=? AND v.deleted=?',
+            (resolved_code, base['deleted']),
+        )
+        base['subtitle_classification'] = stored_subtitle(row[0] for row in active_tags)
+        base['subtitle_zh'] = base['subtitle_classification'] not in (None, NO_SUBTITLE)
 
         if base.get('series') and _has_series_catalog(conn):
             series = conn.execute("""SELECT j.id AS series_jp_id, c.id_final AS series_final_id,
@@ -724,37 +730,28 @@ def search_videos(query: str, page: int = 1, limit: int = 24) -> Dict[str, Any]:
     page = max(1, page)
     limit = max(1, min(limit, 200))
     offset = (page - 1) * limit
-    like_q = f"%{query}%"
+    base = VERSION_SUFFIX.sub('', query.strip())
+    if re.fullmatch(r'(?:(?:[A-Z0-9]+-)+[A-Z]*|[A-Z]+)[0-9]+[A-Z]?(?:-[0-9]+)*', base, re.I):
+        where = 'UPPER(code) IN (?, ?, ?, ?)'
+        params = tuple(base.upper() + suffix for suffix in ('', '-C', '-U', '-UC'))
+    else:
+        where = '(code LIKE ? OR title_jp LIKE ? OR title_zh LIKE ? OR maker LIKE ?)'
+        params = (f'%{query}%',) * 4
 
     conn = None
     try:
         conn = _get_conn()
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT COUNT(DISTINCT code) AS total
-            FROM videos
-            WHERE deleted = 0 AND (code LIKE ? OR title_jp LIKE ? OR title_zh LIKE ? OR maker LIKE ?)
-            """,
-            (like_q, like_q, like_q, like_q),
-        )
+        cursor.execute(f"SELECT COUNT(DISTINCT code) AS total FROM videos WHERE deleted=0 AND {where}", params)
         total = int(cursor.fetchone()["total"])
         cursor.execute(
-            """
-            SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status, deleted
-            FROM videos
-            WHERE id IN (
-                SELECT MIN(id) FROM videos
-                WHERE code LIKE ? OR title_jp LIKE ? OR title_zh LIKE ? OR maker LIKE ?
-                GROUP BY code
-            )
-            ORDER BY id DESC
-            LIMIT ? OFFSET ?
-            """,
-            (like_q, like_q, like_q, like_q, limit, offset),
+            f"""SELECT id, code, title_jp, title_zh, release_date, score, cover_path, scrape_status, deleted
+                FROM videos WHERE id IN (
+                    SELECT MIN(id) FROM videos WHERE deleted=0 AND {where} GROUP BY code
+                ) ORDER BY id DESC LIMIT ? OFFSET ?""",
+            (*params, limit, offset),
         )
-        items = _rows_to_dicts(cursor.fetchall())
-        return {"page": page, "limit": limit, "total": total, "items": items}
+        return {"page": page, "limit": limit, "total": total, "items": _rows_to_dicts(cursor.fetchall())}
     except sqlite3.Error as e:
         logger.error(f"❌ 搜索失败 [{query}]: {e}")
         return {"page": page, "limit": limit, "total": 0, "items": []}
@@ -891,6 +888,84 @@ def search_series(q: str, limit: int = 10) -> List[Dict[str, Any]]:
             LEFT JOIN series_cn c ON c.id_jp=j.id LEFT JOIN series_final f ON f.id=c.id_final
             WHERE j.raw_name LIKE ? OR c.name LIKE ? OR f.name LIKE ?
             ORDER BY name LIMIT ?""", (like, like, like, limit)).fetchall())
+
+
+def set_subtitle_links(cursor, video_ids, classification):
+    validate_subtitle(classification)
+    cursor.executemany(
+        "DELETE FROM video_tag_link WHERE video_id=? AND tag_id IN "
+        f"(SELECT id FROM tags WHERE name IN ({','.join('?' for _ in SUBTITLE_TAGS)}))",
+        [(video_id, *SUBTITLE_TAGS) for video_id in video_ids],
+    )
+    cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (classification,))
+    tag_id = cursor.execute("SELECT id FROM tags WHERE name=?", (classification,)).fetchone()[0]
+    cursor.executemany("INSERT INTO video_tag_link (video_id, tag_id) VALUES (?, ?)",
+                       [(video_id, tag_id) for video_id in video_ids])
+
+
+def validate_generic_tags(tags):
+    if tags is not None and (
+        not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags)
+        or any(_to_simplified(tag.strip()) in SUBTITLE_TAGS for tag in tags)
+    ):
+        raise ValueError('请通过 subtitle_classification 设置字幕分类')
+
+
+def check_target_code(conn, old_code, new_code):
+    if old_code != new_code and conn.execute(
+        'SELECT 1 FROM videos WHERE UPPER(code)=UPPER(?) AND code<>?', (new_code, old_code)
+    ).fetchone():
+        raise FileExistsError('目标番号已存在')
+
+
+def plan_group_rename(conn, rows, code, *, excluded_id=None, reserved_path=None):
+    from dataclasses import replace
+    from core.workflows import video_file_record, _build_current_library_destination
+
+    moves = []
+    targets = {str(reserved_path).casefold()} if reserved_path else set()
+    for row in rows:
+        if row['id'] == excluded_id:
+            continue
+        record = video_file_record(conn, row)
+        source = record.original_file_path
+        target = _build_current_library_destination(replace(record, code=code))
+        if str(target).casefold() in targets:
+            raise FileExistsError('多个分段使用同一目标文件名')
+        targets.add(str(target).casefold())
+        if source == target:
+            continue
+        if not source.is_file():
+            raise FileNotFoundError(str(source))
+        if target.exists() or target.is_symlink() or conn.execute(
+            'SELECT 1 FROM videos WHERE original_file_path=? AND id<>?', (str(target), row['id'])
+        ).fetchone():
+            raise FileExistsError(f'目标路径已存在: {target}')
+        moves.append((row['id'], source, target))
+    return moves
+
+
+@contextmanager
+def apply_group_rename(conn, moves):
+    moved = []
+    try:
+        for video_id, source, target in moves:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open('xb'):
+                pass
+            try:
+                source.replace(target)
+            except OSError:
+                target.unlink()
+                raise
+            moved.append((source, target))
+            conn.execute('UPDATE videos SET original_file_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                         (str(target), video_id))
+        yield
+    except BaseException:
+        for source, target in reversed(moved):
+            target.rename(source)
+        raise
 
 
 def _patch_video_relations(cursor, code, actor_names, tag_names):
@@ -1439,12 +1514,12 @@ def get_video_file_path(code: str, part: Optional[str] = None, *, connection=Non
                 return None
             if part:
                 cursor.execute(
-                    "SELECT original_file_path FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1",
+                    "SELECT original_file_path FROM videos WHERE code = ? AND part = ? AND deleted=0 ORDER BY id ASC LIMIT 1",
                     (resolved_code, part),
                 )
             else:
                 cursor.execute(
-                    "SELECT original_file_path FROM videos WHERE code = ? ORDER BY id ASC LIMIT 1",
+                    "SELECT original_file_path FROM videos WHERE code = ? AND deleted=0 ORDER BY id ASC LIMIT 1",
                     (resolved_code,),
                 )
             row = cursor.fetchone()
@@ -1518,15 +1593,14 @@ def replace_video_file(
     crack_tag = uncensored_crack_tag if uncensored_crack_tag in _UNCENSORED_CRACK_TAGS else _uncensored_crack_tag(
         (file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime')
     )
-    subtitle_tag = subtitle_classification or ('中文字幕' if subtitle_zh else None)
+    classification = validate_subtitle(subtitle_classification) if subtitle_classification is not None else (
+        default_subtitle('-C' if subtitle_zh else '')
+    )
     tag_desired = {crack_tag: uncensored_leaked, '原装无码': uncensored_native}
-    if subtitle_tag:
-        tag_desired[subtitle_tag] = True
     conn = None
     try:
         conn = _get_conn()
-        if before_commit is not None:
-            conn.execute("BEGIN IMMEDIATE")
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         resolved_code = _resolve_video_code(cursor, code)
         if not resolved_code:
@@ -1534,12 +1608,12 @@ def replace_video_file(
 
         if original_part:
             cursor.execute(
-                'SELECT id, code, original_file_path FROM videos WHERE code = ? AND part = ? ORDER BY id ASC LIMIT 1',
+                'SELECT id, code, original_file_path FROM videos WHERE code = ? AND part = ? AND deleted=0 ORDER BY id ASC LIMIT 1',
                 (resolved_code, original_part),
             )
         else:
             cursor.execute(
-                'SELECT id, code, original_file_path FROM videos WHERE code = ? AND (part IS NULL OR part = "") ORDER BY id ASC LIMIT 1',
+                'SELECT id, code, original_file_path FROM videos WHERE code = ? AND (part IS NULL OR part = "") AND deleted=0 ORDER BY id ASC LIMIT 1',
                 (resolved_code,),
             )
         row = cursor.fetchone()
@@ -1557,12 +1631,10 @@ def replace_video_file(
 
         # Keep the code column's version suffix (-C/-U/-UC) in sync with the new
         # file. Otherwise a -C record replaced by a -UC file keeps a stale -C code.
-        has_c = subtitle_zh
-        has_u = uncensored_leaked or uncensored_native
-        suffix = '-UC' if (has_c and has_u) else '-C' if has_c else '-U' if has_u else ''
-        new_code = row['code'] if is_special_code(row['code']) else re.sub(r'(?i)-(?:uc|u|c)$', '', row['code']) + suffix
+        new_code = subtitle_code(row['code'], classification, uncensored=uncensored_leaked or uncensored_native)
+        check_target_code(conn, resolved_code, new_code)
 
-        cursor.execute('SELECT id FROM videos WHERE code = ?', (resolved_code,))
+        cursor.execute('SELECT id FROM videos WHERE code = ? AND deleted=0', (resolved_code,))
         all_ids = [r['id'] for r in cursor.fetchall()]
         ph = ','.join('?' * len(all_ids))
 
@@ -1572,12 +1644,8 @@ def replace_video_file(
         )
         current_tags = {r['name'] for r in cursor.fetchall()}
 
-        cursor.execute(
-            f"DELETE FROM video_tag_link WHERE video_id IN ({ph}) "
-            "AND tag_id IN (SELECT id FROM tags WHERE name IN ('机翻中文', '中文字幕'))",
-            all_ids,
-        )
-        current_tags.difference_update({'机翻中文', '中文字幕'})
+        validate_subtitle(classification, vr='VR' in current_tags)
+        set_subtitle_links(cursor, all_ids, classification)
 
         cracked_names = _LEGACY_UNCENSORED_CRACK_TAGS + _UNCENSORED_CRACK_TAGS
         cursor.execute(
@@ -1607,6 +1675,12 @@ def replace_video_file(
                         all_ids + [tag_row['id']],
                     )
 
+        moves = []
+        if new_code != resolved_code:
+            active = conn.execute('SELECT * FROM videos WHERE code=? AND deleted=0', (resolved_code,)).fetchall()
+            moves = plan_group_rename(conn, active, new_code, excluded_id=video_id, reserved_path=dest_path)
+            conn.execute('UPDATE videos SET code=? WHERE code=? AND deleted=0', (new_code, resolved_code))
+
         # Path/code/stats update last, so the code change above doesn't disturb the
         # resolved_code-based sibling lookup used for tag syncing.
         if file_meta:
@@ -1622,9 +1696,10 @@ def replace_video_file(
                 (dest_path, new_code, video_id),
             )
 
-        if before_commit is not None:
-            before_commit()
-        conn.commit()
+        with apply_group_rename(conn, moves):
+            if before_commit is not None:
+                before_commit()
+            conn.commit()
         logger.info(f'🔄 replace_video_file [{code}]: {dest_path}')
         return {'ok': True, 'original_file_path': dest_path, 'new_code': new_code}
     except sqlite3.Error as e:
@@ -1651,22 +1726,21 @@ def replace_multipart_with_single_file(
     crack_tag = uncensored_crack_tag if uncensored_crack_tag in _UNCENSORED_CRACK_TAGS else _uncensored_crack_tag(
         (file_meta or {}).get('file_birthtime') or (file_meta or {}).get('file_mtime')
     )
-    subtitle_tag = subtitle_classification or ('中文字幕' if subtitle_zh else None)
+    classification = validate_subtitle(subtitle_classification) if subtitle_classification is not None else (
+        default_subtitle('-C' if subtitle_zh else '')
+    )
     tag_desired = {crack_tag: uncensored_leaked, '原装无码': uncensored_native}
-    if subtitle_tag:
-        tag_desired[subtitle_tag] = True
     conn = None
     try:
         conn = _get_conn()
-        if before_commit is not None:
-            conn.execute("BEGIN IMMEDIATE")
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         resolved_code = _resolve_video_code(cursor, code)
         if not resolved_code:
             return {'ok': False, 'error': 'not found'}
 
         cursor.execute(
-            'SELECT id, code, part, original_file_path FROM videos WHERE code = ? ORDER BY id ASC',
+            'SELECT id, code, part, original_file_path FROM videos WHERE code = ? AND deleted=0 ORDER BY id ASC',
             (resolved_code,),
         )
         rows = cursor.fetchall()
@@ -1689,10 +1763,8 @@ def replace_multipart_with_single_file(
         old_paths = [r['original_file_path'] for r in rows if r['original_file_path']]
         ph = ','.join('?' * len(all_ids))
 
-        has_c = subtitle_zh
-        has_u = uncensored_leaked or uncensored_native
-        suffix = '-UC' if (has_c and has_u) else '-C' if has_c else '-U' if has_u else ''
-        new_code = keep_row['code'] if is_special_code(keep_row['code']) else re.sub(r'(?i)-(?:uc|u|c)$', '', keep_row['code']) + suffix
+        new_code = subtitle_code(keep_row['code'], classification, uncensored=uncensored_leaked or uncensored_native)
+        check_target_code(conn, resolved_code, new_code)
 
         cursor.execute(
             f'SELECT t.name FROM tags t JOIN video_tag_link vtl ON vtl.tag_id = t.id WHERE vtl.video_id IN ({ph})',
@@ -1700,12 +1772,8 @@ def replace_multipart_with_single_file(
         )
         current_tags = {r['name'] for r in cursor.fetchall()}
 
-        cursor.execute(
-            "DELETE FROM video_tag_link WHERE video_id = ? "
-            "AND tag_id IN (SELECT id FROM tags WHERE name IN ('机翻中文', '中文字幕'))",
-            (keep_id,),
-        )
-        current_tags.difference_update({'机翻中文', '中文字幕'})
+        validate_subtitle(classification, vr='VR' in current_tags)
+        set_subtitle_links(cursor, [keep_id], classification)
 
         cracked_names = _LEGACY_UNCENSORED_CRACK_TAGS + _UNCENSORED_CRACK_TAGS
         cursor.execute(
@@ -1940,7 +2008,7 @@ PATCHABLE_FIELDS = {
 
 
 def patch_video(code, fields, *, runtime, actor_names=None, tag_names=None, new_code=None,
-                manual_name=None):
+                manual_name=None, subtitle_classification=None, reviewed=False):
     """Save metadata and enqueue the corresponding file updates in one transaction."""
     from core.workflows import video_file_record
     from utils.rename_and_move_videos import build_filename, sanitize_component
@@ -1955,17 +2023,29 @@ def patch_video(code, fields, *, runtime, actor_names=None, tag_names=None, new_
         code = _resolve_video_code(cursor, code)
         if code is None:
             raise ValueError('影片不存在')
-        target_code = new_code or code
-        code_changed = target_code != code
-        if not (allowed or actor_names is not None or tag_names is not None or code_changed or manual_name):
-            raise ValueError('没有可保存的修改')
-        if code_changed and conn.execute(
-            'SELECT 1 FROM videos WHERE UPPER(code)=UPPER(?) AND code<>?', (target_code, code)
-        ).fetchone():
-            raise ValueError('目标番号已存在')
         rows = conn.execute('SELECT * FROM videos WHERE code=? AND deleted=0 ORDER BY id', (code,)).fetchall()
         if not rows:
             raise ValueError('影片不存在')
+        existing_tags = {row[0] for row in conn.execute(
+            "SELECT DISTINCT t.name FROM tags t JOIN video_tag_link l ON l.tag_id=t.id "
+            "JOIN videos v ON v.id=l.video_id WHERE v.code=? AND v.deleted=0", (code,)
+        )}
+        validate_generic_tags(tag_names)
+        vr = 'VR' in (tag_names if tag_names is not None else existing_tags)
+        classification = subtitle_classification or stored_subtitle(existing_tags)
+        target_code = new_code or code
+        if vr:
+            classification = validate_subtitle(classification or default_subtitle(target_code), vr=True)
+        if classification is not None:
+            target_code = subtitle_code(target_code, classification)
+        code_changed = target_code != code
+        if not (allowed or actor_names is not None or tag_names is not None or code_changed
+                or manual_name or subtitle_classification is not None):
+            raise ValueError('没有可保存的修改')
+        try:
+            check_target_code(conn, code, target_code)
+        except FileExistsError as exc:
+            raise ValueError(str(exc)) from exc
         track_names = actor_names is not None or bool(allowed.keys() & {'title_jp', 'title_zh', 'title_zh_short'})
         old_names = {row['id']: build_filename(video_file_record(conn, row)) for row in rows} if track_names else {}
         if allowed:
@@ -1974,8 +2054,10 @@ def patch_video(code, fields, *, runtime, actor_names=None, tag_names=None, new_
                            [*allowed.values(), code])
         if actor_names is not None or tag_names is not None:
             _patch_video_relations(cursor, code, actor_names, tag_names)
+        if subtitle_classification is not None or (vr and stored_subtitle(existing_tags) is None):
+            set_subtitle_links(cursor, [row['id'] for row in rows], classification)
         if code_changed:
-            cursor.execute('UPDATE videos SET code=?,updated_at=CURRENT_TIMESTAMP WHERE code=?', (target_code, code))
+            cursor.execute('UPDATE videos SET code=?,updated_at=CURRENT_TIMESTAMP WHERE code=? AND deleted=0', (target_code, code))
             move_history(conn, code, target_code)
         if 'series' in allowed:
             from core.series_catalog import attach
@@ -1985,7 +2067,7 @@ def patch_video(code, fields, *, runtime, actor_names=None, tag_names=None, new_
         payload = {'video_ids': video_ids}
         if code_changed:
             payload['move_to_prefix'] = True
-        if not is_special_code(target_code) and (code_changed or track_names or manual_name):
+        if code_changed or track_names or manual_name:
             for row in conn.execute('SELECT * FROM videos WHERE code=? AND deleted=0 ORDER BY id', (target_code,)):
                 record = video_file_record(conn, row)
                 name = build_filename(record)
@@ -1996,5 +2078,22 @@ def patch_video(code, fields, *, runtime, actor_names=None, tag_names=None, new_
                     video_ids.append(record.id)
         if manual_name and 'manual_name' not in payload:
             raise ValueError('原文件路径已改变')
+        if reviewed:
+            conn.execute("""CREATE TABLE IF NOT EXISTS subtitle_classification_reviews (
+                code TEXT PRIMARY KEY COLLATE NOCASE, classification TEXT NOT NULL,
+                reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='subtitle_classification_reviews'").fetchone():
+            if code_changed:
+                conn.execute('UPDATE subtitle_classification_reviews SET code=? WHERE code=?', (target_code, code))
+            if reviewed:
+                conn.execute("""INSERT INTO subtitle_classification_reviews(code,classification) VALUES (?,?)
+                    ON CONFLICT(code) DO UPDATE SET classification=excluded.classification, reviewed_at=CURRENT_TIMESTAMP""",
+                    (target_code, classification))
+        if code_changed and manual_name is None and (subtitle_classification is not None
+                or VERSION_SUFFIX.sub('', code).upper() == VERSION_SUFFIX.sub('', target_code).upper()):
+            updated = conn.execute('SELECT * FROM videos WHERE code=? AND deleted=0 ORDER BY id', (target_code,)).fetchall()
+            with apply_group_rename(conn, plan_group_rename(conn, updated, target_code)):
+                conn.commit()
+            return target_code, []
         jobs = [runtime.submit('rename_files', target_code, payload, connection=conn)] if video_ids else []
         return target_code, jobs

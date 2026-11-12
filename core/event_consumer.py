@@ -127,6 +127,10 @@ class Consumer:
                 raise TargetChanged('关联影片已删除')
             target_code = target['code']
         if kind in ('video', 'pipeline_auto', 'pipeline_rescrape') and is_special_code(target_code):
+            if kind == 'pipeline_auto' and payload.get('main_code'):
+                state['code'] = target_code
+                self.finish(task, state)
+                return
             if kind == 'pipeline_rescrape':
                 state['code'] = target_code
                 self.next_item(task, state, False, '特殊番号不参与刮削')
@@ -145,6 +149,9 @@ class Consumer:
                     job, [Path(path) for path in payload['file_paths']], Path(payload['volume_path']),
                     payload.get('uncensored_crack_tag', ''), payload.get('subtitle_classification'), payload.get('additional_tags'))
                 state.update(job.checkpoint())
+                if is_special_code(state['code']):
+                    self.finish(task, state)
+                    return
             elif kind == 'pipeline_rescrape':
                 index = state.get('index', 0)
                 if index >= len(payload['codes']):

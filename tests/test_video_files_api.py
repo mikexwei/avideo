@@ -44,7 +44,7 @@ class VideoFilesEndpointTests(unittest.TestCase):
                 (4, 'MISSING-001', None, str(self.missing), 8, 0),
             ],
         )
-        conn.execute("INSERT INTO tags VALUES (1, '中文字幕')")
+        conn.execute("INSERT INTO tags VALUES (1, '硬字幕')")
         conn.execute('INSERT INTO video_tag_link VALUES (1, 1)')
         conn.commit()
         conn.close()
@@ -108,7 +108,7 @@ class VideoFilesEndpointTests(unittest.TestCase):
         self.assertEqual(data['base_code'], 'START-656')
         self.assertEqual(
             data['download_url'],
-            'http://10.0.0.30:8000/api/videos/START-656/stream.mp4?download=1',
+            'http://10.0.0.30:8000/api/videos/START-656-UC/stream.mp4?download=1',
         )
         self.assertEqual(data['files'][0]['filename'], 'START-656-UC.title.mp4')
 
@@ -145,22 +145,16 @@ class SubtitleClassificationEndpointTests(unittest.TestCase):
         fd, self.db_path = tempfile.mkstemp(suffix='.db')
         os.close(fd)
         conn = sqlite3.connect(self.db_path)
+        from tests.test_add_video_api import _init_full_schema
+        _init_full_schema(conn)
+        for column in ('release_date', 'duration', 'maker', 'publisher', 'series', 'score', 'cover_path'):
+            if column not in {row[1] for row in conn.execute('PRAGMA table_info(videos)')}:
+                conn.execute(f'ALTER TABLE videos ADD COLUMN {column} TEXT')
         conn.executescript("""
-            CREATE TABLE videos (
-                id INTEGER PRIMARY KEY, code TEXT, part TEXT,
-                original_file_path TEXT, file_size INTEGER,
-                cover_path TEXT, title_zh TEXT, title_jp TEXT,
-                deleted INTEGER DEFAULT 0
-            );
-            CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE);
-            CREATE TABLE video_tag_link (
-                video_id INTEGER, tag_id INTEGER,
-                UNIQUE(video_id, tag_id)
-            );
-            INSERT INTO videos VALUES
-                (1, 'IPZ-108-C', 'part1', '/vol/IPZ-108-C.part1.mkv', 100, '', '标题', '', 0),
-                (2, 'IPZ-108-C', 'part2', '/vol/IPZ-108-C.part2.mkv', 200, '', '标题', '', 0);
-            INSERT INTO tags VALUES (1, '中文字幕');
+            INSERT INTO videos (code, part, original_file_path, file_size, title_zh)
+            VALUES ('IPZ-108-C', 'part1', '/vol/IPZ-108-C.part1.mkv', 100, '标题'),
+                   ('IPZ-108-C', 'part2', '/vol/IPZ-108-C.part2.mkv', 200, '标题');
+            INSERT INTO tags (name) VALUES ('中文字幕');
             INSERT INTO video_tag_link VALUES (1, 1), (2, 1);
         """)
         conn.commit()
@@ -170,11 +164,11 @@ class SubtitleClassificationEndpointTests(unittest.TestCase):
         os.unlink(self.db_path)
 
     def test_lists_candidates_and_classifies_all_parts(self):
-        with patch('web.backend.app.DB_PATH', self.db_path):
+        with patch('web.backend.app.DB_PATH', self.db_path), patch('dal.db_manager.DB_PATH', self.db_path):
             listing = self.client.get('/api/videos/subtitle-review')
             response = self.client.post(
                 '/api/videos/IPZ-108-C/subtitle-classification',
-                json={'classification': '机翻中文'},
+                json={'classification': '外挂音频字幕'},
             )
 
         self.assertEqual(listing.status_code, 200)
@@ -187,7 +181,7 @@ class SubtitleClassificationEndpointTests(unittest.TestCase):
             "JOIN tags t ON t.id=l.tag_id ORDER BY v.id"
         ).fetchall()
         conn.close()
-        self.assertEqual(tags, [(1, '机翻中文'), (2, '机翻中文')])
+        self.assertEqual(tags, [(1, '外挂音频字幕'), (2, '外挂音频字幕')])
         with patch('web.backend.app.DB_PATH', self.db_path):
             remaining = self.client.get('/api/videos/subtitle-review')
         self.assertEqual(remaining.get_json(), [])

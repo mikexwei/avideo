@@ -19,7 +19,8 @@ def _init_schema(conn):
             file_size INTEGER,
             file_mtime TEXT,
             file_birthtime TEXT,
-            updated_at TIMESTAMP
+            updated_at TIMESTAMP,
+            deleted INTEGER DEFAULT 0
         );
         CREATE TABLE tags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,7 +178,7 @@ class ReplaceVideoFileTests(unittest.TestCase):
         with patch('dal.db_manager.DB_PATH', self.db_path):
             result = replace_video_file(
                 'SSIS-001-C', None, '/vol/SSIS-001-C.mp4', True, False, False,
-                subtitle_classification='机翻中文',
+                subtitle_classification='外挂音频字幕',
             )
         self.assertTrue(result['ok'])
         conn = sqlite3.connect(self.db_path)
@@ -185,7 +186,7 @@ class ReplaceVideoFileTests(unittest.TestCase):
             "SELECT t.name FROM tags t JOIN video_tag_link l ON l.tag_id=t.id WHERE l.video_id=1"
         )}
         conn.close()
-        self.assertIn('机翻中文', tags)
+        self.assertIn('外挂音频字幕', tags)
         self.assertNotIn('中文字幕', tags)
 
     def test_replace_multipart_with_single_file_collapses_rows(self):
@@ -347,7 +348,7 @@ class ReplaceEndpointTests(unittest.TestCase):
                         'file': (io.BytesIO(video_bytes), 'upload.mp4'),
                         'file_size': str(len(video_bytes)),
                         'dest_name': 'SSIS-001.mp4',
-                        'subtitle_zh': '1',
+                        'subtitle_classification': '硬字幕',
                     },
                     content_type='multipart/form-data',
                 )
@@ -382,7 +383,7 @@ class ReplaceEndpointTests(unittest.TestCase):
                         'file': (io.BytesIO(video_bytes), 'u.mp4'),
                         'file_size': str(len(video_bytes)),
                         'dest_name': 'SSIS-001.mp4',
-                        'subtitle_zh': '1', 'uncensored_leaked': '1',
+                        'subtitle_classification': '硬字幕', 'uncensored_leaked': '1',
                     },
                     content_type='multipart/form-data',
                 )
@@ -408,11 +409,11 @@ class ReplaceEndpointTests(unittest.TestCase):
                 conn.execute("INSERT INTO actors(name) VALUES ('橘梨纱')")
                 conn.execute("INSERT INTO video_actor_link(video_id,actor_id) VALUES (1,1)")
             headers = {'X-Dest-Name': 'star-409-ltx.mkv', 'X-File-Size': '3',
-                       'X-Subtitle-Zh': '1', 'X-Uncensored-Leaked': '1'}
+                       'X-Subtitle-Classification': '%E7%A1%AC%E5%AD%97%E5%B9%95', 'X-Uncensored-Leaked': '1'}
             route = '/api/videos/STAR-409/replace'
             with patch('web.backend.app.DB_PATH', db), patch('dal.db_manager.DB_PATH', db):
                 preview = self.client.post('/api/videos/STAR-409/replace-preview', json={
-                    'files': [{'filename': 'star-409-ltx.mkv'}], 'subtitle_zh': True, 'uncensored': True,
+                    'files': [{'filename': 'star-409-ltx.mkv'}], 'subtitle_classification': '硬字幕', 'uncensored': True,
                 })
                 self.assertEqual(preview.get_json()['names'], [expected.name])
                 self.assertEqual(self.client.post(route, data=b'new', headers=headers).status_code, 409)
@@ -446,7 +447,7 @@ class ReplaceEndpointTests(unittest.TestCase):
             part1.write_bytes(b'old1')
             part2.write_bytes(b'old2')
 
-            def fake_replace(code, dest, sub_zh, leaked, native, file_meta=None, keep_part=None, *, before_commit, expected_path):
+            def fake_replace(code, dest, sub_zh, leaked, native, file_meta=None, keep_part=None, *, before_commit, expected_path, subtitle_classification):
                 self.assertEqual(code, 'ABW-123')
                 self.assertEqual(Path(dest).name, 'ABW-123-C.mp4')
                 self.assertEqual(keep_part, 'part1')
@@ -467,7 +468,7 @@ class ReplaceEndpointTests(unittest.TestCase):
                     headers={
                         'X-Dest-Name': 'ABW-123.part1.mp4',
                         'X-File-Size': str(len(video_bytes)),
-                        'X-Subtitle-Zh': '1',
+                        'X-Subtitle-Classification': '%E7%A1%AC%E5%AD%97%E5%B9%95',
                         'X-Replace-Whole': '1',
                     },
                 )

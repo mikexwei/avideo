@@ -16,6 +16,10 @@ from werkzeug.utils import secure_filename
 from config import DB_PATH, MEDIA_LIBRARIES
 from core import subtitle_cache
 from core.task_policy import is_special_code
+from core.subtitle_policy import (
+    NO_SUBTITLE, SUBTITLE_CLASSIFICATIONS, VERSION_SUFFIX,
+    default_subtitle, stored_subtitle, subtitle_code, validate_subtitle,
+)
 from core.scanner import VIDEO_EXTENSIONS, extract_video_code
 from core.worker_client import ensure_worker
 from core.browser_queue import RuntimeStore
@@ -31,6 +35,7 @@ from utils.rename_and_move_videos import (
 from dal import playback
 from dal.db_manager import (
     add_existing_tags_to_video,
+    validate_generic_tags,
     get_actor_with_videos,
     get_tag_with_videos,
     get_video_by_code,
@@ -196,20 +201,19 @@ def api_batch_check():
                 video_ids,
             ).fetchall()]
 
-        subtitle_tags = [tag for tag in tags if '中文' in tag]
+        classification = stored_subtitle(tags) if rows else default_subtitle(parsed_code or '')
         uncensored_names = {
             '无码流出', '無碼流出', '无码破解', '無碼破解',
             'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解', '原装无码',
         }
         uncensored_tags = [tag for tag in tags if tag in uncensored_names]
         suffix = (parsed_code or '').upper()
-        suffix_has_subtitle = suffix.endswith(('-C', '-UC'))
         suffix_is_uncensored = suffix.endswith(('-U', '-UC'))
         return {
-            'has_subtitle': bool(subtitle_tags) or suffix_has_subtitle,
-            'subtitle_type': subtitle_tags[0] if subtitle_tags else (
-                '中文字幕' if suffix_has_subtitle else None
-            ),
+            'has_subtitle': classification is not None and classification != NO_SUBTITLE,
+            'is_vr': 'VR' in tags,
+            'subtitle_type': classification,
+            'subtitle_classification': classification,
             'is_uncensored': bool(uncensored_tags) or suffix_is_uncensored,
             'uncensored_type': uncensored_tags[0] if uncensored_tags else (
                 '无码' if suffix_is_uncensored else None
@@ -222,7 +226,7 @@ def api_batch_check():
                 results.append({
                     'filename': str(filename), 'code': None, 'part': None,
                     'exists': None, 'original_path': None, 'db_parts': [],
-                    'has_subtitle': None, 'subtitle_type': None,
+                    'has_subtitle': None, 'subtitle_type': None, 'subtitle_classification': None, 'is_vr': None,
                     'is_uncensored': None, 'uncensored_type': None,
                     'error': 'filename must be a string',
                 })
@@ -233,7 +237,7 @@ def api_batch_check():
                 results.append({
                     'filename': filename, 'code': None, 'part': part,
                     'exists': None, 'original_path': None, 'db_parts': [],
-                    'has_subtitle': None, 'subtitle_type': None,
+                    'has_subtitle': None, 'subtitle_type': None, 'subtitle_classification': None, 'is_vr': None,
                     'is_uncensored': None, 'uncensored_type': None,
                     'error': '无法解析番号',
                 })
@@ -250,6 +254,10 @@ def api_batch_check():
                 [c.upper() for c in candidates],
             ).fetchall()
             active_rows = [r for r in rows if not r['deleted']]
+            if active_rows:
+                exact = next((r['code'] for r in active_rows if r['code'].upper() == code.upper()), None)
+                chosen = exact or active_rows[0]['code']
+                active_rows = [r for r in active_rows if r['code'] == chosen]
             if active_rows:
                 row = active_rows[0]
                 results.append({
@@ -311,7 +319,7 @@ def api_max_code(code_type: str):
     max_num = 0
     for (code,) in rows:
         try:
-            num = int(code.split('-', 1)[1])
+            num = int(VERSION_SUFFIX.sub('', code).split('-', 1)[1])
             if num > max_num:
                 max_num = num
         except (ValueError, IndexError):
@@ -385,10 +393,11 @@ def _missing_existing_tags(tag_names: list[str]) -> list[str]:
     return [name for name in tag_names if name not in existing]
 
 
-def _literal_video_filename(name):
-    if not name or name.startswith('.') or name.endswith(('.', ' ')) or re.search(r'[\x00-\x1f/:"<>|?*]', name) or chr(92) in name:
-        raise ValueError('无效的文件名')
-    return name
+def _upload_classification(source, tags):
+    validate_generic_tags(tags)
+    if 'subtitle_classification' in source:
+        return validate_subtitle(source['subtitle_classification'], vr='VR' in tags)
+    return NO_SUBTITLE if 'VR' in tags else None
 
 
 @app.post('/api/videos/upload-part')
@@ -401,11 +410,7 @@ def api_upload_part():
         return jsonify({'error': 'invalid volume_path or upload_id'}), 400
 
     raw_name = unquote(request.headers.get('X-Dest-Name') or '').strip()
-    special_upload = is_special_code(request.headers.get('X-Manual-Code-Type'))
-    try:
-        safe_name = _literal_video_filename(raw_name) if special_upload else secure_filename(raw_name)
-    except ValueError as exc:
-        return jsonify(error=str(exc)), 400
+    safe_name = secure_filename(raw_name)
     if not safe_name:
         return jsonify({'error': 'invalid filename'}), 400
 
@@ -414,7 +419,7 @@ def api_upload_part():
     # (e.g. 489155.com\\@MIAB-679-UC.mp4 -> COMMIAB-679-UC).
     parsed_code, parsed_part = extract_video_code(Path(raw_name).stem)
     safe_code, _ = extract_video_code(Path(safe_name).stem)
-    if not special_upload and parsed_code and safe_code != parsed_code:
+    if parsed_code and safe_code != parsed_code:
         suffix = Path(raw_name).suffix.lower()
         part_suffix = f'.{parsed_part}' if parsed_part else ''
         safe_name = secure_filename(f'{parsed_code}{part_suffix}{suffix}')
@@ -426,8 +431,6 @@ def api_upload_part():
     tmp_dir.mkdir(parents=True, exist_ok=True)
     dest = tmp_dir / safe_name
     written = 0
-    if special_upload and (dest.exists() or dest.is_symlink()):
-        return jsonify(error='上传批次有重名文件'), 409
     with open(str(dest), 'wb') as dst:
         while chunk := request.stream.read(4 * 1024 * 1024):
             dst.write(chunk)
@@ -444,6 +447,10 @@ def api_add_manual():
     use_upload = bool(payload and payload.get('upload_id'))
     src = payload if use_upload else request.form
     additional_tags = _parse_upload_tags(src)
+    try:
+        classification = _upload_classification(src, additional_tags)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     missing_tags = _missing_existing_tags(additional_tags)
     if missing_tags:
         return jsonify({'error': 'unknown tags', 'tags': missing_tags}), 400
@@ -475,15 +482,9 @@ def api_add_manual():
         part_paths = []
         if files:
             tmp_dir.mkdir(parents=True, exist_ok=True)
-            for i, f in enumerate(sorted(files, key=lambda f: (f.filename or '') if is_special_code(code_type)
-                                         else secure_filename(f.filename) or '')):
-                try:
-                    name = (_literal_video_filename(f.filename) if is_special_code(code_type)
-                            else secure_filename(f.filename) or f'file_{i}.bin')
-                except ValueError as exc:
-                    return jsonify(error=str(exc)), 400
-                p = tmp_dir / name
-                if is_special_code(code_type) and p.exists():
+            for i, f in enumerate(sorted(files, key=lambda f: f.filename or '')):
+                p = tmp_dir / (secure_filename(f.filename) or f'file_{i}.bin')
+                if p.exists():
                     return jsonify(error='上传批次有重名文件'), 409
                 f.save(str(p))
                 part_paths.append(p)
@@ -491,22 +492,33 @@ def api_add_manual():
         return jsonify({'error': 'no files'}), 400
 
     code = f'{code_type}-{code_number:03d}'
+    if classification is None:
+        classification = default_subtitle(next(
+            (parsed for path in part_paths if (parsed := extract_video_code(path.stem)[0])
+             and parsed.upper().endswith(('-C', '-UC'))), ''
+        ))
+    code = subtitle_code(code, classification)
     scanned = []
-    if is_special_code(code_type):
-        folder = volume_path / code_type
-        if any((folder / path.name).exists() or (folder / path.name).is_symlink() for path in part_paths):
+    if len(part_paths) > 1 and not is_multipart:
+        return jsonify(error='多个文件需要指定分段'), 400
+    destinations = []
+    for i, tmp_path in enumerate(part_paths):
+        part = f'part{i + 1}' if is_multipart else None
+        record = VideoRecord(0, code, part, tmp_path, None, None, None, [])
+        dest_path = build_destination(record, dest_root=volume_path)
+        if dest_path.exists() or dest_path.is_symlink():
             return jsonify(error='目标目录有重名文件'), 409
+        destinations.append((tmp_path, part, dest_path))
     try:
-        for i, tmp_path in enumerate(part_paths):
-            part = f'part{i + 1}' if is_multipart else None
-            record = VideoRecord(
-                id=0, code=code, part=part,
-                original_file_path=tmp_path,
-                title_zh_short=None, title_zh=None, title_jp=None, actors=[],
-            )
-            dest_path = build_destination(record, dest_root=volume_path)
+        for tmp_path, part, dest_path in destinations:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path.rename(dest_path)
+            with dest_path.open('xb'):
+                pass
+            try:
+                tmp_path.replace(dest_path)
+            except OSError:
+                dest_path.unlink()
+                raise
 
             st = dest_path.stat()
             scanned.append({
@@ -522,7 +534,7 @@ def api_add_manual():
 
         # Manual uploads carry user-provided metadata — no scraping needed.
         batch_insert_scanned_videos(scanned, scrape_status='SUCCESS')
-        sync_derived_video_tags_for_code(code)
+        sync_derived_video_tags_for_code(code, subtitle_classification=classification)
         if additional_tags and not add_existing_tags_to_video(code, additional_tags):
             raise ValueError('添加标签失败')
     except Exception as exc:
@@ -616,13 +628,10 @@ def api_add_auto():
     missing_tags = _missing_existing_tags(additional_tags)
     if missing_tags:
         return jsonify({'error': 'unknown tags', 'tags': missing_tags}), 400
-    subtitle_classification = source.get('subtitle_classification') if 'subtitle_classification' in source else None
-    if subtitle_classification is not None:
-        subtitle_classification = subtitle_classification or ''
-        if subtitle_classification not in {'', '机翻中文', '中文字幕'}:
-            missing_subtitle_tags = _missing_existing_tags([subtitle_classification])
-            if missing_subtitle_tags:
-                return jsonify({'error': 'unknown subtitle classification', 'tags': missing_subtitle_tags}), 400
+    try:
+        subtitle_classification = _upload_classification(source, additional_tags)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     if payload and payload.get('upload_id'):
         volume_path = Path((payload.get('volume_path') or '').strip())
         tmp_dir = _resolve_upload_dir(volume_path, payload['upload_id'])
@@ -804,11 +813,9 @@ def api_video_files():
         rows = conn.execute(
             """
             SELECT v.id, v.code, v.part, v.original_file_path, v.file_size,
-                   EXISTS (
-                       SELECT 1 FROM video_tag_link vtl
-                       JOIN tags t ON t.id = vtl.tag_id
-                       WHERE vtl.video_id = v.id AND t.name = '中文字幕'
-                   ) AS subtitle_zh,
+                   (SELECT CASE WHEN COUNT(DISTINCT t.name)=1 THEN MIN(t.name) END
+                    FROM video_tag_link vtl JOIN tags t ON t.id=vtl.tag_id
+                    WHERE vtl.video_id=v.id AND t.name IN (?, ?, ?, ?)) AS subtitle_classification,
                    EXISTS (
                        SELECT 1 FROM video_tag_link vtl
                        JOIN tags t ON t.id = vtl.tag_id
@@ -827,7 +834,7 @@ def api_video_files():
               AND LOWER(v.original_file_path) LIKE ?
             ORDER BY v.code, v.part, v.id
             """,
-            (f'%.{extension}',),
+            (*SUBTITLE_CLASSIFICATIONS, f'%.{extension}'),
         ).fetchall()
     finally:
         conn.close()
@@ -846,7 +853,8 @@ def api_video_files():
             'part': row['part'],
             'filename': path.name,
             'file_size': row['file_size'] or path.stat().st_size,
-            'subtitle_zh': bool(row['subtitle_zh']),
+            'subtitle_classification': row['subtitle_classification'],
+            'subtitle_zh': row['subtitle_classification'] not in (None, NO_SUBTITLE),
             'uncensored_leaked': bool(row['uncensored_leaked']),
             'uncensored_native': bool(row['uncensored_native']),
             'download_url': url_for(
@@ -884,27 +892,20 @@ def api_subtitle_review():
                    MIN(COALESCE(v.title_zh, v.title_jp, '')) AS title,
                    COUNT(*) AS file_count,
                    ROUND(SUM(COALESCE(v.file_size, 0)) / 1073741824.0, 2) AS size_gib,
-                   CASE WHEN EXISTS (
-                       SELECT 1 FROM videos v2
-                       JOIN video_tag_link l2 ON l2.video_id = v2.id
-                       JOIN tags t2 ON t2.id = l2.tag_id
-                       WHERE v2.code = v.code AND t2.name = '机翻中文'
-                   ) THEN '机翻中文' ELSE '中文字幕' END AS classification
+                   (SELECT CASE WHEN COUNT(DISTINCT t.name)=1 THEN MIN(t.name) END
+                    FROM videos v2 JOIN video_tag_link l2 ON l2.video_id=v2.id
+                    JOIN tags t ON t.id=l2.tag_id
+                    WHERE v2.code=v.code AND v2.deleted=0 AND t.name IN (?, ?, ?, ?)) AS classification
             FROM videos v
             WHERE v.deleted = 0
               AND LOWER(v.original_file_path) LIKE '%.mkv'
-              AND EXISTS (
-                  SELECT 1 FROM video_tag_link l
-                  JOIN tags t ON t.id = l.tag_id
-                  WHERE l.video_id = v.id AND t.name IN ('中文字幕', '机翻中文')
-              )
               AND NOT EXISTS (
                   SELECT 1 FROM subtitle_classification_reviews r
                   WHERE r.code = v.code
               )
             GROUP BY v.code
             ORDER BY v.code
-            """
+            """, SUBTITLE_CLASSIFICATIONS
         ).fetchall()
         return jsonify([dict(row) for row in rows])
     finally:
@@ -913,44 +914,19 @@ def api_subtitle_review():
 
 @app.post('/api/videos/<string:code>/subtitle-classification')
 def api_subtitle_classification(code: str):
-    classification = ((request.get_json(silent=True) or {}).get('classification') or '').strip()
-    if classification not in {'机翻中文', '中文字幕'}:
-        return jsonify({'error': 'classification must be 机翻中文 or 中文字幕'}), 400
-
-    conn = sqlite3.connect(DB_PATH)
+    body = request.get_json(silent=True)
     try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS subtitle_classification_reviews ("
-            "code TEXT PRIMARY KEY COLLATE NOCASE, classification TEXT NOT NULL, "
-            "reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-        )
-        video_ids = [row[0] for row in conn.execute(
-            'SELECT id FROM videos WHERE UPPER(code) = UPPER(?) AND deleted = 0', (code,)
-        ).fetchall()]
-        if not video_ids:
-            return jsonify({'error': 'video not found'}), 404
-        conn.execute('INSERT OR IGNORE INTO tags(name) VALUES (?)', (classification,))
-        tag_id = conn.execute('SELECT id FROM tags WHERE name = ?', (classification,)).fetchone()[0]
-        placeholders = ','.join('?' * len(video_ids))
-        conn.execute(
-            f"DELETE FROM video_tag_link WHERE video_id IN ({placeholders}) "
-            "AND tag_id IN (SELECT id FROM tags WHERE name IN ('机翻中文', '中文字幕'))",
-            video_ids,
-        )
-        conn.executemany(
-            'INSERT OR IGNORE INTO video_tag_link(video_id, tag_id) VALUES (?, ?)',
-            [(video_id, tag_id) for video_id in video_ids],
-        )
-        conn.execute(
-            "INSERT INTO subtitle_classification_reviews(code, classification) VALUES (?, ?) "
-            "ON CONFLICT(code) DO UPDATE SET classification=excluded.classification, "
-            "reviewed_at=CURRENT_TIMESTAMP",
-            (code, classification),
-        )
-        conn.commit()
-        return jsonify({'ok': True, 'code': code, 'classification': classification})
-    finally:
-        conn.close()
+        classification = validate_subtitle(body.get('classification') if isinstance(body, dict) else None)
+        video = get_video_by_code(code)
+        if not video or video['deleted']:
+            return jsonify(error='video not found'), 404
+        new_code, jobs = patch_video(code, {}, runtime=scrape_store(),
+                                     subtitle_classification=classification, reviewed=True)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except OSError as exc:
+        return jsonify(error=str(exc)), 409
+    return jsonify(ok=True, code=new_code, classification=classification, rename_job_ids=jobs)
 
 
 @app.get('/api/videos/<string:code>')
@@ -994,7 +970,7 @@ def api_video_download_url(code: str):
             'filename': path.name,
             'file_size': source.get('file_size'),
             'download_url': url_for(
-                'api_video_stream_ext', code=base_code, ext=ext,
+                'api_video_stream_ext', code=data["code"], ext=ext,
                 _external=True, **query,
             ),
         })
@@ -1016,13 +992,19 @@ def api_video_patch(code: str):
     actor_names = body.pop('actors', None)
     tag_names = body.pop('tags', None)
     new_code = body.pop('code', None)
+    classification_supplied = 'subtitle_classification' in body
+    classification = body.pop('subtitle_classification', None)
     if 'series' in body and body['series'] is not None and not isinstance(body['series'], str):
         return jsonify(error='系列名必须是文本'), 400
     try:
+        if classification_supplied:
+            validate_subtitle(classification)
         code, jobs = patch_video(code, body, runtime=scrape_store(), actor_names=actor_names,
-                                 tag_names=tag_names, new_code=new_code)
+                                 tag_names=tag_names, new_code=new_code, subtitle_classification=classification)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+    except OSError as exc:
+        return jsonify(error=str(exc)), 409
     except sqlite3.Error:
         app.logger.exception('保存影片信息失败')
         return jsonify(error='保存影片信息失败'), 500
@@ -1045,16 +1027,13 @@ def api_video_file_path_patch(code: str):
     return jsonify(result)
 
 
-def _replacement_filename(video, source_name, subtitle_zh, uncensored, part):
+def _replacement_filename(video, source_name, classification, uncensored, part):
     extension = Path(source_name).suffix.lower()
     if extension not in VIDEO_EXTENSIONS:
         raise ValueError('不支持的影片扩展名')
     if part and not re.fullmatch(r'(?:part)?0*[1-9][0-9]*', part, re.IGNORECASE):
         raise ValueError('无效的分集编号')
-    if is_special_code(video['code']):
-        return _literal_video_filename(source_name)
-    suffix = '-UC' if subtitle_zh and uncensored else '-C' if subtitle_zh else '-U' if uncensored else ''
-    code = re.sub(r'(?i)-(?:uc|u|c)$', '', video['code']) + suffix
+    code = subtitle_code(video['code'], classification, uncensored=uncensored)
     actors = sorted(video.get('actors', []), key=lambda actor: actor.get('id', 0))
     record = VideoRecord(
         id=video.get('id', 0), code=code, part='part' + re.sub(r'(?i)^part', '', part) if part else None,
@@ -1063,6 +1042,17 @@ def _replacement_filename(video, source_name, subtitle_zh, uncensored, part):
         actors=[actor.get('name_zh') or actor['name'] for actor in actors],
     )
     return build_filename(record)
+
+
+def _incoming_code(filename):
+    return extract_video_code(Path(filename).stem)[0] or ''
+
+
+def _replacement_classification(video, filename, requested, extra_tags=()):
+    vr = any(tag['name'] == 'VR' for tag in video.get('tags', ())) or 'VR' in extra_tags
+    if requested is not None:
+        return validate_subtitle(requested, vr=vr)
+    return NO_SUBTITLE if vr else default_subtitle(_incoming_code(filename))
 
 
 @app.post('/api/videos/<string:code>/replace-preview')
@@ -1074,9 +1064,14 @@ def api_video_replace_preview(code: str):
     if not video or video.get('deleted'):
         return jsonify(error='video not found'), 404
     try:
+        extra_tags = _parse_upload_tags(payload)
+        validate_generic_tags(extra_tags)
+        requested = validate_subtitle(payload['subtitle_classification']) if 'subtitle_classification' in payload else None
         names = [_replacement_filename(
-            video, item['filename'], payload.get('subtitle_zh') is True,
-            payload.get('uncensored') is True, item.get('part')) for item in payload['files']]
+            video, item['filename'], _replacement_classification(video, item['filename'], requested, extra_tags),
+            payload.get('uncensored') is True if 'uncensored' in payload else
+            _incoming_code(item['filename']).upper().endswith(('-U', '-UC')),
+            item.get('part')) for item in payload['files']]
     except (ValueError, TypeError, KeyError) as exc:
         return jsonify(error=str(exc)), 400
     return jsonify(names=names)
@@ -1099,11 +1094,13 @@ def api_video_replace(code: str):
             expected_size = int(request.headers.get('X-File-Size') or 0)
         except (ValueError, TypeError):
             return jsonify({'error': 'invalid X-File-Size'}), 400
-        subtitle_zh = request.headers.get('X-Subtitle-Zh') == '1'
-        subtitle_classification = unquote(request.headers.get('X-Subtitle-Classification') or '') or None
+        raw_classification = request.headers.get('X-Subtitle-Classification')
+        subtitle_classification = unquote(raw_classification) if raw_classification is not None else None
         uncensored_leaked = request.headers.get('X-Uncensored-Leaked') == '1'
         uncensored_crack_tag = unquote(request.headers.get('X-Uncensored-Crack-Tag') or '') or None
         uncensored_native = request.headers.get('X-Uncensored-Native') == '1'
+        if 'X-Uncensored-Leaked' not in request.headers and 'X-Uncensored-Native' not in request.headers:
+            uncensored_leaked = _incoming_code(dest_name).upper().endswith(('-U', '-UC'))
         dest_part = (request.headers.get('X-Part') or '').strip() or None
         replace_whole = request.headers.get('X-Replace-Whole') == '1'
         additional_tags = _parse_upload_tags(None, unquote(request.headers.get('X-Tags') or ''))
@@ -1118,11 +1115,12 @@ def api_video_replace(code: str):
             expected_size = int(request.form.get('file_size') or 0)
         except ValueError:
             return jsonify({'error': 'invalid file_size'}), 400
-        subtitle_zh = request.form.get('subtitle_zh') == '1'
-        subtitle_classification = request.form.get('subtitle_classification') or None
+        subtitle_classification = request.form.get('subtitle_classification')
         uncensored_leaked = request.form.get('uncensored_leaked') == '1'
         uncensored_crack_tag = request.form.get('uncensored_crack_tag') or None
         uncensored_native = request.form.get('uncensored_native') == '1'
+        if 'uncensored_leaked' not in request.form and 'uncensored_native' not in request.form:
+            uncensored_leaked = _incoming_code(dest_name).upper().endswith(('-U', '-UC'))
         dest_part = (request.form.get('part') or '').strip() or None
         replace_whole = request.form.get('replace_whole') == '1'
         additional_tags = _parse_upload_tags(request.form)
@@ -1131,10 +1129,12 @@ def api_video_replace(code: str):
     crack_tags = {'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解'}
     if uncensored_crack_tag is not None and uncensored_crack_tag not in crack_tags:
         return jsonify({'error': 'invalid uncensored_crack_tag'}), 400
-    if subtitle_classification is not None and subtitle_classification not in {'机翻中文', '中文字幕'}:
-        missing_subtitle_tags = _missing_existing_tags([subtitle_classification])
-        if missing_subtitle_tags:
-            return jsonify({'error': 'unknown subtitle classification', 'tags': missing_subtitle_tags}), 400
+    try:
+        validate_generic_tags(additional_tags)
+        if subtitle_classification is not None:
+            validate_subtitle(subtitle_classification)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     missing_tags = _missing_existing_tags(additional_tags)
     if missing_tags:
         return jsonify({'error': 'unknown tags', 'tags': missing_tags}), 400
@@ -1152,7 +1152,9 @@ def api_video_replace(code: str):
         return jsonify({'error': 'video not found'}), 404
     part = None if replace_whole else dest_part or original_part
     try:
-        final_name = _replacement_filename(video, dest_name, subtitle_zh, uncensored_leaked or uncensored_native, part)
+        subtitle_classification = _replacement_classification(video, dest_name, subtitle_classification, additional_tags)
+        subtitle_zh = subtitle_classification != NO_SUBTITLE
+        final_name = _replacement_filename(video, dest_name, subtitle_classification, uncensored_leaked or uncensored_native, part)
         identity = original.stat()
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
@@ -1220,12 +1222,12 @@ def api_video_replace(code: str):
             )
         if not result['ok'] or not installed:
             raise RuntimeError(result.get('error') or 'db update failed')
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         if backup is not None:
             backup.replace(original)
         elif installed:
             dest_path.unlink(missing_ok=True)
-        return jsonify(error=str(exc)), 409 if isinstance(exc, FileExistsError) else 500
+        return jsonify(error=str(exc)), 409 if isinstance(exc, FileExistsError) else 400 if isinstance(exc, ValueError) else 500
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
@@ -1273,8 +1275,9 @@ def api_video_rename_file(code: str):
     video = get_video_by_code(code)
     if not video or video.get('deleted'):
         return jsonify({'error': 'not found'}), 404
-    if is_special_code(video['code']) or is_special_code(new_code):
-        return jsonify(error='特殊番号不使用文件名模板，请在影片资料中修改番号'), 400
+    classification = video.get('subtitle_classification')
+    if classification and subtitle_code(new_code, classification) != new_code:
+        return jsonify(error='番号后缀与字幕分类不一致'), 400
     if not old_path.exists():
         return jsonify({'error': 'source file missing'}), 400
     if new_code == video['code'] and new_path != old_path and new_path.exists() and not old_path.samefile(new_path):

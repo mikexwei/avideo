@@ -48,7 +48,7 @@ IPVR-179-U.part2.mp4
 
 | 后缀 | 含义 |
 |---|---|
-| 无后缀 | 有码、无中文字幕 |
+| 无后缀 | 有码、无字幕 |
 | `-C` | 有码中文 |
 | `-U` | 无码 |
 | `-UC` | 无码中文 |
@@ -87,7 +87,8 @@ Content-Type: application/json
     "status": "ACTIVE",
     "scrape_status": "SUCCESS",
     "has_subtitle": true,
-    "subtitle_type": "中文字幕",
+    "subtitle_type": "硬字幕",
+    "subtitle_classification": "硬字幕",
     "is_uncensored": true,
     "uncensored_type": "LTX 无码破解",
     "original_path": "/Volumes/T71/avideo/IPVR/IPVR-179-U....part1.mp4",
@@ -109,7 +110,7 @@ Content-Type: application/json
 | `status` | `ACTIVE`、`DELETED` 或 `NOT_FOUND` |
 | `scrape_status` | 刮削状态 |
 | `has_subtitle` | 是否包含字幕；无法解析文件名时为 `null` |
-| `subtitle_type` | 字幕分类，例如 `中文字幕`、`机翻中文`、`机翻中文 V2`；无字幕时为 `null` |
+| `subtitle_type` | 与 `subtitle_classification` 相同。未分类的旧记录可为 `null` |
 | `is_uncensored` | 是否无码；无法解析文件名时为 `null` |
 | `uncensored_type` | 无码分类，例如 `JAV 无码破解`、`LADA 无码破解`、`LTX 无码破解`、`原装无码`；有码时为 `null` |
 | `original_path` | 当前文件路径 |
@@ -132,13 +133,13 @@ Accept: application/json
   "input_code": "START-656",
   "code": "START-656-UC",
   "base_code": "START-656",
-  "download_url": "http://10.0.0.30:8000/api/videos/START-656/stream.mp4?download=1",
+  "download_url": "http://10.0.0.30:8000/api/videos/START-656-UC/stream.mp4?download=1",
   "files": [
     {
       "part": null,
       "filename": "START-656-UC.title.mp4",
       "file_size": 123456789,
-      "download_url": "http://10.0.0.30:8000/api/videos/START-656/stream.mp4?download=1"
+      "download_url": "http://10.0.0.30:8000/api/videos/START-656-UC/stream.mp4?download=1"
     }
   ]
 }
@@ -221,8 +222,8 @@ Content-Type: application/json
   "upload_id": "550e8400-e29b-41d4-a716-446655440000",
   "volume_path": "/Volumes/T71/avideo",
   "uncensored_crack_tag": "LTX 无码破解",
-  "subtitle_classification": "机翻中文 V2",
-  "tags": ["VR", "單體作品"]
+  "subtitle_classification": "外挂音频字幕",
+  "tags": ["單體作品"]
 }
 ```
 
@@ -237,8 +238,8 @@ Content-Type: application/json
 | 字段 | 允许值 |
 |---|---|
 | `uncensored_crack_tag` | `""`、`"JAV 无码破解"`、`"LADA 无码破解"`、`"LTX 无码破解"` |
-| `subtitle_classification` | `""`、`"机翻中文"`、`"中文字幕"`，或数据库中已有的自定义字幕标签 |
-| `tags` | 数据库中已经存在的任意标签名称数组 |
+| `subtitle_classification` | `硬字幕`、`外挂 OCR 字幕`、`外挂音频字幕`、`无字幕`。显式传非法值返回 `400` |
+| `tags` | 数据库中已存在的普通标签名称数组。字幕标签使用专用字段 |
 
 `tags` 是附加操作，不会清除刮削得到的其他标签。接口不会自动创建通用标签；数组中任一名称不存在时返回 `400`：
 
@@ -297,17 +298,16 @@ POST /api/videos/IPVR-179-U/replace?part=part2
 X-Dest-Name: IPVR-179-U.神菜美舞.%5B标题%5D.mp4
 X-File-Size: 8880789106
 X-Part: part2
-X-Subtitle-Zh: 0
-X-Subtitle-Classification:
+X-Subtitle-Classification: %E6%97%A0%E5%AD%97%E5%B9%95
 X-Uncensored-Leaked: 1
 X-Uncensored-Crack-Tag: LTX%20无码破解
 X-Uncensored-Native: 0
-X-Tags: %5B%22VR%22%2C%22机翻中文%20V2%22%5D
+X-Tags: %5B%5D
 
 <raw file bytes>
 ```
 
-后端按数据库里的番号、演员、标题和本次替换属性生成标准文件名，并按 `X-Part` 添加分集。替换请求的 `X-Dest-Name` 只用于读取扩展名，可以直接传上传文件原名。
+后端按数据库里的番号、演员、标题和本次替换属性生成标准文件名，并按 `X-Part` 添加分集。替换请求的 `X-Dest-Name` 用于读取扩展名，并在省略分类时从上传文件番号推导默认值。可以直接传原文件名。
 
 成功响应包含更新后的影片详情：
 
@@ -326,8 +326,7 @@ X-Tags: %5B%22VR%22%2C%22机翻中文%20V2%22%5D
 | `X-Dest-Name` | 是 | 上传文件名，替换时只读取扩展名。特殊字符需要 URL 编码 |
 | `X-File-Size` | 是 | 文件字节数，必须大于 0 |
 | `X-Part` | 多 part 必填 | 例如 `part2` |
-| `X-Subtitle-Zh` | 是 | `1` 或 `0` |
-| `X-Subtitle-Classification` | 建议 | 空、`机翻中文` 或 `中文字幕` |
+| `X-Subtitle-Classification` | 建议 | 四种合法分类之一。省略时按上传文件番号后缀取默认值 |
 | `X-Uncensored-Leaked` | 是 | 破解无码为 `1` |
 | `X-Uncensored-Crack-Tag` | 建议 | 空或具体破解类型 |
 | `X-Uncensored-Native` | 是 | 原装无码为 `1` |
@@ -410,7 +409,7 @@ RESPONSE=$(curl --fail-with-body -s \
     \"upload_id\": \"$UPLOAD_ID\",
     \"volume_path\": \"$VOLUME\",
     \"uncensored_crack_tag\": \"\",
-    \"subtitle_classification\": \"中文字幕\"
+    \"subtitle_classification\": \"硬字幕\"
   }")
 
 JOB_ID=$(printf '%s' "$RESPONSE" | jq -r '.job_id')
@@ -453,7 +452,7 @@ done
 | `413` | 请求超过 50 GiB | 不可通过当前接口上传该文件 |
 | `500` | 服务端或文件操作失败 | 记录响应；确认状态后再决定是否重试 |
 
-上传连接中断后，普通上传可用相同 `upload_id` 和文件名从头覆盖临时文件。使用 `X-Manual-Code-Type: CN` 或 `DUMMY` 时，如果同名临时文件已经存在，重传会返回 `409`，此时可新建批次并重传该批次的文件。上传不支持断点续传。
+上传连接中断后，普通上传可用相同 `upload_id` 和文件名从头覆盖临时文件。上传不支持断点续传。
 
 不要在不知道 `add-auto` 是否已启动的情况下盲目重复提交。应先检查影片详情：
 

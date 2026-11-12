@@ -40,7 +40,7 @@
 
   <!-- ========== VideoCard ========== -->
   <script type="text/x-template" id="tpl-video-card">
-  <router-link :to="'/video/' + encodeURIComponent(baseVideoCode(video.code))" class="video-card">
+  <router-link :to="'/video/' + encodeURIComponent(video.code)" class="video-card">
     <div class="film-art">
       <span class="art-fallback" aria-hidden="true">{{ video.code }}</span>
       <img v-if="video.cover_path" :src="'/static/' + video.cover_path" class="cover-img w-full" alt="" loading="lazy" decoding="async" @error="imgErr" />
@@ -267,10 +267,10 @@
                 <div role="group" aria-label="字幕" class="batch-review-options">
                   <span class="batch-review-label">字幕</span>
                   <div class="flex flex-wrap gap-2">
-                    <button v-for="[value, label] in [['','无中文'],['机翻中文','机翻中文'],['中文字幕','中文字幕']]"
-                      :key="label" @click="g.subtitle_classification = value"
+                    <button v-for="value in subtitleOptions"
+                      :key="value" @click="g.subtitle_classification = value" :disabled="g.is_vr && value !== '无字幕'"
                       class="tag-pill" :aria-pressed="g.subtitle_classification === value">
-                      {{ label }}
+                      {{ value }}
                     </button>
                   </div>
                 </div>
@@ -482,19 +482,19 @@
               </button>
             </div>
           </div>
-          <div v-if="addMode === 'auto'">
-            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">中文类型</div>
+          <div>
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">字幕分类</div>
             <div class="flex flex-wrap gap-2">
-              <button v-for="[value,label] in [['','无中文'],['机翻中文','机翻中文'],['中文字幕','中文字幕']]"
-                :key="label" @click="addSubtitleClassification = value"
+              <button v-for="value in subtitleOptions"
+                :key="value" @click="addSubtitleClassification = value"
                 class="tag-pill" :aria-pressed="addSubtitleClassification === value">
-                {{ label }}
+                {{ value }}
               </button>
             </div>
           </div>
           <div class="px-3 py-2 bg-gray-800 rounded-lg text-xs text-gray-500 leading-relaxed">
             <template v-if="addMode === 'auto'">
-              自动模式：从文件名解析番号 → 上传 → 刮削 JavDB → 翻译标题 → 重命名，上传后可在刮削进度页查看后续处理
+              自动模式从文件名解析番号。CN、DUMMY、WEST 入库后跳过刮削，其他番号可在刮削进度页查看后续处理。
             </template>
             <template v-else>
               手动模式：手动指定 WEST / CN / DUMMY 番号 → 上传 → 填写元数据
@@ -600,6 +600,12 @@
               DB 最大番号: {{ manualCodeType }}-{{ String(manualMaxNumber).padStart(3,'0') }}，推荐 {{ manualCodeNumber }}
             </div>
           </div>
+          <label class="flex items-center gap-2 text-sm">
+            字幕分类
+            <select v-model="addSubtitleClassification" class="ui-input">
+              <option v-for="option in subtitleOptions" :key="option">{{ option }}</option>
+            </select>
+          </label>
           <div v-if="addFileSorted.length > 1">
             <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">是否分 Part</div>
             <div class="flex gap-2">
@@ -661,7 +667,7 @@
           <div>
             <div class="text-xs text-gray-500 mb-1">标签</div>
             <div class="flex flex-wrap gap-2">
-              <button v-for="tag in ['机翻中文','中文字幕','JAV 无码破解','LADA 无码破解','LTX 无码破解','无码流出','原装无码']" :key="tag"
+              <button v-for="tag in ['JAV 无码破解','LADA 无码破解','LTX 无码破解','无码流出','原装无码']" :key="tag"
                 @click="toggleManualTag(tag)"
                 class="tag-pill" :aria-pressed="manualTags.includes(tag)">
                 {{ tag }}
@@ -720,7 +726,7 @@
             <span v-else>影片</span>
           </div>
           <div class="min-w-0">
-            <router-link v-if="item.video" :to="'/video/' + encodeURIComponent(baseVideoCode(item.code))" class="font-semibold text-indigo-800 hover:underline">
+            <router-link v-if="item.video" :to="'/video/' + encodeURIComponent(item.code)" class="font-semibold text-indigo-800 hover:underline">
               {{ item.code }}
             </router-link>
             <span v-else class="font-semibold">{{ item.code || item.files[0] || '待识别影片' }}</span>
@@ -1017,7 +1023,7 @@
   <script type="text/x-template" id="tpl-subtitle-review">
     <section>
       <header class="page-head">
-        <h1 class="text-xl font-bold">中文字幕人工分类</h1>
+        <h1 class="text-xl font-bold">字幕人工分类</h1>
         <span class="text-sm text-gray-500">{{ loading ? '加载中…' : items.length + ' 个待分类' }}</span>
       </header>
       <p v-if="error" role="alert" class="text-red-800 mb-3">{{ error }}</p>
@@ -1025,12 +1031,12 @@
       <div class="space-y-2">
         <article v-for="item in items" :key="item.code" class="site-card subtitle-card p-3">
           <div class="min-w-0 break-words">
-            <router-link :to="'/video/' + encodeURIComponent(baseVideoCode(item.code))" class="font-semibold text-indigo-800 hover:underline">{{ item.code }}</router-link>
+            <router-link :to="'/video/' + encodeURIComponent(item.code)" class="font-semibold text-indigo-800 hover:underline">{{ item.code }}</router-link>
             <p class="text-xs text-gray-500 mt-1">{{ item.file_count }} 个文件 · {{ item.size_gib }} GiB</p>
           </div>
           <p class="text-sm min-w-0 break-words">{{ item.title || '无标题' }}</p>
           <div class="grid grid-cols-2 gap-2">
-            <button v-for="label in ['机翻中文', '中文字幕']" :key="label" @click="classify(item, label)"
+            <button v-for="label in subtitleOptions" :key="label" @click="classify(item, label)"
               :disabled="saving.has(item.code)" :aria-pressed="item.classification === label"
               class="tag-pill justify-center">{{ label }}</button>
           </div>
@@ -1294,7 +1300,7 @@
         <button @click="backToLibrary" class="ui-button">← 返回</button>
         <div class="flex flex-wrap gap-2">
           <template v-if="!editing">
-            <button v-if="!video.deleted" @click="startRescrape" :disabled="rescraping"
+            <button v-if="!video.deleted && !skipScrape" @click="startRescrape" :disabled="rescraping"
               class="px-3 py-1 text-sm rounded bg-amber-700 hover:bg-amber-600 text-white disabled:opacity-50">
               {{ rescraping ? '提交中…' : '重新刮削' }}
             </button>
@@ -1495,6 +1501,13 @@
               </div>
             </template>
             <template v-else>
+              <label class="flex items-center gap-2 mb-2 text-sm">
+                字幕分类
+                <select v-model="form.subtitleClassification" class="ui-input">
+                  <option disabled value="">未分类</option>
+                  <option v-for="option in subtitleOptions" :key="option">{{ option }}</option>
+                </select>
+              </label>
               <div class="flex flex-wrap gap-2 mb-2">
                 <span v-for="(t, i) in form.tags" :key="t.name"
                   class="tag-pill">
@@ -1649,16 +1662,12 @@
                 <div class="px-4 py-2 bg-gray-800 bg-opacity-60">
                   <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">属性标记</span>
                 </div>
-                <!-- 中文字幕 -->
-                <div class="flex items-center justify-between px-4 py-3">
-                  <span class="text-sm text-gray-300">中文字幕</span>
-                  <button @click="replaceSubtitleZh = !replaceSubtitleZh" :disabled="replaceUploading"
-                    :class="['relative flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 cursor-pointer disabled:opacity-50',
-                      replaceSubtitleZh ? 'bg-indigo-600' : 'bg-gray-700']">
-                    <span :class="['absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200',
-                      replaceSubtitleZh ? 'translate-x-6' : 'translate-x-1']"></span>
-                  </button>
-                </div>
+                <label class="flex items-center justify-between gap-2 px-4 py-3">
+                  <span class="text-sm text-gray-300">字幕分类</span>
+                  <select v-model="replaceSubtitleClassification" :disabled="replaceUploading || isVrVideo" class="ui-input">
+                    <option v-for="option in subtitleOptions" :key="option">{{ option }}</option>
+                  </select>
+                </label>
                 <!-- 无码破解分类 -->
                 <div class="px-4 py-3">
                   <span class="text-sm text-gray-300">无码破解</span>
@@ -2209,9 +2218,7 @@
       }
     }
 
-    function baseVideoCode(code) {
-      return (code || '').replace(/-(?:UC|U|C)$/i, '');
-    }
+
 
     // ── SortBar ───────────────────────────────────────────────
     const SortBar = {
@@ -2226,7 +2233,7 @@
       name: 'VideoCard',
       template: '#tpl-video-card',
       props: { video: Object },
-      setup: () => ({ baseVideoCode, imgErr })
+      setup: () => ({ imgErr })
     };
 
     // ── Pagination ────────────────────────────────────────────
@@ -2249,7 +2256,10 @@
       }
     };
 
-    const FILTER_TAGS = ['无码流出', 'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解', '原装无码', '中文字幕'];
+    const SUBTITLE_OPTIONS = ['硬字幕', '外挂 OCR 字幕', '外挂音频字幕', '无字幕'];
+    const SUBTITLE_TAGS = [...SUBTITLE_OPTIONS, '中文字幕', '机翻中文', '机翻中文 V2', '外挂字幕', '内嵌中文'];
+    const FILTER_TAGS = ['无码流出', 'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解', '原装无码', ...SUBTITLE_OPTIONS];
+    const defaultSubtitle = name => /-(?:UC|C)(?:[._-](?:part|cd|pt)?\d+)?(?:\.|$)/i.test(name || '') ? '硬字幕' : '无字幕';
 
     function queryTags(query) {
       const raw = query.tag;
@@ -2288,7 +2298,7 @@
             saving.value.delete(item.code);
           }
         }
-        return { items, loading, error, saving, classify, baseVideoCode };
+        return { items, loading, error, saving, classify, subtitleOptions: SUBTITLE_OPTIONS };
       }
     };
 
@@ -2352,14 +2362,14 @@
           disposed = true;
           clearInterval(timer);
         });
-        return { items, loading, error, load, baseVideoCode, sourceLabels, statusLabels, statusTone,
+        return { items, loading, error, load, sourceLabels, statusLabels, statusTone,
           isActive, stages, progress, phaseLabel, formatTime };
       }
     };
 
-    async function replacementPreview(code, files, subtitleZh, uncensored) {
+    async function replacementPreview(code, files, classification, uncensored) {
       return postJson('/api/videos/' + encodeURIComponent(code) + '/replace-preview', {
-        files, subtitle_zh: subtitleZh, uncensored
+        files, subtitle_classification: classification, uncensored
       });
     }
 
@@ -2394,7 +2404,7 @@
     // (each < the 50GB cap, written straight to the target volume — no /tmp).
     // onProgress receives cumulative bytes across all parts. Returns the
     // upload_id that groups them; pass it to add-auto / add-manual.
-    async function streamUploadParts(files, volumePath, onProgress, manualCodeType) {
+    async function streamUploadParts(files, volumePath, onProgress) {
       const uploadId = genUploadId();
       let priorBytes = 0;
       for (const f of files) {
@@ -2402,7 +2412,6 @@
           const xhr = new XMLHttpRequest();
           xhr.open('POST', '/api/videos/upload-part');
           xhr.setRequestHeader('X-Upload-Id', uploadId);
-          if (manualCodeType) xhr.setRequestHeader('X-Manual-Code-Type', manualCodeType);
           xhr.setRequestHeader('X-Volume-Path', encodeURIComponent(volumePath));
           xhr.setRequestHeader('X-Dest-Name', encodeURIComponent(f.name));
           xhr.setRequestHeader('X-File-Size', String(f.size));
@@ -2509,7 +2518,7 @@
         function buildGroups(items) {
           const map = {};
           for (const item of items) {
-            const key = item.code || ('__err__' + item.filename);
+            const key = item.db_code || item.code?.replace(/-(?:UC|U|C)$/i, '') || ('__err__' + item.filename);
             if (!map[key]) {
               map[key] = {
                 code: item.code,
@@ -2518,13 +2527,16 @@
                 exists: item.exists,
                 original_path: item.original_path,
                 db_parts: item.db_parts || [],
-                subtitle_zh: /(?:-UC|-C)$/i.test(item.code || ''),
-                subtitle_classification: /(?:-UC|-C)$/i.test(item.code || '') ? '中文字幕' : '',
+                is_vr: item.is_vr,
+                subtitle_classification: item.is_vr ? '无字幕' : defaultSubtitle(item.code),
                 uncensored_leaked: /(?:-UC|-U)$/i.test(item.code || ''),
                 uncensored_crack_tag: /(?:-UC|-U)$/i.test(item.code || '') ? 'LTX 无码破解' : '',
                 uncensored_native: false,
                 warning: item.error || null, previewRequest: 0, finalNames: [], previewError: '',
               };
+            }
+            if (!map[key].is_vr && defaultSubtitle(item.code) === '硬字幕') {
+              map[key].subtitle_classification = '硬字幕';
             }
             map[key].files.push(item);
             // mixed new+replace in same code → warn
@@ -2556,7 +2568,7 @@
             group.finalNames = [];
             replacementPreview(group.db_code || group.code, group.files.map(file => ({
               filename: file.filename, part: file.part || null
-            })), Boolean(subtitles), Boolean(crack) || native)
+            })), subtitles, Boolean(crack) || native)
               .then(data => { if (request === group.previewRequest) group.finalNames = data.names; })
               .catch(error => {
                 if (request !== group.previewRequest) return;
@@ -2657,12 +2669,11 @@
             const qp = originalPart ? `?part=${encodeURIComponent(originalPart)}` : '';
             // Replace must target the actual DB code (variant may differ from the
             // uploaded file's suffix, e.g. DB has ABW-123-U but file is ABW-123-C).
-            const url = `/api/videos/${encodeURIComponent(requestCode)}/replace${qp}`;
+            const url = `/api/videos/${encodeURIComponent(finalCode)}/replace${qp}`;
 
             const headers = {
               'X-Dest-Name': encodeURIComponent(f.name),
               'X-File-Size': String(f.size),
-              'X-Subtitle-Zh': group.subtitle_classification ? '1' : '0',
               'X-Subtitle-Classification': encodeURIComponent(group.subtitle_classification || ''),
               'X-Uncensored-Leaked': group.uncensored_crack_tag ? '1' : '0',
               'X-Uncensored-Crack-Tag': encodeURIComponent(group.uncensored_crack_tag || ''),
@@ -2686,6 +2697,7 @@
         }
 
         return {
+          subtitleOptions: SUBTITLE_OPTIONS,
           batchTitle, keepBatchFocus, batchStep, batchFiles, batchChecking, batchCheckError,
           batchGroups, batchVolume, mediaLibraries,
           batchProcessing, batchResults,
@@ -2709,7 +2721,7 @@
         const addFiles   = ref([]);
         const addVolume  = ref('');
         const addMode    = ref('auto');
-        const addSubtitleClassification = ref('');
+        const addSubtitleClassification = ref('无字幕');
         const addDoneCode = ref('');
         const addError   = ref('');
 
@@ -2753,8 +2765,8 @@
         // ── Handlers ─────────────────────────────────────────────
         function onAddFilesChange(e) {
           addFiles.value = Array.from(e.target.files || []);
-          addSubtitleClassification.value = addFiles.value.some(f => /-(?:UC|C)(?:\.|$)/i.test(f.name))
-            ? '中文字幕' : '';
+          addSubtitleClassification.value = addFiles.value.some(f => defaultSubtitle(f.name) === '硬字幕')
+            ? '硬字幕' : '无字幕';
           if (addFiles.value.length > 1) manualIsMultipart.value = true;
         }
 
@@ -2817,7 +2829,7 @@
               addUploadPct.value = Math.round(loaded / totalBytes * 100);
               const s = speed(loaded);
               if (s) addUploadSpeed.value = s;
-            }, manualCodeType.value);
+            });
             addUploading.value = false;
             const data = await postJson('/api/videos/add-manual', {
               upload_id: uploadId,
@@ -2825,6 +2837,7 @@
               code_type: manualCodeType.value,
               code_number: manualCodeNumber.value,
               is_multipart: manualIsMultipart.value,
+              subtitle_classification: addSubtitleClassification.value,
             });
             manualCode.value = data.codes[0];
             addStep.value = 'manual-meta';
@@ -2837,12 +2850,6 @@
         }
 
         function toggleManualTag(tag) {
-          if (tag === '机翻中文' || tag === '中文字幕') {
-            const wasSelected = manualTags.value.includes(tag);
-            manualTags.value = manualTags.value.filter(t => t !== '机翻中文' && t !== '中文字幕');
-            if (!wasSelected) manualTags.value = [...manualTags.value, tag];
-            return;
-          }
           if (manualTags.value.includes(tag)) {
             manualTags.value = manualTags.value.filter(t => t !== tag);
           } else {
@@ -2882,11 +2889,11 @@
 
         function goToVideo(code) {
           emit('close');
-          router.push(`/video/${baseVideoCode(code)}`);
+          router.push(`/video/${encodeURIComponent(code)}`);
         }
 
         return {
-          addStep, addFiles, addFileSorted, addVolume, addMode, addSubtitleClassification, addDoneCode, addError,
+          subtitleOptions: SUBTITLE_OPTIONS, addStep, addFiles, addFileSorted, addVolume, addMode, addSubtitleClassification, addDoneCode, addError,
           mediaLibraries, addFileInput,
           autoFinished,
           addUploading, addUploadPct, addUploadSpeed,
@@ -3210,18 +3217,18 @@
             ? (video.value.parts.find(p => p.part === selectedPart.value) || video.value.parts[0]).original_file_path
             : video.value.original_file_path;
           const ext = filePath ? filePath.split('.').pop().toLowerCase() : 'mp4';
-          const base = window.location.origin + '/api/videos/' + encodeURIComponent(baseVideoCode(video.value.code)) + '/stream.' + ext;
+          const base = window.location.origin + '/api/videos/' + encodeURIComponent(video.value.code) + '/stream.' + ext;
           return selectedPart.value ? base + '?part=' + encodeURIComponent(selectedPart.value) : base;
         }
         const playing = ref(false), playbackError = ref(false);
         const canPlay = computed(() => Boolean(video.value && !video.value.deleted &&
           (video.value.original_file_path || video.value.parts?.some(part => part.original_file_path))));
         const player = ref(null), playbackHistory = ref(null), playbackHistoryError = ref('');
-        const playbackHistoryCode = computed(() => canPlay.value ? baseVideoCode(video.value.code) : '');
+        const playbackHistoryCode = computed(() => canPlay.value ? video.value.code : '');
         const subtitleTracks = ref([]), selectedSubtitle = ref(null), subtitleStatus = ref('');
         let historyRequest = 0;
         function playbackUrl(code) {
-          return '/api/videos/' + encodeURIComponent(baseVideoCode(code)) + '/playback';
+          return '/api/videos/' + encodeURIComponent(code) + '/playback';
         }
         async function loadPlaybackHistory() {
           const code = playbackHistoryCode.value;
@@ -3367,7 +3374,8 @@
         const replaceOriginalPart = ref('');
         const replaceFile = ref(null);
         const replaceFinalName = ref('');
-        const replaceSubtitleZh = ref(false);
+        const replaceSubtitleClassification = ref('无字幕');
+        const isVrVideo = computed(() => video.value?.tags?.some(tag => tag.name === 'VR'));
         const replaceUncensoredCrackTag = ref('LTX 无码破解');
         const replaceUncensoredNative = ref(false);
         const replaceWhole = ref(false);
@@ -3381,7 +3389,7 @@
         const replaceRemaining = ref('');
         const replaceError = ref('');
 
-        watch([replaceFile, replaceSubtitleZh, replaceUncensoredCrackTag, replaceUncensoredNative,
+        watch([replaceFile, replaceSubtitleClassification, replaceUncensoredCrackTag, replaceUncensoredNative,
           replaceWhole, replacePartOn, replacePartNum, replaceOriginalPart], async (_, __, onCleanup) => {
           if (!replaceFile.value) return;
           let current = true;
@@ -3390,7 +3398,7 @@
           const part = replaceWhole.value ? null : replacePartOn.value ? String(replacePartNum.value) : replaceOriginalPart.value || null;
           try {
             const data = await replacementPreview(video.value.code, [{filename: replaceFile.value.name, part}],
-              replaceSubtitleZh.value, Boolean(replaceUncensoredCrackTag.value) || replaceUncensoredNative.value);
+              replaceSubtitleClassification.value, Boolean(replaceUncensoredCrackTag.value) || replaceUncensoredNative.value);
             if (current) replaceFinalName.value = data.names[0];
           } catch (error) {
             if (current) replaceFinalName.value = error.message;
@@ -3405,7 +3413,7 @@
         function openReplaceModal() {
           replaceFile.value = null;
           replaceFinalName.value = '';
-          replaceSubtitleZh.value = false;
+          replaceSubtitleClassification.value = '无字幕';
           replaceUncensoredCrackTag.value = 'LTX 无码破解';
           replaceUncensoredNative.value = false;
           replaceWhole.value = false;
@@ -3436,8 +3444,7 @@
           replaceFile.value = file;
           replaceError.value = '';
           // Auto-detect tags from the uploaded filename's code component.
-          const upCode = file.name.replace(/\.[^.]+$/, '').split('.')[0];
-          replaceSubtitleZh.value = /(?:-UC|-C)$/i.test(upCode);
+          replaceSubtitleClassification.value = isVrVideo.value ? '无字幕' : defaultSubtitle(file.name);
         }
 
         function startReplaceUpload() {
@@ -3494,7 +3501,7 @@
           xhr.open('POST', '/api/videos/' + video.value.code + '/replace' + qs);
           xhr.setRequestHeader('X-Dest-Name', encodeURIComponent(replaceFile.value.name));
           xhr.setRequestHeader('X-File-Size', String(replaceFile.value.size));
-          xhr.setRequestHeader('X-Subtitle-Zh', replaceSubtitleZh.value ? '1' : '0');
+          xhr.setRequestHeader('X-Subtitle-Classification', encodeURIComponent(replaceSubtitleClassification.value));
           xhr.setRequestHeader('X-Uncensored-Leaked', replaceUncensoredCrackTag.value ? '1' : '0');
           xhr.setRequestHeader('X-Uncensored-Crack-Tag', encodeURIComponent(replaceUncensoredCrackTag.value));
           xhr.setRequestHeader('X-Uncensored-Native', replaceUncensoredNative.value ? '1' : '0');
@@ -3534,7 +3541,7 @@
           editingCode.value = false;
           if (res && res.new_code) {
             video.value = res;
-            const routeCode = baseVideoCode(res.new_code);
+            const routeCode = res.new_code;
             if (routeCode !== route.params.code) {
               await router.replace('/video/' + encodeURIComponent(routeCode));
             }
@@ -3600,7 +3607,7 @@
           video.value = await apiFetch('/api/videos/' + route.params.code);
           loading.value = false;
           if (video.value) {
-            const canonicalRouteCode = baseVideoCode(video.value.code);
+            const canonicalRouteCode = video.value.code;
             if (route.params.code !== canonicalRouteCode) {
               router.replace('/video/' + encodeURIComponent(canonicalRouteCode));
             }
@@ -3637,7 +3644,8 @@
             series: v.series || '',
             score: v.score != null ? v.score : '',
             actors: [...(v.actors || [])],
-            tags: [...(v.tags || [])],
+            tags: (v.tags || []).filter(tag => !SUBTITLE_TAGS.includes(tag.name)),
+            subtitleClassification: v.subtitle_classification || '',
             newActor: '',
             newTag: '',
           };
@@ -3698,7 +3706,7 @@
           if (!allTags.value.length) allTags.value = await apiFetch('/api/tags/all') || [];
           const selected = new Set(form.value.tags.map(tag => tag.name));
           tagSuggestions.value = allTags.value
-            .filter(tag => tag.name.toLowerCase().includes(q) && !selected.has(tag.name))
+            .filter(tag => !SUBTITLE_TAGS.includes(tag.name) && tag.name.toLowerCase().includes(q) && !selected.has(tag.name))
             .slice(0, 20);
         }
         function closeTagDropdown() { setTimeout(() => { tagSuggestions.value = []; }, 150); }
@@ -3711,7 +3719,7 @@
         }
         function addTag() {
           const name = form.value.newTag.trim();
-          if (name && !form.value.tags.find(t => t.name === name)) {
+          if (name && !SUBTITLE_TAGS.includes(name) && !form.value.tags.find(t => t.name === name)) {
             form.value.tags.push({ name });
           }
           form.value.newTag = '';
@@ -3733,6 +3741,7 @@
             series: f.series,
             actors: f.actors.map(a => ({ name: a.name || '', name_zh: a.name_zh || '' })),
             tags: f.tags.map(t => t.name),
+            ...(f.subtitleClassification ? { subtitle_classification: f.subtitleClassification } : {}),
           };
           if (f.score !== '' && f.score !== null) payload.score = parseFloat(f.score);
           try {
@@ -3747,6 +3756,9 @@
             } else {
               video.value = await r.json();
               editing.value = false;
+              if (video.value.code !== route.params.code) {
+                await router.replace('/video/' + encodeURIComponent(video.value.code));
+              }
               if (video.value.rename_job_ids?.length) {
                 rescrapeError.value = false;
                 rescrapeMessage.value = '文件改名已排队';
@@ -3797,7 +3809,7 @@
           if (!res?.ok) return;
           renamingPath.value = null;
           const newCode = res.code || video.value.code;
-          const canonicalRouteCode = baseVideoCode(newCode);
+          const canonicalRouteCode = newCode;
           if (canonicalRouteCode !== route.params.code) {
             await router.replace('/video/' + encodeURIComponent(canonicalRouteCode));
           } else {
@@ -3822,6 +3834,7 @@
           video, loading, meta, fileParts, selectedFileMeta,
           renamingPath, renameFields, startRename, cancelRename, submitRename,
           editing, saving, saveError, form,
+          skipScrape: computed(() => /^(CN|DUMMY|WEST)-/i.test(video.value?.code || '')),
           rescraping, rescrapeMessage, rescrapeError, startRescrape,
           editFields: EDIT_FIELDS,
           actorSuggestions, seriesSuggestions, tagSuggestions,
@@ -3848,7 +3861,7 @@
           confirmDelete,
           showReplaceModal, replaceOriginalPart,
           replaceFile, replaceFinalName,
-          replaceSubtitleZh, replaceUncensoredCrackTag, replaceUncensoredNative,
+          subtitleOptions: SUBTITLE_OPTIONS, isVrVideo, replaceSubtitleClassification, replaceUncensoredCrackTag, replaceUncensoredNative,
           replaceWhole, replacePartOn, replacePartNum, replacePartOther,
           replaceUploading, replaceProgress, replaceSpeed, replaceElapsed, replaceRemaining,
           replaceError,
