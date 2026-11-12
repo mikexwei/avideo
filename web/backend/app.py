@@ -798,6 +798,7 @@ def api_videos():
         year=year, score_min=score_min, score_max=score_max,
         has_cover=has_cover, has_translation=has_translation,
         scrape_status=scrape_status, tags=tags, exclude_tags=request.args.get('exclude') == '1',
+        include_actors=request.args.get('include') == 'actors',
     ))
 
 

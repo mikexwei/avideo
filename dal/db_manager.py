@@ -559,6 +559,7 @@ def list_videos(
     tags: Optional[List[str]] = None,
     *,
     exclude_tags: bool = False,
+    include_actors: bool = False,
 ) -> Dict[str, Any]:
     page = max(1, page)
     limit = max(1, min(limit, 200))
@@ -620,6 +621,24 @@ def list_videos(
             params + [limit, offset],
         )
         items = _rows_to_dicts(cursor.fetchall())
+        if include_actors and items:
+            codes = [item["code"] for item in items]
+            cursor.execute(
+                f"""
+                SELECT DISTINCT v.code, a.id, a.name, a.name_zh, a.avatar_path
+                FROM actors a
+                JOIN video_actor_link val ON val.actor_id = a.id
+                JOIN videos v ON v.id = val.video_id
+                WHERE v.code IN ({','.join('?' * len(codes))}) AND a.is_ignored = 0
+                ORDER BY a.name
+                """,
+                codes,
+            )
+            actors: Dict[str, list] = {code: [] for code in codes}
+            for row in _rows_to_dicts(cursor.fetchall()):
+                actors[row.pop("code")].append(row)
+            for item in items:
+                item["actors"] = actors[item["code"]]
         return {"page": page, "limit": limit, "total": total, "items": items}
     except sqlite3.Error as e:
         logger.error(f"❌ 列表查询失败: {e}")

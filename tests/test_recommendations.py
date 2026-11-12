@@ -88,6 +88,25 @@ class RecommendationTests(unittest.TestCase):
             included = client.get('/api/videos?tag=Drama').get_json()['items']
             self.assertEqual([item['code'] for item in included], ['LOW-001'])
 
+    def test_video_list_can_include_actors(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript("""
+                CREATE TABLE actors (id INTEGER PRIMARY KEY, name TEXT, name_zh TEXT,
+                                     avatar_path TEXT, is_ignored INTEGER DEFAULT 0);
+                CREATE TABLE video_actor_link (video_id INTEGER, actor_id INTEGER);
+                INSERT INTO actors VALUES (1, 'A', '甲', NULL, 0), (2, 'B', NULL, NULL, 0),
+                                          (3, 'Hidden', NULL, NULL, 1);
+                INSERT INTO video_actor_link VALUES (1, 1), (2, 2), (3, 2), (3, 3);
+            """)
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            client = app.test_client()
+            items = client.get('/api/videos?include=actors').get_json()['items']
+            plain = client.get('/api/videos').get_json()['items']
+        actors = {item['code']: [a['name'] for a in item['actors']] for item in items}
+        self.assertEqual(actors, {'LOW-001': ['A'], 'DUP-001': ['B']})
+        self.assertEqual(items[0]['actors'][0].keys(), {'id', 'name', 'name_zh', 'avatar_path'})
+        self.assertNotIn('actors', plain[0])
+
     def test_tag_catalog_can_include_unused_tags(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT INTO tags VALUES (3, 'Unused')")

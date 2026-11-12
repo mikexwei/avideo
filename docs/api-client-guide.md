@@ -40,6 +40,7 @@
 | `scrape_status` | 按影片刮削状态精确匹配，例如 `PENDING`、`SUCCESS`、`FAILED` |
 | `tag`、`tags` | 用标签名称精确匹配。可重复传 `tag`，也可传逗号分隔的 `tags`。默认要求同一个在库文件记录命中所有选中标签 |
 | `exclude=1` | 某番号的任一在库分段命中任一选中标签时，排除整个番号。未提供标签时不应用此筛选 |
+| `include=actors` | 每条 `items` 另含 `actors`，元素同影片详情的 `id`、`name`、`name_zh`、`avatar_path`，只含未忽略的演员。省略时不返回该字段 |
 
 列表只筛选未删除记录。响应中的 `total` 是符合条件的不同番号数，`items` 包含 `id`、`code`、`title_jp`、`title_zh`、`release_date`、`score`、`cover_path`、`scrape_status`、`deleted`。按播放排序时还返回 `last_played_at` 和 `watched_ms`。搜索、演员作品、标签作品和前缀作品的摘要可能含已删除记录，取在库影片时请检查 `deleted`。
 
