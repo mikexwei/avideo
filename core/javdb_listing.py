@@ -57,9 +57,10 @@ def read_page(page, number):
           break;
         }
       }
-      const toolbarLists = eligible.filter(list =>
-        list.matches('.movie-list.h.cols-4.vcols-8') && list.previousElementSibling?.matches('.toolbar'));
-      const main = toolbarLists.length === 1 ? toolbarLists : eligible.length === 1 ? eligible : [...paginated];
+      const grids = eligible.filter(list => list.matches('.movie-list.h.cols-4.vcols-8'));
+      const toolbarLists = grids.filter(list => list.previousElementSibling?.matches('.toolbar'));
+      const main = toolbarLists.length === 1 ? toolbarLists : grids.length === 1 ? grids :
+        eligible.length === 1 ? eligible : [...paginated];
       const cards = main.length === 1 ? [...main[0].querySelectorAll('.video-title strong')] : [];
       const entries = cards.map(code => {
         const item = code.closest('.item') || code.closest('a[href]');
