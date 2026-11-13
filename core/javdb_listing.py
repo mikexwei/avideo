@@ -31,32 +31,46 @@ def read_page(page, number):
     if parse_qs(urlsplit(page.url).query).get('page', ['1']) != [str(number)]:
         raise ValueError('JavDB 返回了不同的页码')
     parsed = page.evaluate("""() => {
-      const lists = [...document.querySelectorAll('.movie-list')];
+      const lists = [...document.querySelectorAll('.movie-list')].filter(list =>
+        list.querySelector('.video-title strong'));
       const weekly = /每[週周]推薦|每[週周]推荐|本[週周](?:推薦|推荐)|weekly/i;
-      const main = lists.filter(list => {
+      const eligible = lists.filter(list => {
         if (list.closest('[class*="weekly"], [id*="weekly"], .recommendations, .weekly-recommend')) return false;
         for (let node = list; node && node !== document.body; node = node.parentElement) {
           const heading = node.previousElementSibling;
           if (heading?.matches('h1, h2, h3, h4, .title, .section-title')
               && weekly.test(heading.textContent.trim())) return false;
           if (weekly.test(node.querySelector(':scope > h2, :scope > h3, :scope > .title')?.textContent || '')) return false;
-          if (node.querySelectorAll('.movie-list').length > 1) break;
+          if (lists.some(other => other !== list && node.contains(other))) break;
         }
         return true;
       });
-      const entries = main.length === 1 ? [...main[0].querySelectorAll('.item')].map(item => {
-        const code = item.querySelector('.video-title strong');
+      const navigation = [...document.querySelectorAll('.pagination, nav[aria-label="pagination"]')];
+      const paginated = new Set();
+      for (const nav of navigation) {
+        for (let node = nav; node && node !== document.body; node = node.parentElement) {
+          const candidates = eligible.filter(list => node.contains(list));
+          if (!candidates.length) continue;
+          if (candidates.length === 1) paginated.add(candidates[0]);
+          break;
+        }
+      }
+      const main = eligible.length === 1 ? eligible : [...paginated];
+      const cards = main.length === 1 ? [...main[0].querySelectorAll('.video-title strong')] : [];
+      const entries = cards.map(code => {
+        const item = code.closest('.item') || code.closest('a[href]');
+        if (!item || code.closest('.movie-list') !== main[0]) return null;
         const title = item.querySelector('.video-title')?.cloneNode(true);
         title?.querySelector('strong')?.remove();
+        const link = item.matches('a[href]') ? item : item.querySelector('a[href*="/v/"]');
         return {code: code?.textContent.trim(), title: title?.textContent.trim() || '',
           actors: [...item.querySelectorAll('a[href^="/actors/"]')].map(a => a.textContent.trim()).filter(Boolean),
-          url: item.querySelector('a[href^="/v/"]')?.href};
-      }) : [];
-      const navigation = [...document.querySelectorAll('.pagination, nav[aria-label="pagination"]')];
+          url: link?.href};
+      }).filter(Boolean);
       const next = [...document.querySelectorAll('.pagination-next, a[rel="next"]')];
       const enabled = next.filter(el => !el.matches('[disabled], [aria-disabled="true"], .is-disabled') && el.href);
       const current = navigation.map(nav => nav.querySelector('.is-current, [aria-current="page"]')?.textContent.trim());
-      return {lists: main.length, entries, next: enabled[0]?.href || null,
+      return {lists: main.length, candidates: eligible.length, cards: cards.length, entries, next: enabled[0]?.href || null,
         ambiguousNext: next.some(el => !el.href && !el.matches('[disabled], [aria-disabled="true"], .is-disabled')),
         pagination: navigation.length, current};
     }""")
@@ -64,7 +78,8 @@ def read_page(page, number):
         not entry.get('code') or not valid_url(entry.get('url') or '', detail=True)
         for entry in parsed['entries']
     ):
-        raise ValueError('无法识别 JavDB 主列表')
+        raise ValueError(f"无法识别 JavDB 主列表（第 {number} 页，候选列表 {parsed.get('candidates', 0)}，"
+                         f"番号卡片 {parsed.get('cards', 0)}，分页区 {parsed['pagination']}）")
     next_url = parsed['next']
     if next_url:
         query = parse_qs(urlsplit(next_url).query)

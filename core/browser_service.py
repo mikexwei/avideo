@@ -87,7 +87,8 @@ class Browser:
         page.goto(list_url(number), wait_until='domcontentloaded', timeout=30000)
         self.checked(None)
         try:
-            page.wait_for_selector('.movie-list .item, input[type="password"]', state='attached', timeout=15000)
+            page.wait_for_selector('.movie-list .video-title strong, input[type="password"]',
+                                   state='attached', timeout=15000)
         except TimeoutError:
             self.checked(None)
             raise
