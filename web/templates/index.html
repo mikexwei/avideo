@@ -753,9 +753,37 @@
       <section class="card" aria-labelledby="ltx-check-heading">
         <h2 id="ltx-check-heading">检查 JavDB 的 LTX 破解标签</h2>
         <p class="hint">检查有硬字幕且未标记 LTX 破解、原装无码、无码流出或 VR 的在库番号。检查结果保存在任务中。</p>
+        <form class="flex flex-wrap items-end gap-3 my-4" @submit.prevent="applyCandidates">
+          <label>番号前缀 <input v-model="draft.prefix" maxlength="200" placeholder="例如 START" /></label>
+          <label>女优 <input v-model="draft.actor" maxlength="200" placeholder="原名或中文名" /></label>
+          <label>标题或番号 <input v-model="draft.q" maxlength="200" /></label>
+          <label>检查历史
+            <select v-model="draft.checked">
+              <option value="unchecked">只看未检查</option>
+              <option value="checked">只看已检查</option>
+              <option value="all">全部，可重新检查</option>
+            </select>
+          </label>
+          <button class="ui-button" type="submit" :disabled="candidateLoading">筛选</button>
+        </form>
+        <p class="hint" role="status">{{ candidateLoading ? '正在读取候选…' : '当前筛选共 ' + candidateTotal + ' 个候选' }}</p>
+        <div v-if="candidateItems.length" class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead><tr><th scope="col" class="p-2">番号</th><th scope="col" class="p-2">标题</th>
+              <th scope="col" class="p-2">女优</th><th scope="col" class="p-2">检查历史</th></tr></thead>
+            <tbody>
+              <tr v-for="row in candidateItems" :key="row.code" class="border-t border-gray-700">
+                <td class="p-2"><router-link :to="'/video/' + encodeURIComponent(row.code)">{{ row.code }}</router-link></td>
+                <td class="p-2">{{ row.title || '—' }}</td><td class="p-2">{{ row.actors.join('、') || '—' }}</td>
+                <td class="p-2">{{ row.checked ? '已检查' : '未检查' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pagination :page="candidatePage" :total="candidateTotal" :limit="25" @change="changeCandidatePage" />
         <div class="actions">
-          <button class="ui-button" type="button" @click="start" :disabled="starting || active">
-            {{ starting ? '提交中…' : active ? '检查任务进行中' : '开始检查' }}
+          <button class="ui-button" type="button" @click="start" :disabled="starting || active || candidateLoading || !candidateTotal || candidateDirty">
+            {{ starting ? '提交中…' : active ? '检查任务进行中' : '检查筛选结果' }}
           </button>
         </div>
         <p v-if="error" class="record-error" role="alert">{{ error }}</p>
@@ -771,17 +799,24 @@
               <span class="pill neutral">{{ taskLabels[item.status] || item.status }}</span>
             </div>
             <p>已检查 {{ item.checked }} / {{ item.total }}，发现 {{ item.found }}</p>
+            <p v-if="item.current_code && runningStates.includes(item.status)" class="hint">当前番号 {{ item.current_code }}</p>
             <div class="actions">
               <button type="button" class="ui-button" :aria-expanded="selected === item.id"
                 @click="selectTask(selected === item.id ? '' : item.id)">
                 {{ selected === item.id ? '收起结果' : '查看结果' }}
               </button>
+              <template v-if="runningStates.includes(item.status)">
+                <button type="button" class="ui-button" :disabled="controlling"
+                  @click="controlTask(item.id, item.status === 'PAUSED' ? 'resume' : 'pause')">
+                  {{ item.status === 'PAUSED' ? '继续' : '暂停' }}
+                </button>
+                <button type="button" class="ui-button" :disabled="controlling" @click="controlTask(item.id, 'stop')">停止</button>
+              </template>
             </div>
             <div v-if="selected === item.id && detail" class="mt-4">
               <p v-if="detail.wait_reason || detail.error" class="hint" role="status">{{ detail.wait_reason || detail.error }}</p>
-              <p v-if="detail.current_code" class="hint">当前番号 {{ detail.current_code }}</p>
               <label class="flex flex-wrap items-center gap-2 my-3">
-                结果
+                结果视图
                 <select v-model="filter" @change="changePage(1)">
                   <option v-for="(label, value) in resultLabels" :key="value" :value="value">{{ label }}</option>
                 </select>
@@ -795,6 +830,12 @@
                     <a v-if="row.url" :href="row.url" target="_blank" rel="noopener noreferrer" class="underline">JavDB</a>
                     <time class="muted">{{ dateLabel(row.checked_at) }}</time>
                   </div>
+                  <ul v-if="row.magnets?.length" class="mt-2 break-all">
+                    <li v-for="link in row.magnets" :key="link">
+                      <code>{{ link }}</code>
+                      <button type="button" class="ui-button ml-2" @click="copyMagnet(link)">复制磁链</button>
+                    </li>
+                  </ul>
                   <p v-if="row.error" class="record-error">{{ row.error }}</p>
                 </li>
               </ul>
@@ -4526,15 +4567,24 @@
         const selected = computed(() => String(route.query.task || ''));
         const loading = ref(true);
         const starting = ref(false);
+        const controlling = ref(false);
+        const draft = ref({prefix:'', actor:'', q:'', checked:'unchecked'});
+        const applied = ref({...draft.value});
+        const candidateDirty = computed(() => JSON.stringify(draft.value) !== JSON.stringify(applied.value));
+        const candidateLoading = ref(false);
+        const candidateItems = ref([]);
+        const candidateTotal = ref(0);
+        const candidatePage = ref(1);
+        const runningStates = ['PREPARING', 'PENDING', 'WAITING', 'RUNNING', 'PAUSED'];
         const error = ref('');
         const filter = ref('found');
         const resultPage = ref(1);
         const historyPage = ref(1);
         const total = ref(0);
         const active = ref(false);
-        const taskLabels = { PENDING:'排队中', PREPARING:'准备中', WAITING:'等待执行', RUNNING:'执行中',
+        const taskLabels = { PENDING:'排队中', PREPARING:'准备中', WAITING:'等待执行', RUNNING:'执行中', PAUSED:'已暂停',
           DONE:'已完成', FAILED:'失败', CANCELLED:'已取消', SKIPPED:'已跳过' };
-        const resultLabels = { found:'发现标签', all:'全部', absent:'未发现标签', not_found:'未找到精确番号', failed:'检查失败' };
+        const resultLabels = { found:'发现标签', all:'全部已处理', magnets:'有磁链', absent:'未发现标签', not_found:'未找到精确番号', failed:'检查失败' };
         const dateLabel = time => new Date(time * 1000).toLocaleString('zh-CN');
         let generation = 0;
         let timer;
@@ -4574,11 +4624,56 @@
         });
         function changePage(page) { resultPage.value = page; load(); }
         function changeHistoryPage(page) { historyPage.value = page; load(); }
+        async function loadCandidates() {
+          candidateLoading.value = true;
+          try {
+            const query = new URLSearchParams({...applied.value, offset:(candidatePage.value - 1) * 25});
+            const result = await apiFetch('/api/tasks/javdb-ltx-check/candidates?' + query);
+            if (!result) throw new Error('读取候选失败');
+            candidateItems.value = result.items;
+            candidateTotal.value = result.total;
+          } catch (e) {
+            candidateItems.value = [];
+            candidateTotal.value = 0;
+            error.value = e.message;
+          } finally {
+            candidateLoading.value = false;
+          }
+        }
+        function applyCandidates() {
+          applied.value = {...draft.value};
+          candidatePage.value = 1;
+          error.value = '';
+          loadCandidates();
+        }
+        function changeCandidatePage(page) {
+          if (candidateLoading.value) return;
+          candidatePage.value = page;
+          loadCandidates();
+        }
+        async function controlTask(id, action) {
+          if (action === 'stop' && !window.confirm('停止这个任务？已检查的结果会保留。')) return;
+          controlling.value = true;
+          error.value = '';
+          try {
+            await postJson('/api/tasks/' + encodeURIComponent(id) + '/' + action, {});
+            await load();
+            if (action === 'stop') loadCandidates();
+          } catch (e) {
+            error.value = e.message;
+          } finally {
+            controlling.value = false;
+          }
+        }
+        async function copyMagnet(link) {
+          try { await navigator.clipboard.writeText(link); }
+          catch { error.value = '无法自动复制，请选中文字手动复制'; }
+        }
         async function start() {
           starting.value = true;
           error.value = '';
           try {
-            const task = await postJson('/api/tasks/javdb-ltx-check', {});
+            const task = await postJson('/api/tasks/javdb-ltx-check', applied.value);
             historyPage.value = 1;
             if (selected.value === task.id) await load();
             else await selectTask(task.id);
@@ -4590,11 +4685,14 @@
         }
         onMounted(() => {
           load();
+          loadCandidates();
           timer = setInterval(() => { if (!document.hidden && !starting.value) load(); }, 5000);
         });
         Vue.onUnmounted(() => { generation++; clearInterval(timer); });
         return {items, detail, selected, loading, starting, error, filter, resultPage, historyPage, total, active,
-          taskLabels, resultLabels, dateLabel, selectTask, changePage, changeHistoryPage, start};
+          taskLabels, resultLabels, dateLabel, selectTask, changePage, changeHistoryPage, start,
+          runningStates, controlling, controlTask, copyMagnet, draft, candidateDirty, candidateLoading,
+          candidateItems, candidateTotal, candidatePage, applyCandidates, changeCandidatePage};
       }
     };
 

@@ -35,9 +35,11 @@ def register_admin_api(app):
 
     def tag_check_summary(row):
         state = json.loads(row['checkpoint_json'])
-        return dict(id=row['id'], status=row['status'], created_at=row['created_at'],
+        payload = json.loads(row['payload_json'])
+        return dict(id=row['id'], status='PAUSED' if row['paused'] and row['status'] in javdb_tag_check.ACTIVE else row['status'],
+                    created_at=row['created_at'],
                     error=row['error'], current_code=state.get('code'),
-                    total=len(json.loads(row['payload_json'])['codes']),
+                    total=payload.get('total', len(payload.get('codes', []))),
                     checked=state.get('index', 0),
                     found=sum(item['status'] == 'found' for item in state.get('items', [])))
 
@@ -56,8 +58,21 @@ def register_admin_api(app):
                 (javdb_tag_check.KIND, *javdb_tag_check.ACTIVE)).fetchone()
         return jsonify(items=[tag_check_summary(row) for row in rows], total=total, active=bool(active))
 
+    @api.get('/api/tasks/javdb-ltx-check/candidates')
+    def tag_check_candidates():
+        selection = javdb_tag_check.filters(request.args)
+        limit = min(100, max(1, request.args.get('limit', 25, type=int)))
+        offset = max(0, request.args.get('offset', 0, type=int))
+        with store().connect() as conn:
+            rows = javdb_tag_check.candidates(conn, selection)
+        return jsonify(items=rows[offset:offset + limit], total=len(rows))
+
     @api.post('/api/tasks/javdb-ltx-check')
     def start_tag_check():
+        body = request.get_json(silent=True)
+        if body is not None and not isinstance(body, dict):
+            raise ValueError('筛选条件无效')
+        selection = javdb_tag_check.filters(body or {})
         runtime = store()
         with runtime.connect(write=True) as conn:
             active = conn.execute("""SELECT id FROM scrape_tasks WHERE kind=? AND deleted=0
@@ -65,10 +80,36 @@ def register_admin_api(app):
                 (javdb_tag_check.KIND, *javdb_tag_check.ACTIVE)).fetchone()
             if active:
                 return jsonify(id=active['id']), 202
-            codes = javdb_tag_check.candidates(conn)
-            task_id = runtime.submit(javdb_tag_check.KIND, payload={'codes': codes}, priority=-100, connection=conn)
+            rows = javdb_tag_check.candidates(conn, selection)
+            if not rows:
+                raise ValueError('没有符合筛选条件的番号')
+            task_id = runtime.submit(javdb_tag_check.KIND, payload={'filters': selection, 'total': len(rows)},
+                                     priority=-100, connection=conn)
+            conn.executemany('INSERT INTO javdb_check_candidates(task_id,position,code) VALUES (?,?,?)',
+                             [(task_id, index, row['code']) for index, row in enumerate(rows)])
         ensure_worker()
         return jsonify(id=task_id), 202
+
+    @api.post('/api/tasks/<task_id>/<action>')
+    def control_tag_check(task_id, action):
+        runtime = store()
+        task = runtime.get(task_id)
+        if not task or task['deleted'] or task['kind'] != javdb_tag_check.KIND:
+            return jsonify(error='任务不存在'), 404
+        if action == 'stop':
+            runtime.cancel_task(task_id)
+        elif action in ('pause', 'resume'):
+            with runtime.connect(write=True) as conn:
+                changed = conn.execute("""UPDATE scrape_tasks SET paused=? WHERE id=? AND deleted=0
+                    AND cancel_requested=0 AND status IN (?, ?, ?, ?)""",
+                    (int(action == 'pause'), task_id, *javdb_tag_check.ACTIVE)).rowcount
+                if not changed:
+                    return jsonify(error='任务已结束'), 409
+            if action == 'resume':
+                ensure_worker()
+        else:
+            raise ValueError('未知任务操作')
+        return jsonify(ok=True)
 
     @api.get('/api/tasks/<task_id>')
     def async_task(task_id):
@@ -79,21 +120,27 @@ def register_admin_api(app):
         state = json.loads(row['checkpoint_json'])
         items = state.get('items', [])
         status = request.args.get('status', 'found')
-        if status not in ('all', 'found', 'absent', 'not_found', 'failed'):
+        if status not in ('all', 'found', 'absent', 'not_found', 'failed', 'magnets'):
             raise ValueError('未知结果状态')
-        if status != 'all':
+        if status == 'magnets':
+            items = [item for item in items if item.get('magnets')]
+        elif status != 'all':
             items = [item for item in items if item['status'] == status]
         limit = min(100, max(1, request.args.get('limit', 25, type=int)))
         offset = max(0, request.args.get('offset', 0, type=int))
         reason = None
-        if row['status'] in javdb_tag_check.ACTIVE:
+        if row['paused'] and row['status'] in javdb_tag_check.ACTIVE:
+            reason = '任务已暂停，正在执行的番号会先完成'
+        elif row['status'] in javdb_tag_check.ACTIVE:
             consumer = runtime.service('consumer')
             browser = runtime.service('browser')
             if not consumer['alive'] or consumer['paused']:
                 reason = '等待 Consumer 恢复'
             elif not browser['alive']:
                 reason = '等待浏览器服务启动'
-            elif browser['state'] in ('waiting_login', 'waiting_verification', 'cooling_down', 'hourly_limit'):
+            elif browser['state'] in ('waiting_login', 'waiting_verification', 'cooling_down', 'hourly_limit') or (
+                browser['current_id'] and browser['current_id'] == state.get('waiting_command')
+            ):
                 reason = browser['message']
             elif browser['paused']:
                 reason = '等待浏览器服务恢复'
@@ -292,7 +339,7 @@ def register_admin_api(app):
             raise ValueError('未知列表')
         limit = min(max(request.args.get('limit', 50, type=int), 1), 200)
         offset = max(request.args.get('offset', 0, type=int), 0)
-        filters, args = [], []
+        filters, args = ['deleted=0'] if resource == 'workflows' else [], []
         status = request.args.get('status', '')
         task_id = request.args.get('task_id', '')
         if status and resource in ('workflows', 'commands'):
@@ -320,15 +367,30 @@ def register_admin_api(app):
     @api.get('/api/jobs/<task_id>')
     def workflow(task_id):
         task = store().get(task_id)
-        if task is None:
+        if task is None or task['deleted']:
             return jsonify(error='任务不存在'), 404
         task['result'] = json.loads(task['result_json']) if task['result_json'] else None
         return jsonify(task)
 
+    @api.delete('/api/admin/workflows/<task_id>')
+    def delete_workflow(task_id):
+        runtime = store()
+        with runtime.connect(write=True) as conn:
+            task = conn.execute('SELECT status FROM scrape_tasks WHERE id=? AND deleted=0', (task_id,)).fetchone()
+            if not task:
+                return jsonify(error='任务不存在'), 404
+            if task['status'] not in javdb_tag_check.TERMINAL:
+                return jsonify(error='请先停止任务'), 409
+            if conn.execute("SELECT 1 FROM dependency_commands WHERE task_id=? AND status='RUNNING'", (task_id,)).fetchone():
+                return jsonify(error='请等待正在执行的操作停止'), 409
+            conn.execute('UPDATE scrape_tasks SET deleted=1 WHERE id=?', (task_id,))
+        runtime.audit('delete', task_id)
+        return jsonify(ok=True)
+
     @api.post('/api/admin/workflows/<task_id>/<action>')
     def task_action(task_id, action):
         task = store().get(task_id)
-        if not task or task['kind'] in ('ltx', 'ltx_preview'):
+        if not task or task['deleted'] or task['kind'] in ('ltx', 'ltx_preview'):
             raise ValueError('任务不存在或功能已关闭')
         if action == 'cancel':
             store().cancel_task(task_id)

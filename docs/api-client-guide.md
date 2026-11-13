@@ -207,10 +207,13 @@ curl -fsSN "$BASE/api/jobs/$JOB_ID/stream"
 | 方法和路径 | 请求 | 响应 |
 | --- | --- | --- |
 | `GET /api/tasks` | `limit` 默认 20，最大 100，`offset` 默认 0 | `{items, total, active}`，任务摘要包含 `id`、`status`、`created_at`、`current_code`、`checked`、`total`、`found`、`error` |
-| `POST /api/tasks/javdb-ltx-check` | 请求体可空 | `202` 和 `{id}`。同类任务进行中时返回已有任务 ID |
-| `GET /api/tasks/{task_id}` | `status` 为 `found`（默认）、`all`、`absent`、`not_found` 或 `failed`。支持 `limit`（默认 25，最大 100）和 `offset` | 任务摘要及 `wait_reason`、`result_total`、`items`。结果项含 `code`、`status`、`checked_at`、`url`、`tag`，失败时可含 `error`。未知任务返回 `404` |
+| `GET /api/tasks/javdb-ltx-check/candidates` | 可选 `prefix`、`actor`、`q` 和 `checked`。支持 `limit`（默认 25，最大 100）和 `offset` | `{items, total}`，候选项含 `code`、`title`、`actors`、`checked` |
+| `POST /api/tasks/javdb-ltx-check` | JSON 使用同样的筛选字段，提交当前筛选的全部候选 | `202` 和 `{id}`。同类任务进行中时返回已有任务 ID |
+| `GET /api/tasks/{task_id}` | `status` 为 `found`（默认）、`all`、`magnets`、`absent`、`not_found` 或 `failed`。支持 `limit`（默认 25，最大 100）和 `offset` | 任务摘要及 `wait_reason`、`result_total`、`items`。结果项含 `code`、`status`、`checked_at`、`url`、`tag`，命中时可含 `magnets` 或磁链读取错误 `error`。未知任务返回 `404` |
+| `POST /api/tasks/{task_id}/{action}` | `pause`、`resume` 或 `stop` | `{ok}`。暂停允许当前检查完成，继续从断点处理。停止后保留已完成的结果 |
+| `DELETE /api/admin/workflows/{task_id}` | 任务已结束，且没有仍在执行的命令 | `{ok}`。软删除后从工作流和异步任务列表隐藏。仍在运行时返回 `409` |
 
-检查任务创建时保存候选番号清单，要求在库且有「硬字幕」，排除带 LTX 破解类标签、「原装无码」「无码流出」或 `VR` 的番号。多段按完整番号合并，后缀不参与筛选。检查沿用浏览器服务的登录、访问间隔和小时额度。结果写入任务记录，供查看和筛选。
+检查任务要求在库且有「硬字幕」，排除带 LTX 破解类标签、「原装无码」「无码流出」或 `VR` 的番号。多段按完整番号合并，后缀不参与筛选。`actor` 匹配原名和中文名，`q` 匹配标题或番号。`checked` 支持 `unchecked`（默认）、`checked` 或 `all`，检查历史仅指此任务的成功检查结果。任务创建时将筛选后的番号固化到候选表，任务 payload 保存筛选条件及总数。检查沿用浏览器服务的登录、访问间隔和小时额度。命中标签时，从详情页磁链标签中记录标为 LTX 的磁力链接。
 
 这些接口供受信任的第三方运维程序调用。
 

@@ -19,10 +19,16 @@ class RuntimeStore(QueueStore):
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(scrape_tasks)')}
             if 'execution_id' not in columns:
                 conn.execute('ALTER TABLE scrape_tasks ADD COLUMN execution_id TEXT')
+            if 'paused' not in columns:
+                conn.execute('ALTER TABLE scrape_tasks ADD COLUMN paused INTEGER NOT NULL DEFAULT 0')
             event_columns = {row['name'] for row in conn.execute('PRAGMA table_info(scrape_events)')}
             if 'execution_id' not in event_columns:
                 conn.execute('ALTER TABLE scrape_events ADD COLUMN execution_id TEXT')
             conn.executescript('''
+                CREATE TABLE IF NOT EXISTS javdb_check_candidates (
+                    task_id TEXT NOT NULL, position INTEGER NOT NULL, code TEXT NOT NULL,
+                    PRIMARY KEY(task_id, position)
+                );
                 CREATE TABLE IF NOT EXISTS service_state (
                     name TEXT PRIMARY KEY, desired TEXT NOT NULL DEFAULT 'stop',
                     paused INTEGER NOT NULL DEFAULT 0, pid INTEGER, heartbeat REAL DEFAULT 0,
@@ -145,7 +151,7 @@ class RuntimeStore(QueueStore):
     def claim_workflow(self, owner):
         with self.connect(write=True) as conn:
             row = conn.execute("""SELECT * FROM scrape_tasks WHERE status='PENDING'
-                AND kind NOT IN ('ltx','ltx_preview') AND deleted=0 AND cancel_requested=0 AND next_run_at<=?
+                AND kind NOT IN ('ltx','ltx_preview') AND deleted=0 AND cancel_requested=0 AND paused=0 AND next_run_at<=?
                 ORDER BY forced DESC,priority DESC,queued_at,id LIMIT 1""", (time.time(),)).fetchone()
             if row is None:
                 return None
@@ -184,7 +190,7 @@ class RuntimeStore(QueueStore):
         with self.connect(write=True) as conn:
             row = conn.execute('''SELECT c.* FROM dependency_commands c JOIN scrape_tasks t ON t.id=c.task_id
                 WHERE c.service=? AND c.status='PENDING' AND c.next_run_at<=? AND c.cancel_requested=0
-                AND t.execution_id=c.execution_id AND t.status='WAITING' AND t.cancel_requested=0 AND t.deleted=0
+                AND t.execution_id=c.execution_id AND t.status='WAITING' AND t.cancel_requested=0 AND t.deleted=0 AND t.paused=0
                 AND (?=0 OR c.kind IN ('login_status','open_login'))
                 ORDER BY c.priority DESC,c.created_at,c.id LIMIT 1''', (service, time.time(), int(control_only))).fetchone()
             if row is None:
@@ -284,7 +290,7 @@ class RuntimeStore(QueueStore):
                 checkpoint.pop('waiting_command', None)
                 if checkpoint.get('phase') in ('direct', 'actor_asset'):
                     checkpoint['phase'] = 'start'
-                conn.execute("""UPDATE scrape_tasks SET status='PENDING',execution_id=?,checkpoint_json=?,cancel_requested=0,
+                conn.execute("""UPDATE scrape_tasks SET status='PENDING',execution_id=?,checkpoint_json=?,cancel_requested=0,paused=0,
                     deleted=0,error=NULL,next_run_at=0,started_at=NULL,attempts=attempts+1,queued_at=? WHERE id=?""",
                     (uuid.uuid4().hex, json.dumps(checkpoint, ensure_ascii=False), time.time(), task_id))
         self.audit('retry', task_id)

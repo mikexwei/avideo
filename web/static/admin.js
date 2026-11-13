@@ -295,6 +295,7 @@ function mountAdmin(root) {
       const status = recordStatus(row, resource);
       const [label, tone] = states[status] || [status, 'neutral'];
       const canManage = resource === 'workflows' && !['ltx', 'ltx_preview'].includes(row.kind);
+      const canDelete = resource === 'workflows' && ['DONE','FAILED','SKIPPED','CANCELLED','SUSPENDED'].includes(status);
       const canCancel = canManage && ['PENDING', 'RUNNING', 'WAITING', 'PREPARING'].includes(status);
       const failedItems = Array.isArray(checkpoint.items) && checkpoint.items.some(item => !item.ok);
       const canRetry = canManage && (['FAILED', 'SKIPPED', 'CANCELLED'].includes(status)
@@ -314,7 +315,8 @@ function mountAdmin(root) {
           ${resource === 'events' ? '<span>' + (row.acknowledged_at ? '已确认' : '待确认') + '</span>' : ''}
         </div>
         ${row.error ? '<p class="record-error muted">' + escape(row.error) + '</p>' : ''}
-        ${canManage || canRedeliver ? `<div class="actions">
+        ${canManage || canRedeliver || canDelete ? `<div class="actions">
+          ${canDelete ? `<button data-task="${index}" data-action="delete">删除</button>` : ''}
           ${canCancel ? `<button data-task="${index}" data-action="cancel">取消</button>` : ''}
           ${canRetry ? `<button data-task="${index}" data-action="retry">重试</button>` : ''}
           ${canManage ? `<button data-task="${index}" data-action="priority">优先级 ${escape(row.priority ?? 0)}</button>` : ''}
@@ -381,7 +383,11 @@ function mountAdmin(root) {
     if (button.dataset.detail !== undefined) showDetail(Number(button.dataset.detail));
     if (button.dataset.task !== undefined) {
       const task = items[Number(button.dataset.task)];
-      if (button.dataset.action === 'priority') {
+      if (button.dataset.action === 'delete') {
+        if (window.confirm('删除这条任务记录？')) {
+          action(button, () => api('/api/admin/workflows/' + encodeURIComponent(task.id), 'DELETE'));
+        }
+      } else if (button.dataset.action === 'priority') {
         element('priority-form').dataset.task = task.id;
         element('priority-value').value = task.priority ?? 0;
         element('priority-error').textContent = '';

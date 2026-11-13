@@ -542,6 +542,24 @@ def _open_result_detail(page: Page, code: str, index: int) -> bool:
         return False
     return True
 
+def read_ltx_magnets(page):
+    tab = page.locator('li[data-movie-tab-target="magnetsTab"] a, '
+                       'li[data-movie-tab-target="magnetTab"] a, '
+                       '.tabs a').filter(has_text=re.compile(r'磁[链鏈]')).first
+    if not tab.count():
+        raise LookupError('详情页上未找到磁链标签')
+    tab.click()
+    panel = page.locator('#magnets, #magnet, #magnetsTab, #magnetTab, .magnet-list').first
+    panel.wait_for(state='visible', timeout=15000)
+    panel.locator('.item, .empty-message, a[href^="magnet:"]').first.wait_for(state='attached', timeout=15000)
+    links = panel.locator('a[href^="magnet:"]').evaluate_all("""anchors => anchors.flatMap(anchor => {
+      const row = anchor.closest('.item, tr');
+      return /(^|[^a-z0-9])ltx([^a-z0-9]|$)/i.test(row?.innerText || anchor.innerText || '')
+        ? [anchor.getAttribute('href')] : [];
+    })""")
+    return list(dict.fromkeys(link for link in links if re.match(r'magnet:\?xt=urn:btih:', link, re.I)))
+
+
 def scrape_video_info(page: Page, code: str, on_progress=None, *, tags_only=False) -> Optional[Dict]:
     """核心动作：控制浏览器搜索并进入详情页"""
     global scrape_count
@@ -647,7 +665,17 @@ def scrape_video_info(page: Page, code: str, on_progress=None, *, tags_only=Fals
                 block = blocks.nth(i)
                 label = re.split(r'[:：]', block.inner_text(), maxsplit=1)[0].strip()
                 if label in ('類別', '类别'):
-                    return result_for_tags(block.locator('span.value a').all_inner_texts(), page.url)
+                    result = result_for_tags(block.locator('span.value a').all_inner_texts(), page.url)
+                    if result['status'] == 'found':
+                        try:
+                            if on_progress:
+                                on_progress('scraping', f'正在读取 {code} 磁链')
+                            result['magnets'] = read_ltx_magnets(page)
+                        except (ScrapeInterrupted, PermissionError):
+                            raise
+                        except Exception as exc:
+                            result['error'] = f'磁链读取失败: {exc}'
+                    return result
             return None
         scraped_data = parse_detail_page(page, code)
         logger.info(f"✅ 刮削成功: {scraped_data['title_jp'][:60]}...")

@@ -104,14 +104,24 @@ class Consumer:
             self.finish(task, state)
 
     def advance_tag_check(self, task, state, payload):
-        codes = payload['codes']
         index = state.get('index', 0)
-        if index >= len(codes):
-            state['result'] = {'total': len(codes), 'checked': index,
+        if 'codes' in payload:
+            codes = payload['codes']
+            total = len(codes)
+            code = codes[index] if index < total else None
+        else:
+            total = payload['total']
+            with self.store.connect() as conn:
+                row = conn.execute('SELECT code FROM javdb_check_candidates WHERE task_id=? AND position=?',
+                                   (task['id'], index)).fetchone()
+            code = row['code'] if row else None
+        if index >= total:
+            state['result'] = {'total': total, 'checked': index,
                                'found': sum(item['status'] == 'found' for item in state.get('items', []))}
             self.finish(task, state)
             return
-        code = codes[index]
+        if code is None:
+            raise ValueError('任务候选记录缺失')
         if 'response' not in state:
             state.update(phase='check', code=code)
             self.request(task, state, 'browser', 'javdb_ltx_check', {'code': code})
