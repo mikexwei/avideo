@@ -37,11 +37,13 @@ def read_page(page, number):
       const eligible = lists.filter(list => {
         if (list.closest('[class*="weekly"], [id*="weekly"], .recommendations, .weekly-recommend')) return false;
         for (let node = list; node && node !== document.body; node = node.parentElement) {
+          // Shared containers can have a recommendation heading above the main grid.
+          if (node !== list && (node.querySelector('.toolbar') ||
+              lists.some(other => other !== list && node.contains(other)))) break;
           const heading = node.previousElementSibling;
           if (heading?.matches('h1, h2, h3, h4, .title, .section-title')
               && weekly.test(heading.textContent.trim())) return false;
           if (weekly.test(node.querySelector(':scope > h2, :scope > h3, :scope > .title')?.textContent || '')) return false;
-          if (lists.some(other => other !== list && node.contains(other))) break;
         }
         return true;
       });
@@ -55,7 +57,9 @@ def read_page(page, number):
           break;
         }
       }
-      const main = eligible.length === 1 ? eligible : [...paginated];
+      const toolbarLists = eligible.filter(list =>
+        list.matches('.movie-list.h.cols-4.vcols-8') && list.previousElementSibling?.matches('.toolbar'));
+      const main = toolbarLists.length === 1 ? toolbarLists : eligible.length === 1 ? eligible : [...paginated];
       const cards = main.length === 1 ? [...main[0].querySelectorAll('.video-title strong')] : [];
       const entries = cards.map(code => {
         const item = code.closest('.item') || code.closest('a[href]');
@@ -63,14 +67,14 @@ def read_page(page, number):
         const title = item.querySelector('.video-title')?.cloneNode(true);
         title?.querySelector('strong')?.remove();
         const link = item.matches('a[href]') ? item : item.querySelector('a[href*="/v/"]');
-        return {code: code?.textContent.trim(), title: title?.textContent.trim() || '',
+        return {code: code.textContent.trim(), title: link?.getAttribute('title')?.trim() || title?.textContent.trim() || '',
           actors: [...item.querySelectorAll('a[href^="/actors/"]')].map(a => a.textContent.trim()).filter(Boolean),
           url: link?.href};
       }).filter(Boolean);
       const next = [...document.querySelectorAll('.pagination-next, a[rel="next"]')];
       const enabled = next.filter(el => !el.matches('[disabled], [aria-disabled="true"], .is-disabled') && el.href);
       const current = navigation.map(nav => nav.querySelector('.is-current, [aria-current="page"]')?.textContent.trim());
-      return {lists: main.length, candidates: eligible.length, cards: cards.length, entries, next: enabled[0]?.href || null,
+      return {lists: main.length, grids: lists.length, candidates: eligible.length, cards: cards.length, entries, next: enabled[0]?.href || null,
         ambiguousNext: next.some(el => !el.href && !el.matches('[disabled], [aria-disabled="true"], .is-disabled')),
         pagination: navigation.length, current};
     }""")
@@ -78,7 +82,7 @@ def read_page(page, number):
         not entry.get('code') or not valid_url(entry.get('url') or '', detail=True)
         for entry in parsed['entries']
     ):
-        raise ValueError(f"无法识别 JavDB 主列表（第 {number} 页，候选列表 {parsed.get('candidates', 0)}，"
+        raise ValueError(f"无法识别 JavDB 主列表（第 {number} 页，含番号的列表 {parsed.get('grids', 0)}，候选列表 {parsed.get('candidates', 0)}，"
                          f"番号卡片 {parsed.get('cards', 0)}，分页区 {parsed['pagination']}）")
     next_url = parsed['next']
     if next_url:
