@@ -79,6 +79,13 @@ class Browser:
         from core.scraper import scrape_video_info
         return self.checked(scrape_video_info(self.live_page(), code, on_progress=self.progress))
 
+    def check_ltx_tag(self, code):
+        from core.scraper import scrape_video_info
+        result = self.checked(scrape_video_info(self.live_page(), code, on_progress=self.progress, tags_only=True))
+        if result is None:
+            return {'status': 'failed', 'url': None, 'tag': None, 'error': '无法读取 JavDB 详情页标签'}
+        return result
+
     def actor(self, name):
         from core.scraper import scrape_actor_info
         return self.checked(scrape_actor_info(self.live_page(), name))
@@ -192,6 +199,8 @@ class BrowserService:
                 if kind == 'video':
                     from core.scrape_queue import base_code
                     result = self.browser.scrape(base_code(code))
+                elif kind == 'javdb_ltx_check':
+                    result = self.browser.check_ltx_tag(code)
                 elif kind == 'actor':
                     result = self.browser.actor(code)
                     if not isinstance(result, dict):

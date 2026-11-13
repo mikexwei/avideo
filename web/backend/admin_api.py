@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from flask import Blueprint, jsonify, redirect, request
 from core.browser_queue import BROWSER_TIMEZONE
+from core import javdb_tag_check
 from core.series_catalog import (
     REPORT_VERSION, ReviewConflict, combine_review_groups, completed_report, normalize_input,
     publish as publish_series, report_units, validate_review_groups,
@@ -31,6 +32,73 @@ def register_admin_api(app):
     @api.get('/admin')
     def page():
         return redirect('/#/admin')
+
+    def tag_check_summary(row):
+        state = json.loads(row['checkpoint_json'])
+        return dict(id=row['id'], status=row['status'], created_at=row['created_at'],
+                    error=row['error'], current_code=state.get('code'),
+                    total=len(json.loads(row['payload_json'])['codes']),
+                    checked=state.get('index', 0),
+                    found=sum(item['status'] == 'found' for item in state.get('items', [])))
+
+    @api.get('/api/tasks')
+    def async_tasks():
+        limit = min(100, max(1, request.args.get('limit', 20, type=int)))
+        offset = max(0, request.args.get('offset', 0, type=int))
+        with store().connect() as conn:
+            total = conn.execute('SELECT COUNT(*) FROM scrape_tasks WHERE kind=? AND deleted=0',
+                                 (javdb_tag_check.KIND,)).fetchone()[0]
+            rows = conn.execute("""SELECT * FROM scrape_tasks WHERE kind=? AND deleted=0
+                ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?""",
+                (javdb_tag_check.KIND, limit, offset)).fetchall()
+            active = conn.execute("""SELECT 1 FROM scrape_tasks WHERE kind=? AND deleted=0
+                AND cancel_requested=0 AND status IN (?, ?, ?, ?) LIMIT 1""",
+                (javdb_tag_check.KIND, *javdb_tag_check.ACTIVE)).fetchone()
+        return jsonify(items=[tag_check_summary(row) for row in rows], total=total, active=bool(active))
+
+    @api.post('/api/tasks/javdb-ltx-check')
+    def start_tag_check():
+        runtime = store()
+        with runtime.connect(write=True) as conn:
+            active = conn.execute("""SELECT id FROM scrape_tasks WHERE kind=? AND deleted=0
+                AND cancel_requested=0 AND status IN (?, ?, ?, ?) LIMIT 1""",
+                (javdb_tag_check.KIND, *javdb_tag_check.ACTIVE)).fetchone()
+            if active:
+                return jsonify(id=active['id']), 202
+            codes = javdb_tag_check.candidates(conn)
+            task_id = runtime.submit(javdb_tag_check.KIND, payload={'codes': codes}, priority=-100, connection=conn)
+        ensure_worker()
+        return jsonify(id=task_id), 202
+
+    @api.get('/api/tasks/<task_id>')
+    def async_task(task_id):
+        runtime = store()
+        row = runtime.get(task_id)
+        if not row or row['kind'] != javdb_tag_check.KIND or row['deleted']:
+            return jsonify(error='任务不存在'), 404
+        state = json.loads(row['checkpoint_json'])
+        items = state.get('items', [])
+        status = request.args.get('status', 'found')
+        if status not in ('all', 'found', 'absent', 'not_found', 'failed'):
+            raise ValueError('未知结果状态')
+        if status != 'all':
+            items = [item for item in items if item['status'] == status]
+        limit = min(100, max(1, request.args.get('limit', 25, type=int)))
+        offset = max(0, request.args.get('offset', 0, type=int))
+        reason = None
+        if row['status'] in javdb_tag_check.ACTIVE:
+            consumer = runtime.service('consumer')
+            browser = runtime.service('browser')
+            if not consumer['alive'] or consumer['paused']:
+                reason = '等待 Consumer 恢复'
+            elif not browser['alive']:
+                reason = '等待浏览器服务启动'
+            elif browser['state'] in ('waiting_login', 'waiting_verification', 'cooling_down', 'hourly_limit'):
+                reason = browser['message']
+            elif browser['paused']:
+                reason = '等待浏览器服务恢复'
+        return jsonify(**tag_check_summary(row), items=items[offset:offset + limit],
+                       result_total=len(items), wait_reason=reason)
 
     @api.get('/api/admin/services')
     def services():

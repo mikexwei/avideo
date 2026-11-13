@@ -60,6 +60,10 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Commit and Push
+
+After verifying code changes, commit them, integrate them into `main`, and push `main` to `origin`. If the work is already on `main`, commit and push there directly. Verify the remote branch contains the resulting commit.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

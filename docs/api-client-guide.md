@@ -202,6 +202,16 @@ curl -fsSN "$BASE/api/jobs/$JOB_ID/stream"
 
 ## 管理 API
 
+### 异步任务
+
+| 方法和路径 | 请求 | 响应 |
+| --- | --- | --- |
+| `GET /api/tasks` | `limit` 默认 20，最大 100，`offset` 默认 0 | `{items, total, active}`，任务摘要包含 `id`、`status`、`created_at`、`current_code`、`checked`、`total`、`found`、`error` |
+| `POST /api/tasks/javdb-ltx-check` | 请求体可空 | `202` 和 `{id}`。同类任务进行中时返回已有任务 ID |
+| `GET /api/tasks/{task_id}` | `status` 为 `found`（默认）、`all`、`absent`、`not_found` 或 `failed`。支持 `limit`（默认 25，最大 100）和 `offset` | 任务摘要及 `wait_reason`、`result_total`、`items`。结果项含 `code`、`status`、`checked_at`、`url`、`tag`，失败时可含 `error`。未知任务返回 `404` |
+
+检查任务创建时保存候选番号清单，要求在库且有「硬字幕」，排除带 LTX 破解类标签、「原装无码」「无码流出」或 `VR` 的番号。多段按完整番号合并，后缀不参与筛选。检查沿用浏览器服务的登录、访问间隔和小时额度。结果写入任务记录，供查看和筛选。
+
 这些接口供受信任的第三方运维程序调用。
 
 | 方法和路径 | 请求 | 响应 |

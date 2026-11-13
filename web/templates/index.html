@@ -745,6 +745,68 @@
     </section>
   </script>
 
+  <script type="text/x-template" id="tpl-async-tasks">
+    <div class="admin-view">
+      <div class="page-head">
+        <div><h1>异步任务</h1><p>查看任务进度和检查结果。</p></div>
+      </div>
+      <section class="card" aria-labelledby="ltx-check-heading">
+        <h2 id="ltx-check-heading">检查 JavDB 的 LTX 破解标签</h2>
+        <p class="hint">检查有硬字幕且未标记 LTX 破解、原装无码、无码流出或 VR 的在库番号。检查结果保存在任务中。</p>
+        <div class="actions">
+          <button class="ui-button" type="button" @click="start" :disabled="starting || active">
+            {{ starting ? '提交中…' : active ? '检查任务进行中' : '开始检查' }}
+          </button>
+        </div>
+        <p v-if="error" class="record-error" role="alert">{{ error }}</p>
+      </section>
+      <section aria-labelledby="task-history-heading">
+        <div class="section-head"><h2 id="task-history-heading">任务记录</h2></div>
+        <p v-if="loading" class="muted" role="status">正在读取任务…</p>
+        <p v-else-if="!items.length" class="muted">暂无任务记录。</p>
+        <div v-else class="flex flex-col gap-3">
+          <article v-for="item in items" :key="item.id" class="card record">
+            <div class="card-top">
+              <time>{{ dateLabel(item.created_at) }}</time>
+              <span class="pill neutral">{{ taskLabels[item.status] || item.status }}</span>
+            </div>
+            <p>已检查 {{ item.checked }} / {{ item.total }}，发现 {{ item.found }}</p>
+            <div class="actions">
+              <button type="button" class="ui-button" :aria-expanded="selected === item.id"
+                @click="selectTask(selected === item.id ? '' : item.id)">
+                {{ selected === item.id ? '收起结果' : '查看结果' }}
+              </button>
+            </div>
+            <div v-if="selected === item.id && detail" class="mt-4">
+              <p v-if="detail.wait_reason || detail.error" class="hint" role="status">{{ detail.wait_reason || detail.error }}</p>
+              <p v-if="detail.current_code" class="hint">当前番号 {{ detail.current_code }}</p>
+              <label class="flex flex-wrap items-center gap-2 my-3">
+                结果
+                <select v-model="filter" @change="changePage(1)">
+                  <option v-for="(label, value) in resultLabels" :key="value" :value="value">{{ label }}</option>
+                </select>
+              </label>
+              <p v-if="!detail.items.length" class="muted">当前筛选无结果。</p>
+              <ul v-else class="divide-y divide-gray-700">
+                <li v-for="row in detail.items" :key="row.code" class="py-3">
+                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <router-link :to="'/video/' + encodeURIComponent(row.code)" class="font-semibold">{{ row.code }}</router-link>
+                    <span>{{ row.tag || resultLabels[row.status] }}</span>
+                    <a v-if="row.url" :href="row.url" target="_blank" rel="noopener noreferrer" class="underline">JavDB</a>
+                    <time class="muted">{{ dateLabel(row.checked_at) }}</time>
+                  </div>
+                  <p v-if="row.error" class="record-error">{{ row.error }}</p>
+                </li>
+              </ul>
+              <pagination :page="resultPage" :total="detail.result_total" :limit="25" @change="changePage" />
+            </div>
+          </article>
+        </div>
+        <pagination :page="historyPage" :total="total" :limit="20" @change="changeHistoryPage" />
+      </section>
+    </div>
+  </script>
+
 <script type="text/x-template" id="tpl-admin">
   <div class="admin-view" ref="root">
     <div class="page-head">
@@ -4453,6 +4515,89 @@
       }
     };
 
+    const AsyncTasksView = {
+      template: '#tpl-async-tasks',
+      components: { Pagination },
+      setup() {
+        const route = VueRouter.useRoute();
+        const router = VueRouter.useRouter();
+        const items = ref([]);
+        const detail = ref(null);
+        const selected = computed(() => String(route.query.task || ''));
+        const loading = ref(true);
+        const starting = ref(false);
+        const error = ref('');
+        const filter = ref('found');
+        const resultPage = ref(1);
+        const historyPage = ref(1);
+        const total = ref(0);
+        const active = ref(false);
+        const taskLabels = { PENDING:'排队中', PREPARING:'准备中', WAITING:'等待执行', RUNNING:'执行中',
+          DONE:'已完成', FAILED:'失败', CANCELLED:'已取消', SKIPPED:'已跳过' };
+        const resultLabels = { found:'发现标签', all:'全部', absent:'未发现标签', not_found:'未找到精确番号', failed:'检查失败' };
+        const dateLabel = time => new Date(time * 1000).toLocaleString('zh-CN');
+        let generation = 0;
+        let timer;
+
+        async function load() {
+          const token = ++generation;
+          const task = selected.value;
+          try {
+            const tasks = await apiFetch('/api/tasks?offset=' + ((historyPage.value - 1) * 20));
+            if (token !== generation) return;
+            if (!tasks) throw new Error('读取任务失败');
+            items.value = tasks.items;
+            total.value = tasks.total;
+            active.value = tasks.active;
+            if (task) {
+              const query = new URLSearchParams({status:filter.value, offset:(resultPage.value - 1) * 25});
+              const result = await apiFetch('/api/tasks/' + encodeURIComponent(task) + '?' + query);
+              if (token === generation) {
+                if (!result) throw new Error('读取任务结果失败');
+                detail.value = result;
+              }
+            }
+          } catch (e) {
+            if (token === generation) error.value = e.message;
+          } finally {
+            if (token === generation) loading.value = false;
+          }
+        }
+        async function selectTask(id) {
+          await router.replace({query:id ? {task:id} : {}});
+        }
+        watch(selected, () => {
+          detail.value = null;
+          filter.value = 'found';
+          resultPage.value = 1;
+          load();
+        });
+        function changePage(page) { resultPage.value = page; load(); }
+        function changeHistoryPage(page) { historyPage.value = page; load(); }
+        async function start() {
+          starting.value = true;
+          error.value = '';
+          try {
+            const task = await postJson('/api/tasks/javdb-ltx-check', {});
+            historyPage.value = 1;
+            if (selected.value === task.id) await load();
+            else await selectTask(task.id);
+          } catch (e) {
+            error.value = e.message;
+          } finally {
+            starting.value = false;
+          }
+        }
+        onMounted(() => {
+          load();
+          timer = setInterval(() => { if (!document.hidden && !starting.value) load(); }, 5000);
+        });
+        Vue.onUnmounted(() => { generation++; clearInterval(timer); });
+        return {items, detail, selected, loading, starting, error, filter, resultPage, historyPage, total, active,
+          taskLabels, resultLabels, dateLabel, selectTask, changePage, changeHistoryPage, start};
+      }
+    };
+
     const SeriesReviewView = {
       template: '#tpl-series-review',
       setup() {
@@ -4650,6 +4795,7 @@
         { path: '/', component: DashboardView },
         { path: '/library-stats', redirect: '/' },
         { path: '/videos', component: HomeView },
+        { path: '/tasks', component: AsyncTasksView },
         { path: '/admin', component: AdminView },
         { path: '/admin/series', component: SeriesReviewView },
         { path: '/subtitle-review', component: SubtitleReviewView },
@@ -4715,6 +4861,7 @@
           <router-link to="/prefixes" class="nav-tab" :class="{ 'nav-current': $route.path.startsWith('/prefix/') }">番号</router-link>
           <router-link to="/recommend" class="nav-tab">推荐</router-link>
           <router-link to="/scrape-progress" class="nav-tab nav-operations">刮削进度</router-link>
+          <router-link to="/tasks" class="nav-tab">异步任务</router-link>
           <router-link to="/admin" class="nav-tab" :class="{ 'nav-current': $route.path === '/subtitle-review' || $route.path === '/admin/series' }">管理</router-link>
         </nav>
       </div>

@@ -542,7 +542,7 @@ def _open_result_detail(page: Page, code: str, index: int) -> bool:
         return False
     return True
 
-def scrape_video_info(page: Page, code: str, on_progress=None) -> Optional[Dict]:
+def scrape_video_info(page: Page, code: str, on_progress=None, *, tags_only=False) -> Optional[Dict]:
     """核心动作：控制浏览器搜索并进入详情页"""
     global scrape_count
     current_count = scrape_count
@@ -569,6 +569,8 @@ def scrape_video_info(page: Page, code: str, on_progress=None) -> Optional[Dict]
             # 2. 判断是否被强制要求登录 → 尝试访客模式降级
             search_url = f"{BASE_URL}/search?f=all&q={variant}&locale={JAVDB_LOCALE}"
             if _is_login_required(page):
+                if tags_only:
+                    raise PermissionError('等待在浏览器中完成登录后恢复服务')
                 if not _drop_session_and_reload(
                     page, search_url,
                     ".movie-list, .empty-message, input[type='password']"
@@ -588,6 +590,8 @@ def scrape_video_info(page: Page, code: str, on_progress=None) -> Optional[Dict]
 
             # 5. 找到与番号精确匹配的搜索结果（第一位不一定是正确的片）
             result_codes = _read_result_codes(page)
+            if not result_codes and tags_only:
+                return None
             if not result_codes:
                 logger.warning(f"❌ 未在 JavDB 搜索列表中提取到有效的影片项目 ({variant})。跳过此搜索词。")
                 continue
@@ -597,6 +601,8 @@ def scrape_video_info(page: Page, code: str, on_progress=None) -> Optional[Dict]
                 break
 
         if match_index is None:
+            if tags_only:
+                return {'status': 'not_found', 'url': None, 'tag': None}
             if not result_codes:
                 logger.warning(f"❌ 搜索结果为空: 未在 JavDB 找到番号 {code}。跳过此片，等待后续手工添加信息。")
                 return None
@@ -614,6 +620,8 @@ def scrape_video_info(page: Page, code: str, on_progress=None) -> Optional[Dict]
             return None
 
         if _is_login_required(page):
+            if tags_only:
+                raise PermissionError('等待在浏览器中完成登录后恢复服务')
             # 可能是详情页单独受限，再试一次访客降级（cookies 可能在步骤 2 已清）
             current_url = page.url
             if not _drop_session_and_reload(
@@ -632,6 +640,15 @@ def scrape_video_info(page: Page, code: str, on_progress=None) -> Optional[Dict]
         # 7. 执行页面解析
         if on_progress:
             on_progress('scraping', f'正在读取 {code} 详情')
+        if tags_only:
+            from core.javdb_tag_check import result_for_tags
+            blocks = page.locator('div.panel-block')
+            for i in range(blocks.count()):
+                block = blocks.nth(i)
+                label = re.split(r'[:：]', block.inner_text(), maxsplit=1)[0].strip()
+                if label in ('類別', '类别'):
+                    return result_for_tags(block.locator('span.value a').all_inner_texts(), page.url)
+            return None
         scraped_data = parse_detail_page(page, code)
         logger.info(f"✅ 刮削成功: {scraped_data['title_jp'][:60]}...")
         

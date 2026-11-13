@@ -103,12 +103,36 @@ class Consumer:
         else:
             self.finish(task, state)
 
+    def advance_tag_check(self, task, state, payload):
+        codes = payload['codes']
+        index = state.get('index', 0)
+        if index >= len(codes):
+            state['result'] = {'total': len(codes), 'checked': index,
+                               'found': sum(item['status'] == 'found' for item in state.get('items', []))}
+            self.finish(task, state)
+            return
+        code = codes[index]
+        if 'response' not in state:
+            state.update(phase='check', code=code)
+            self.request(task, state, 'browser', 'javdb_ltx_check', {'code': code})
+            return
+        response = state.pop('response')
+        result = response['result'] if response['outcome'] == 'DONE' else {
+            'status': 'failed', 'url': None, 'tag': None, 'error': response['error'],
+        }
+        state.setdefault('items', []).append(dict(result, code=code, checked_at=time.time()))
+        state.update(index=index + 1, code=None)
+        self.commit_phase(task, state, lambda conn: None)
+
     def advance(self, task):
         payload = json.loads(task['payload_json'])
         state = json.loads(task['checkpoint_json'])
         state.setdefault('phase', 'start')
         job = StoredJob(self.store, task['id'], execution_id=task['execution_id'])
         kind = task['kind']
+        if kind == 'javdb_ltx_check':
+            self.advance_tag_check(task, state, payload)
+            return
         if kind == 'daily_finalize':
             self.advance_daily(task, state, payload)
             return
