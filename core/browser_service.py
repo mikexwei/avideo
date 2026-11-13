@@ -79,12 +79,20 @@ class Browser:
         from core.scraper import scrape_video_info
         return self.checked(scrape_video_info(self.live_page(), code, on_progress=self.progress))
 
-    def check_ltx_tag(self, code):
-        from core.scraper import scrape_video_info
-        result = self.checked(scrape_video_info(self.live_page(), code, on_progress=self.progress, tags_only=True))
-        if result is None:
-            return {'status': 'failed', 'url': None, 'tag': None, 'error': '无法读取 JavDB 详情页标签'}
-        return result
+    def collect_listing_page(self, number):
+        from playwright.sync_api import TimeoutError
+        from core.javdb_listing import list_url, read_page
+
+        page = self.live_page()
+        page.goto(list_url(number), wait_until='domcontentloaded', timeout=30000)
+        self.checked(None)
+        try:
+            page.wait_for_selector('.movie-list .item, input[type="password"]', state='attached', timeout=15000)
+        except TimeoutError:
+            self.checked(None)
+            raise
+        self.checked(None)
+        return read_page(page, number)
 
     def actor(self, name):
         from core.scraper import scrape_actor_info
@@ -199,8 +207,8 @@ class BrowserService:
                 if kind == 'video':
                     from core.scrape_queue import base_code
                     result = self.browser.scrape(base_code(code))
-                elif kind == 'javdb_ltx_check':
-                    result = self.browser.check_ltx_tag(code)
+                elif kind == 'javdb_listing':
+                    result = self.browser.collect_listing_page(payload['page'])
                 elif kind == 'actor':
                     result = self.browser.actor(code)
                     if not isinstance(result, dict):

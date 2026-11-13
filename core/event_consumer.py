@@ -7,7 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from core import series_catalog, workflows
+from core import javdb_listing, series_catalog, workflows
 from core.scrape_queue import StoredJob
 from core.task_policy import TargetChanged, is_special_code, matches_video_snapshot, snapshot
 
@@ -103,36 +103,24 @@ class Consumer:
         else:
             self.finish(task, state)
 
-    def advance_tag_check(self, task, state, payload):
-        index = state.get('index', 0)
-        if 'codes' in payload:
-            codes = payload['codes']
-            total = len(codes)
-            code = codes[index] if index < total else None
-        else:
-            total = payload['total']
-            with self.store.connect() as conn:
-                row = conn.execute('SELECT code FROM javdb_check_candidates WHERE task_id=? AND position=?',
-                                   (task['id'], index)).fetchone()
-            code = row['code'] if row else None
-        if index >= total:
-            state['result'] = {'total': total, 'checked': index,
-                               'found': sum(item['status'] == 'found' for item in state.get('items', []))}
+    def advance_listing(self, task, state):
+        if state.get('stop_reason'):
+            state['result'] = {key: state[key] for key in ('pages', 'collected', 'stop_reason')}
             self.finish(task, state)
             return
-        if code is None:
-            raise ValueError('任务候选记录缺失')
+        number = state.get('pages', 0) + 1
         if 'response' not in state:
-            state.update(phase='check', code=code)
-            self.request(task, state, 'browser', 'javdb_ltx_check', {'code': code})
+            state.update(phase='page', index=number, current_page=number)
+            self.request(task, state, 'browser', javdb_listing.KIND, {'page': number})
             return
-        response = state.pop('response')
-        result = response['result'] if response['outcome'] == 'DONE' else {
-            'status': 'failed', 'url': None, 'tag': None, 'error': response['error'],
-        }
-        state.setdefault('items', []).append(dict(result, code=code, checked_at=time.time()))
-        state.update(index=index + 1, code=None)
-        self.commit_phase(task, state, lambda conn: None)
+        result = self.response(state)
+
+        def apply(conn):
+            added, reason = javdb_listing.save_page(conn, task['id'], number, result)
+            state.update(pages=number, collected=state.get('collected', 0) + added,
+                         stop_reason=reason, current_page=None)
+
+        self.commit_phase(task, state, apply)
 
     def advance(self, task):
         payload = json.loads(task['payload_json'])
@@ -140,8 +128,8 @@ class Consumer:
         state.setdefault('phase', 'start')
         job = StoredJob(self.store, task['id'], execution_id=task['execution_id'])
         kind = task['kind']
-        if kind == 'javdb_ltx_check':
-            self.advance_tag_check(task, state, payload)
+        if kind == javdb_listing.KIND:
+            self.advance_listing(task, state)
             return
         if kind == 'daily_finalize':
             self.advance_daily(task, state, payload)

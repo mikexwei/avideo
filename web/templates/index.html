@@ -747,103 +747,65 @@
 
   <script type="text/x-template" id="tpl-async-tasks">
     <div class="admin-view">
-      <div class="page-head">
-        <div><h1>异步任务</h1><p>查看任务进度和检查结果。</p></div>
-      </div>
-      <section class="card" aria-labelledby="ltx-check-heading">
-        <h2 id="ltx-check-heading">检查 JavDB 的 LTX 破解标签</h2>
-        <p class="hint">检查有硬字幕且未标记 LTX 破解、原装无码、无码流出或 VR 的在库番号。检查结果保存在任务中。</p>
-        <form class="flex flex-wrap items-end gap-3 my-4" @submit.prevent="applyCandidates">
-          <label>番号前缀 <input v-model="draft.prefix" maxlength="200" placeholder="例如 START" /></label>
-          <label>女优 <input v-model="draft.actor" maxlength="200" placeholder="原名或中文名" /></label>
-          <label>标题或番号 <input v-model="draft.q" maxlength="200" /></label>
-          <label>检查历史
-            <select v-model="draft.checked">
-              <option value="unchecked">只看未检查</option>
-              <option value="checked">只看已检查</option>
-              <option value="all">全部，可重新检查</option>
-            </select>
-          </label>
-          <button class="ui-button" type="submit" :disabled="candidateLoading">筛选</button>
-        </form>
-        <p class="hint" role="status">{{ candidateLoading ? '正在读取候选…' : '当前筛选共 ' + candidateTotal + ' 个候选' }}</p>
-        <div v-if="candidateItems.length" class="overflow-x-auto">
-          <table class="w-full text-left">
-            <thead><tr><th scope="col" class="p-2">番号</th><th scope="col" class="p-2">标题</th>
-              <th scope="col" class="p-2">女优</th><th scope="col" class="p-2">检查历史</th></tr></thead>
-            <tbody>
-              <tr v-for="row in candidateItems" :key="row.code" class="border-t border-gray-700">
-                <td class="p-2"><router-link :to="'/video/' + encodeURIComponent(row.code)">{{ row.code }}</router-link></td>
-                <td class="p-2">{{ row.title || '—' }}</td><td class="p-2">{{ row.actors.join('、') || '—' }}</td>
-                <td class="p-2">{{ row.checked ? '已检查' : '未检查' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <pagination :page="candidatePage" :total="candidateTotal" :limit="25" @change="changeCandidatePage" />
+      <div class="page-head"><h1>异步任务</h1></div>
+      <section class="card" aria-labelledby="listing-heading">
+        <h2 id="listing-heading">JavDB 番号采集</h2>
+        <p class="hint">从第一页开始，遇到已采集的番号或末页时停止。跳过每周推荐。</p>
         <div class="actions">
-          <button class="ui-button" type="button" @click="start" :disabled="starting || active || candidateLoading || !candidateTotal || candidateDirty">
-            {{ starting ? '提交中…' : active ? '检查任务进行中' : '检查筛选结果' }}
-          </button>
+          <button type="button" class="ui-button" @click="start" :disabled="busy || active">开始采集</button>
         </div>
         <p v-if="error" class="record-error" role="alert">{{ error }}</p>
       </section>
-      <section aria-labelledby="task-history-heading">
-        <div class="section-head"><h2 id="task-history-heading">任务记录</h2></div>
-        <p v-if="loading" class="muted" role="status">正在读取任务…</p>
-        <p v-else-if="!items.length" class="muted">暂无任务记录。</p>
-        <div v-else class="flex flex-col gap-3">
-          <article v-for="item in items" :key="item.id" class="card record">
-            <div class="card-top">
-              <time>{{ dateLabel(item.created_at) }}</time>
-              <span class="pill neutral">{{ taskLabels[item.status] || item.status }}</span>
+      <section aria-labelledby="listing-history-heading">
+        <h2 id="listing-history-heading">任务记录</h2>
+        <p v-if="!items.length" class="hint">暂无任务记录。</p>
+        <article v-for="item in items" :key="item.id" class="card mt-3">
+          <div class="card-top">
+            <time>{{ new Date(item.created_at * 1000).toLocaleString('zh-CN') }}</time>
+            <span class="pill neutral">{{ labels[item.status] || item.status }}</span>
+          </div>
+          <p>已处理 {{ item.pages }} 页，采集 {{ item.collected }} 个番号<span v-if="item.current_page"> · 当前第 {{ item.current_page }} 页</span></p>
+          <p v-if="item.stop_reason" class="hint">{{ item.stop_reason === 'history' ? '遇到历史番号' : '已到末页' }}</p>
+          <p v-if="item.error" class="record-error">{{ item.error }}</p>
+          <div class="actions">
+            <button type="button" class="ui-button" :aria-expanded="selected === item.id"
+              @click="select(selected === item.id ? '' : item.id)">{{ selected === item.id ? '收起结果' : '查看结果' }}</button>
+            <template v-if="running.includes(item.status)">
+              <button type="button" class="ui-button" :disabled="busy"
+                @click="control(item.id, item.status === 'PAUSED' ? 'resume' : 'pause')">{{ item.status === 'PAUSED' ? '继续' : '暂停' }}</button>
+              <button type="button" class="ui-button" :disabled="busy" @click="control(item.id, 'stop')">停止</button>
+            </template>
+          </div>
+          <div v-if="selected === item.id" class="mt-4">
+            <p v-if="waitReason" class="hint" role="status">{{ waitReason }}</p>
+            <form class="flex flex-wrap items-end gap-3 my-3" @submit.prevent="applyFilters">
+              <label>番号或标题 <input v-model="filters.q"></label>
+              <label>是否入库 <select v-model="filters.in_db"><option value="">全部</option><option value="yes">已入库</option><option value="no">未入库</option></select></label>
+              <label>DB 字幕 <select v-model="filters.subtitle"><option value="">全部</option><option v-for="value in subtitles" :key="value">{{ value }}</option></select></label>
+              <label>DB 无码 <select v-model="filters.uncensored"><option value="">全部</option><option v-for="value in uncensored" :key="value">{{ value }}</option></select></label>
+              <label>女优 <input v-model="filters.actor"></label>
+              <button type="submit" class="ui-button" :disabled="loading">筛选</button>
+              <button type="button" class="ui-button" :disabled="loading" @click="refresh()">刷新本地数据</button>
+            </form>
+            <p class="hint" role="status">{{ loading ? '正在读取结果…' : '匹配 ' + resultTotal + ' 个番号' }}</p>
+            <div v-if="rows.length" class="overflow-x-auto">
+              <table class="w-full text-left">
+                <thead><tr><th scope="col" class="p-2">番号</th><th scope="col" class="p-2">是否在 DB 中</th><th scope="col" class="p-2">DB 字幕</th><th scope="col" class="p-2">DB 无码</th><th scope="col" class="p-2">女优名</th><th scope="col" class="p-2">标题</th></tr></thead>
+                <tbody>
+                  <tr v-for="row in rows" :key="row.code" class="border-t border-gray-700">
+                    <td class="p-2"><a :href="row.url" target="_blank" rel="noopener noreferrer" class="underline">{{ row.code }}</a></td>
+                    <td class="p-2">{{ row.in_db ? '是' : '否' }}</td>
+                    <td class="p-2"><div v-for="v in row.versions" :key="v.code">{{ row.versions.length > 1 ? v.code + ' ' : '' }}{{ v.subtitle }}</div><span v-if="!row.in_db">—</span></td>
+                    <td class="p-2"><div v-for="v in row.versions" :key="v.code">{{ row.versions.length > 1 ? v.code + ' ' : '' }}{{ v.uncensored.join('、') }}</div><span v-if="!row.in_db">—</span></td>
+                    <td class="p-2">{{ row.actors.join('、') || '—' }}</td><td class="p-2">{{ row.title || '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-            <p>已检查 {{ item.checked }} / {{ item.total }}，发现 {{ item.found }}</p>
-            <p v-if="item.current_code && runningStates.includes(item.status)" class="hint">当前番号 {{ item.current_code }}</p>
-            <div class="actions">
-              <button type="button" class="ui-button" :aria-expanded="selected === item.id"
-                @click="selectTask(selected === item.id ? '' : item.id)">
-                {{ selected === item.id ? '收起结果' : '查看结果' }}
-              </button>
-              <template v-if="runningStates.includes(item.status)">
-                <button type="button" class="ui-button" :disabled="controlling"
-                  @click="controlTask(item.id, item.status === 'PAUSED' ? 'resume' : 'pause')">
-                  {{ item.status === 'PAUSED' ? '继续' : '暂停' }}
-                </button>
-                <button type="button" class="ui-button" :disabled="controlling" @click="controlTask(item.id, 'stop')">停止</button>
-              </template>
-            </div>
-            <div v-if="selected === item.id && detail" class="mt-4">
-              <p v-if="detail.wait_reason || detail.error" class="hint" role="status">{{ detail.wait_reason || detail.error }}</p>
-              <label class="flex flex-wrap items-center gap-2 my-3">
-                结果视图
-                <select v-model="filter" @change="changePage(1)">
-                  <option v-for="(label, value) in resultLabels" :key="value" :value="value">{{ label }}</option>
-                </select>
-              </label>
-              <p v-if="!detail.items.length" class="muted">当前筛选无结果。</p>
-              <ul v-else class="divide-y divide-gray-700">
-                <li v-for="row in detail.items" :key="row.code" class="py-3">
-                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
-                    <router-link :to="'/video/' + encodeURIComponent(row.code)" class="font-semibold">{{ row.code }}</router-link>
-                    <span>{{ row.tag || resultLabels[row.status] }}</span>
-                    <a v-if="row.url" :href="row.url" target="_blank" rel="noopener noreferrer" class="underline">JavDB</a>
-                    <time class="muted">{{ dateLabel(row.checked_at) }}</time>
-                  </div>
-                  <ul v-if="row.magnets?.length" class="mt-2 break-all">
-                    <li v-for="link in row.magnets" :key="link">
-                      <code>{{ link }}</code>
-                      <button type="button" class="ui-button ml-2" @click="copyMagnet(link)">复制磁链</button>
-                    </li>
-                  </ul>
-                  <p v-if="row.error" class="record-error">{{ row.error }}</p>
-                </li>
-              </ul>
-              <pagination :page="resultPage" :total="detail.result_total" :limit="25" @change="changePage" />
-            </div>
-          </article>
-        </div>
-        <pagination :page="historyPage" :total="total" :limit="20" @change="changeHistoryPage" />
+            <pagination :page="page" :total="resultTotal" :limit="25" @change="refresh" />
+          </div>
+        </article>
+        <pagination :page="historyPage" :total="total" :limit="20" @change="changeHistory" />
       </section>
     </div>
   </script>
@@ -4560,139 +4522,99 @@
       template: '#tpl-async-tasks',
       components: { Pagination },
       setup() {
-        const route = VueRouter.useRoute();
-        const router = VueRouter.useRouter();
-        const items = ref([]);
-        const detail = ref(null);
+        const route = VueRouter.useRoute(), router = VueRouter.useRouter();
         const selected = computed(() => String(route.query.task || ''));
-        const loading = ref(true);
-        const starting = ref(false);
-        const controlling = ref(false);
-        const draft = ref({prefix:'', actor:'', q:'', checked:'unchecked'});
-        const applied = ref({...draft.value});
-        const candidateDirty = computed(() => JSON.stringify(draft.value) !== JSON.stringify(applied.value));
-        const candidateLoading = ref(false);
-        const candidateItems = ref([]);
-        const candidateTotal = ref(0);
-        const candidatePage = ref(1);
-        const runningStates = ['PREPARING', 'PENDING', 'WAITING', 'RUNNING', 'PAUSED'];
-        const error = ref('');
-        const filter = ref('found');
-        const resultPage = ref(1);
-        const historyPage = ref(1);
-        const total = ref(0);
-        const active = ref(false);
-        const taskLabels = { PENDING:'排队中', PREPARING:'准备中', WAITING:'等待执行', RUNNING:'执行中', PAUSED:'已暂停',
-          DONE:'已完成', FAILED:'失败', CANCELLED:'已取消', SKIPPED:'已跳过' };
-        const resultLabels = { found:'发现标签', all:'全部已处理', magnets:'有磁链', absent:'未发现标签', not_found:'未找到精确番号', failed:'检查失败' };
-        const dateLabel = time => new Date(time * 1000).toLocaleString('zh-CN');
-        let generation = 0;
-        let timer;
+        const items = ref([]), rows = ref([]), active = ref(false), error = ref('');
+        const page = ref(1), resultTotal = ref(0), historyPage = ref(1), total = ref(0);
+        const loading = ref(false), busy = ref(false), waitReason = ref('');
+        const filters = ref({q:'', in_db:'', subtitle:'', uncensored:'', actor:''});
+        let applied = {...filters.value};
+        const running = ['PENDING', 'PREPARING', 'RUNNING', 'WAITING', 'PAUSED'];
+        const labels = {PENDING:'排队中', PREPARING:'准备中', RUNNING:'采集中', WAITING:'等待执行',
+          PAUSED:'已暂停', DONE:'已完成', FAILED:'失败', CANCELLED:'已停止', SKIPPED:'已跳过'};
+        const subtitles = [...SUBTITLE_OPTIONS, '未分类'];
+        const uncensored = ['原装无码','无码流出','JAV 无码破解','LADA 无码破解','LTX 无码破解','无码破解','仅番号带 U','无无码标记'];
+        let timer, generation = 0, count = -1;
 
-        async function load() {
-          const token = ++generation;
-          const task = selected.value;
+        async function refresh(nextPage = page.value) {
+          const token = ++generation, id = selected.value;
+          if (!id) return;
+          loading.value = true;
           try {
-            const tasks = await apiFetch('/api/tasks?offset=' + ((historyPage.value - 1) * 20));
+            const query = new URLSearchParams({...applied, offset:(nextPage - 1) * 25});
+            const data = await apiFetch('/api/tasks/' + encodeURIComponent(id) + '?' + query);
             if (token !== generation) return;
-            if (!tasks) throw new Error('读取任务失败');
-            items.value = tasks.items;
-            total.value = tasks.total;
-            active.value = tasks.active;
-            if (task) {
-              const query = new URLSearchParams({status:filter.value, offset:(resultPage.value - 1) * 25});
-              const result = await apiFetch('/api/tasks/' + encodeURIComponent(task) + '?' + query);
-              if (token === generation) {
-                if (!result) throw new Error('读取任务结果失败');
-                detail.value = result;
-              }
-            }
+            if (!data) throw new Error('读取采集结果失败');
+            rows.value = data.items;
+            resultTotal.value = data.result_total;
+            page.value = nextPage;
+            count = data.collected;
+            waitReason.value = data.wait_reason;
           } catch (e) {
             if (token === generation) error.value = e.message;
           } finally {
             if (token === generation) loading.value = false;
           }
         }
-        async function selectTask(id) {
-          await router.replace({query:id ? {task:id} : {}});
+        function applyFilters() {
+          applied = {...filters.value};
+          refresh(1);
         }
-        watch(selected, () => {
-          detail.value = null;
-          filter.value = 'found';
-          resultPage.value = 1;
-          load();
-        });
-        function changePage(page) { resultPage.value = page; load(); }
-        function changeHistoryPage(page) { historyPage.value = page; load(); }
-        async function loadCandidates() {
-          candidateLoading.value = true;
+        async function load() {
           try {
-            const query = new URLSearchParams({...applied.value, offset:(candidatePage.value - 1) * 25});
-            const result = await apiFetch('/api/tasks/javdb-ltx-check/candidates?' + query);
-            if (!result) throw new Error('读取候选失败');
-            candidateItems.value = result.items;
-            candidateTotal.value = result.total;
-          } catch (e) {
-            candidateItems.value = [];
-            candidateTotal.value = 0;
-            error.value = e.message;
-          } finally {
-            candidateLoading.value = false;
-          }
+            const data = await apiFetch('/api/tasks?offset=' + (historyPage.value - 1) * 20);
+            if (!data) throw new Error('读取任务失败');
+            items.value = data.items;
+            total.value = data.total;
+            active.value = data.active;
+            const id = selected.value;
+            if (!id || loading.value) return;
+            const item = items.value.find(task => task.id === id);
+            if (!item) return;
+            if (count !== item.collected) await refresh();
+            else if (running.includes(item.status)) {
+              const status = await apiFetch('/api/tasks/' + encodeURIComponent(id) + '?progress_only=1');
+              if (selected.value === id) waitReason.value = status?.wait_reason || '';
+            } else waitReason.value = '';
+          } catch (e) { error.value = e.message; }
         }
-        function applyCandidates() {
-          applied.value = {...draft.value};
-          candidatePage.value = 1;
+        function select(id) { return router.replace({query:id ? {task:id} : {}}); }
+        watch(selected, () => {
+          generation++;
+          loading.value = false;
+          rows.value = [];
+          resultTotal.value = 0;
+          waitReason.value = '';
+          count = -1;
+          page.value = 1;
+          if (selected.value) refresh(1);
+        });
+        function changeHistory(number) { historyPage.value = number; load(); }
+        async function start() {
+          busy.value = true;
           error.value = '';
-          loadCandidates();
+          try {
+            const task = await postJson('/api/tasks/javdb-listing', {});
+            historyPage.value = 1;
+            await select(task.id);
+            await load();
+          } catch (e) { error.value = e.message; }
+          finally { busy.value = false; }
         }
-        function changeCandidatePage(page) {
-          if (candidateLoading.value) return;
-          candidatePage.value = page;
-          loadCandidates();
-        }
-        async function controlTask(id, action) {
-          if (action === 'stop' && !window.confirm('停止这个任务？已检查的结果会保留。')) return;
-          controlling.value = true;
+        async function control(id, action) {
+          if (action === 'stop' && !window.confirm('停止采集？已保存的页面仍可查看。')) return;
+          busy.value = true;
           error.value = '';
           try {
             await postJson('/api/tasks/' + encodeURIComponent(id) + '/' + action, {});
             await load();
-            if (action === 'stop') loadCandidates();
-          } catch (e) {
-            error.value = e.message;
-          } finally {
-            controlling.value = false;
-          }
+          } catch (e) { error.value = e.message; }
+          finally { busy.value = false; }
         }
-        async function copyMagnet(link) {
-          try { await navigator.clipboard.writeText(link); }
-          catch { error.value = '无法自动复制，请选中文字手动复制'; }
-        }
-        async function start() {
-          starting.value = true;
-          error.value = '';
-          try {
-            const task = await postJson('/api/tasks/javdb-ltx-check', applied.value);
-            historyPage.value = 1;
-            if (selected.value === task.id) await load();
-            else await selectTask(task.id);
-          } catch (e) {
-            error.value = e.message;
-          } finally {
-            starting.value = false;
-          }
-        }
-        onMounted(() => {
-          load();
-          loadCandidates();
-          timer = setInterval(() => { if (!document.hidden && !starting.value) load(); }, 5000);
-        });
+        onMounted(() => { load(); timer = setInterval(() => { if (!document.hidden && !busy.value) load(); }, 5000); });
         Vue.onUnmounted(() => { generation++; clearInterval(timer); });
-        return {items, detail, selected, loading, starting, error, filter, resultPage, historyPage, total, active,
-          taskLabels, resultLabels, dateLabel, selectTask, changePage, changeHistoryPage, start,
-          runningStates, controlling, controlTask, copyMagnet, draft, candidateDirty, candidateLoading,
-          candidateItems, candidateTotal, candidatePage, applyCandidates, changeCandidatePage};
+        return {items, rows, active, error, selected, page, resultTotal, historyPage, total, loading, busy, waitReason,
+          filters, running, labels, subtitles, uncensored, refresh, applyFilters, select, start, control, changeHistory};
       }
     };
 

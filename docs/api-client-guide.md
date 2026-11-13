@@ -206,14 +206,14 @@ curl -fsSN "$BASE/api/jobs/$JOB_ID/stream"
 
 | 方法和路径 | 请求 | 响应 |
 | --- | --- | --- |
-| `GET /api/tasks` | `limit` 默认 20，最大 100，`offset` 默认 0 | `{items, total, active}`，任务摘要包含 `id`、`status`、`created_at`、`current_code`、`checked`、`total`、`found`、`error` |
-| `GET /api/tasks/javdb-ltx-check/candidates` | 可选 `prefix`、`actor`、`q` 和 `checked`。支持 `limit`（默认 25，最大 100）和 `offset` | `{items, total}`，候选项含 `code`、`title`、`actors`、`checked` |
-| `POST /api/tasks/javdb-ltx-check` | JSON 使用同样的筛选字段，提交当前筛选的全部候选 | `202` 和 `{id}`。同类任务进行中时返回已有任务 ID |
-| `GET /api/tasks/{task_id}` | `status` 为 `found`（默认）、`all`、`magnets`、`absent`、`not_found` 或 `failed`。支持 `limit`（默认 25，最大 100）和 `offset` | 任务摘要及 `wait_reason`、`result_total`、`items`。结果项含 `code`、`status`、`checked_at`、`url`、`tag`，命中时可含 `magnets` 或磁链读取错误 `error`。未知任务返回 `404` |
-| `POST /api/tasks/{task_id}/{action}` | `pause`、`resume` 或 `stop` | `{ok}`。暂停允许当前检查完成，继续从断点处理。停止后保留已完成的结果 |
+| `GET /api/tasks` | `limit` 默认 20，最大 100，`offset` 默认 0 | `{items, total, active}`，摘要含 `id`、`status`、`created_at`、`current_page`、`pages`、`collected`、`stop_reason`、`error` |
+| `POST /api/tasks/javdb-listing` | 请求体可空 | `202` 和 `{id}`。已有活动采集时返回同一任务 ID |
+| `GET /api/tasks/{task_id}` | 可用 `q`、`actor`、`in_db=yes/no`、`subtitle`、`uncensored` 筛选。支持 `limit`（默认 25，最大 100）和 `offset`。只查询进度时用 `progress_only=1` | 摘要及 `wait_reason`、`result_total`、`items`。结果项含 `code`、`url`、`page`、`title`、`actors`、`in_db`、`versions`，版本含 `code`、`subtitle`、`uncensored`、`actors` |
+| `POST /api/tasks/{task_id}/{action}` | `pause`、`resume` 或 `stop` | `{ok}`。暂停允许当前页读完，继续时从已保存的页码接着处理。停止后保留已保存结果 |
 | `DELETE /api/admin/workflows/{task_id}` | 任务已结束，且没有仍在执行的命令 | `{ok}`。软删除后从工作流和异步任务列表隐藏。仍在运行时返回 `409` |
 
-检查任务要求在库且有「硬字幕」，排除带 LTX 破解类标签、「原装无码」「无码流出」或 `VR` 的番号。多段按完整番号合并，后缀不参与筛选。`actor` 匹配原名和中文名，`q` 匹配标题或番号。`checked` 支持 `unchecked`（默认）、`checked` 或 `all`，检查历史仅指此任务的成功检查结果。任务创建时将筛选后的番号固化到候选表，任务 payload 保存筛选条件及总数。检查沿用浏览器服务的登录、访问间隔和小时额度。命中标签时，从详情页磁链标签中记录标为 LTX 的磁力链接。
+从 JavDB 的 `vft=6&vst=2` 列表第一页开始，跳过每周推荐，按页保存主列表结果。遇到已成功采集过的番号或确认没有下一页时结束。失败、暂停和手动停止的任务不会作为历史停止点。结果查询只读本地数据库，按基础番号匹配所有在库版本。字幕与无码筛选须由同一版本满足。
+
 
 这些接口供受信任的第三方运维程序调用。
 

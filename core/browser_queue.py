@@ -25,10 +25,12 @@ class RuntimeStore(QueueStore):
             if 'execution_id' not in event_columns:
                 conn.execute('ALTER TABLE scrape_events ADD COLUMN execution_id TEXT')
             conn.executescript('''
-                CREATE TABLE IF NOT EXISTS javdb_check_candidates (
-                    task_id TEXT NOT NULL, position INTEGER NOT NULL, code TEXT NOT NULL,
-                    PRIMARY KEY(task_id, position)
+                CREATE TABLE IF NOT EXISTS javdb_listing_items (
+                    task_id TEXT NOT NULL, code TEXT NOT NULL, page INTEGER NOT NULL,
+                    title TEXT NOT NULL, actors_json TEXT NOT NULL, url TEXT NOT NULL,
+                    PRIMARY KEY(task_id, code)
                 );
+                CREATE INDEX IF NOT EXISTS javdb_listing_code ON javdb_listing_items(code);
                 CREATE TABLE IF NOT EXISTS service_state (
                     name TEXT PRIMARY KEY, desired TEXT NOT NULL DEFAULT 'stop',
                     paused INTEGER NOT NULL DEFAULT 0, pid INTEGER, heartbeat REAL DEFAULT 0,
