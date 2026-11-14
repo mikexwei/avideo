@@ -1,6 +1,7 @@
 """Local administration of services, workflows, commands and result events."""
 import json
 import math
+import re
 import time
 from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
@@ -36,7 +37,9 @@ def register_admin_api(app):
     def listing_summary(row):
         state = json.loads(row['checkpoint_json'])
         return dict(id=row['id'], status='PAUSED' if row['paused'] and row['status'] in javdb_listing.ACTIVE else row['status'],
-                    created_at=row['created_at'], error=row['error'], current_page=state.get('current_page'),
+                    created_at=row['created_at'], finished_at=row['finished_at'],
+                    trigger=json.loads(row['payload_json']).get('trigger', 'manual'),
+                    error=row['error'], current_page=state.get('current_page'), current_code=state.get('current_code'),
                     pages=state.get('pages', 0), collected=state.get('collected', 0),
                     stop_reason=state.get('stop_reason'))
 
@@ -50,23 +53,54 @@ def register_admin_api(app):
             rows = conn.execute("""SELECT * FROM scrape_tasks WHERE kind=? AND deleted=0
                 ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?""",
                 (javdb_listing.KIND, limit, offset)).fetchall()
-            active = conn.execute("""SELECT 1 FROM scrape_tasks WHERE kind=? AND deleted=0
-                AND cancel_requested=0 AND status IN (?, ?, ?, ?) LIMIT 1""",
-                (javdb_listing.KIND, *javdb_listing.ACTIVE)).fetchone()
-        return jsonify(items=[listing_summary(row) for row in rows], total=total, active=bool(active))
+            active = javdb_listing.active_task(conn)
+            latest = conn.execute("""SELECT * FROM scrape_tasks t WHERE kind=? AND (deleted=0 OR EXISTS (
+                SELECT 1 FROM javdb_listing_items i WHERE i.task_id=t.id))
+                ORDER BY created_at DESC,id DESC LIMIT 1""", (javdb_listing.KIND,)).fetchone()
+            count = conn.execute('SELECT COUNT(DISTINCT code) FROM javdb_listing_items').fetchone()[0]
+            pending_codes = {row[0] for row in conn.execute(
+                'SELECT DISTINCT code FROM javdb_listing_items WHERE tags_json IS NULL')}
+            pending = len(pending_codes - javdb_listing.local_codes(conn)) if pending_codes else 0
+        return jsonify(items=[listing_summary(row) for row in rows], total=total, active=bool(active),
+                       active_id=active['id'] if active else None, latest=listing_summary(latest) if latest else None,
+                       collected_total=count, metadata_pending=pending)
 
     @api.post('/api/tasks/javdb-listing')
     def start_listing():
         runtime = store()
         with runtime.connect(write=True) as conn:
-            active = conn.execute("""SELECT id FROM scrape_tasks WHERE kind=? AND deleted=0
-                AND cancel_requested=0 AND status IN (?, ?, ?, ?) LIMIT 1""",
-                (javdb_listing.KIND, *javdb_listing.ACTIVE)).fetchone()
+            active = javdb_listing.active_task(conn)
             if active:
                 return jsonify(id=active['id']), 202
-            task_id = runtime.submit(javdb_listing.KIND, priority=-100, connection=conn)
+            task_id = javdb_listing.submit(runtime, conn, 'manual')
         ensure_worker()
         return jsonify(id=task_id), 202
+
+    @api.route('/api/tasks/javdb-listing/schedule', methods=['GET', 'POST'])
+    def listing_schedule():
+        runtime = store()
+        if request.method == 'POST':
+            values = request.get_json(silent=True)
+            if (not isinstance(values, dict) or not isinstance(values.get('enabled'), bool)
+                    or not isinstance(values.get('time'), str)
+                    or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', values['time'], flags=re.ASCII)):
+                raise ValueError('请选择有效的每日采集时间')
+            settings = runtime.set_settings(javdb_listing.SCHEDULE, {
+                'enabled': values['enabled'], 'time': values['time'], 'saved_at': time.time(),
+            })
+            if settings['enabled']:
+                ensure_worker()
+        else:
+            settings = runtime.settings(javdb_listing.SCHEDULE)
+        return jsonify(enabled=settings['enabled'], time=settings['time'], timezone=BROWSER_TIMEZONE.key)
+
+    @api.get('/api/tasks/javdb-listing/results')
+    def listing_results():
+        limit = min(100, max(1, request.args.get('limit', 25, type=int)))
+        offset = max(0, request.args.get('offset', 0, type=int))
+        with store().connect() as conn:
+            items = javdb_listing.results(conn, None, request.args)
+        return jsonify(items=items[offset:offset + limit], result_total=len(items))
 
     @api.post('/api/tasks/<task_id>/<action>')
     def control_listing(task_id, action):
@@ -346,17 +380,27 @@ def register_admin_api(app):
         task['result'] = json.loads(task['result_json']) if task['result_json'] else None
         return jsonify(task)
 
+    @api.delete('/api/tasks/<task_id>')
     @api.delete('/api/admin/workflows/<task_id>')
     def delete_workflow(task_id):
         runtime = store()
+        listing_only = request.path.startswith('/api/tasks/')
+        keep_data = True
+        if listing_only:
+            values = request.get_json(silent=True)
+            if not isinstance(values, dict) or not isinstance(values.get('keep_data'), bool):
+                raise ValueError('请选择是否保留采集数据')
+            keep_data = values['keep_data']
         with runtime.connect(write=True) as conn:
-            task = conn.execute('SELECT status FROM scrape_tasks WHERE id=? AND deleted=0', (task_id,)).fetchone()
-            if not task:
+            task = conn.execute('SELECT status,kind FROM scrape_tasks WHERE id=? AND deleted=0', (task_id,)).fetchone()
+            if not task or (listing_only and task['kind'] != javdb_listing.KIND):
                 return jsonify(error='任务不存在'), 404
             if task['status'] not in javdb_listing.TERMINAL:
                 return jsonify(error='请先停止任务'), 409
             if conn.execute("SELECT 1 FROM dependency_commands WHERE task_id=? AND status='RUNNING'", (task_id,)).fetchone():
                 return jsonify(error='请等待正在执行的操作停止'), 409
+            if not keep_data:
+                conn.execute('DELETE FROM javdb_listing_items WHERE task_id=?', (task_id,))
             conn.execute('UPDATE scrape_tasks SET deleted=1 WHERE id=?', (task_id,))
         runtime.audit('delete', task_id)
         return jsonify(ok=True)

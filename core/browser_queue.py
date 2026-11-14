@@ -24,12 +24,16 @@ class RuntimeStore(QueueStore):
             event_columns = {row['name'] for row in conn.execute('PRAGMA table_info(scrape_events)')}
             if 'execution_id' not in event_columns:
                 conn.execute('ALTER TABLE scrape_events ADD COLUMN execution_id TEXT')
-            conn.executescript('''
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS javdb_listing_items (
                     task_id TEXT NOT NULL, code TEXT NOT NULL, page INTEGER NOT NULL,
                     title TEXT NOT NULL, actors_json TEXT NOT NULL, url TEXT NOT NULL,
-                    PRIMARY KEY(task_id, code)
-                );
+                    tags_json TEXT, PRIMARY KEY(task_id, code)
+                )
+            ''')
+            if 'tags_json' not in {row['name'] for row in conn.execute('PRAGMA table_info(javdb_listing_items)')}:
+                conn.execute('ALTER TABLE javdb_listing_items ADD COLUMN tags_json TEXT')
+            conn.executescript('''
                 CREATE INDEX IF NOT EXISTS javdb_listing_code ON javdb_listing_items(code);
                 CREATE TABLE IF NOT EXISTS service_state (
                     name TEXT PRIMARY KEY, desired TEXT NOT NULL DEFAULT 'stop',
@@ -68,6 +72,8 @@ class RuntimeStore(QueueStore):
                 );
                 INSERT OR IGNORE INTO scrape_settings(key,value_json) VALUES
                     ('browser', '{"interval_min":32.5,"interval_max":107.5,"backoff_base":60,"backoff_max":900,"next_allowed_at":0,"failures":0}');
+                INSERT OR IGNORE INTO scrape_settings(key,value_json) VALUES
+                    ('javdb_listing_schedule', '{"enabled":false,"time":"03:00"}');
                 UPDATE scrape_tasks SET status='SUSPENDED',owner=NULL,error='LTX 功能已关闭'
                     WHERE kind IN ('ltx','ltx_preview') AND status IN ('PENDING','RUNNING','WAITING');
             ''')

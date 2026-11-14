@@ -25,6 +25,7 @@ class Consumer:
         self.pool = executor or ThreadPoolExecutor(max_workers=2, thread_name_prefix='external-dependency')
         self.futures = {}
         self.terminate = threading.Event()
+        self.next_listing_schedule_check = 0
 
     def emit(self, task, step, status, message, **extra):
         self.store.event(task['id'], dict(step=step, status=status, message=message, **extra), execution_id=task['execution_id'])
@@ -105,6 +106,22 @@ class Consumer:
 
     def advance_listing(self, task, state):
         if state.get('stop_reason'):
+            if 'response' in state:
+                result = self.response(state)
+                code = state.pop('current_code')
+
+                def apply_detail(conn):
+                    if result is not None:
+                        javdb_listing.save_detail(conn, code, result)
+
+                self.commit_phase(task, state, apply_detail)
+                return
+            with self.store.connect() as conn:
+                item = javdb_listing.pending_detail(conn, task['id'])
+            if item:
+                state.update(phase='detail', index=state.get('index', 0) + 1, current_code=item['code'])
+                self.request(task, state, 'browser', 'javdb_listing_detail', {'url': item['url'], 'code': item['code']})
+                return
             state['result'] = {key: state[key] for key in ('pages', 'collected', 'stop_reason')}
             self.finish(task, state)
             return
@@ -399,6 +416,9 @@ class Consumer:
         self.recover_uploads()
         if self.store.service('consumer')['paused']:
             return False
+        if time.monotonic() >= self.next_listing_schedule_check:
+            self.next_listing_schedule_check = time.monotonic() + 15
+            javdb_listing.schedule_due(self.store)
         progressed = self.store.consume_result()
         if len(self.futures) < 2:
             command = self.store.claim_command('dependency', self.owner)

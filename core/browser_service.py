@@ -99,6 +99,24 @@ class Browser:
         from core.scraper import scrape_actor_info
         return self.checked(scrape_actor_info(self.live_page(), name))
 
+    def collect_listing_detail(self, url):
+        from playwright.sync_api import TimeoutError
+        from core.javdb_listing import read_detail, valid_url
+
+        if not valid_url(url, detail=True):
+            raise ValueError('无效的 JavDB 详情链接')
+        page = self.live_page()
+        page.goto(url, wait_until='domcontentloaded', timeout=30000)
+        self.checked(None)
+        try:
+            page.wait_for_selector('.movie-panel-info .panel-block, input[type="password"]',
+                                   state='attached', timeout=15000)
+        except TimeoutError:
+            self.checked(None)
+            raise
+        self.checked(None)
+        return read_detail(page, url)
+
     def check_login(self):
         from core.scraper import check_login_status
         return self.checked(check_login_status(self.live_page()))
@@ -196,6 +214,13 @@ class BrowserService:
         self.store.service('browser', state='scraping', current_id=command['id'])
         try:
             payload = validate_command(self.store, command)
+            if command['kind'] == 'javdb_listing_detail':
+                from core.javdb_listing import local_codes
+                with self.store.connect() as conn:
+                    in_library = payload['code'] in local_codes(conn)
+                if in_library:
+                    self.store.publish(command, 'DONE', None)
+                    return True
             # Reserve before any network access, so crashes and preemption retain the interval.
             until = self.store.reserve_browser_access(command['kind'], random.uniform(settings['interval_min'], settings['interval_max']))
             if until:
@@ -209,7 +234,11 @@ class BrowserService:
                     from core.scrape_queue import base_code
                     result = self.browser.scrape(base_code(code))
                 elif kind == 'javdb_listing':
+                    self.progress('scraping', f'正在读取 JavDB 列表第 {payload["page"]} 页')
                     result = self.browser.collect_listing_page(payload['page'])
+                elif kind == 'javdb_listing_detail':
+                    self.progress('scraping', f'正在读取 {code} 的女优与标签')
+                    result = self.browser.collect_listing_detail(payload['url'])
                 elif kind == 'actor':
                     result = self.browser.actor(code)
                     if not isinstance(result, dict):

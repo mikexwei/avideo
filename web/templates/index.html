@@ -748,64 +748,118 @@
   <script type="text/x-template" id="tpl-async-tasks">
     <div class="admin-view">
       <div class="page-head"><h1>异步任务</h1></div>
-      <section class="card" aria-labelledby="listing-heading">
-        <h2 id="listing-heading">JavDB 番号采集</h2>
-        <p class="hint">从第一页开始，遇到已采集的番号或末页时停止。跳过每周推荐。</p>
-        <div class="actions">
-          <button type="button" class="ui-button" @click="start" :disabled="busy || active">开始采集</button>
+      <section class="card listing-card" aria-labelledby="listing-heading">
+        <div class="listing-bar">
+          <h2 id="listing-heading">JAV LTX 番号采集</h2>
+          <div class="actions">
+            <button type="button" class="ui-button primary" @click="start" :disabled="busy || active">立即采集</button>
+            <button type="button" class="ui-button" @click="openSchedule" :disabled="busy">定时采集</button>
+          </div>
+        </div>
+        <p class="hint" aria-live="polite">
+          <template v-if="latest">最近采集 {{ formatTime(latest.created_at) }} · {{ triggerLabel(latest.trigger) }} · {{ latest.collected }} 个 · {{ labels[latest.status] || latest.status }} · </template>
+          <template v-else>暂无采集记录 · </template>
+          累计 {{ collectedTotal }} 个<span v-if="pending"> · {{ pending }} 个待补详情</span>
+          <span v-if="schedule.enabled"> · 每日 {{ schedule.time }}（洛杉矶时间）</span>
+        </p>
+        <div v-if="current" class="listing-bar listing-progress">
+          <p class="hint" role="status">{{ progressText(current) }}<span v-if="waitReason"> · {{ waitReason }}</span></p>
+          <div class="actions">
+            <button type="button" class="ui-button" :disabled="busy" @click="control(current.id, current.status === 'PAUSED' ? 'resume' : 'pause')">{{ current.status === 'PAUSED' ? '继续' : '暂停' }}</button>
+            <button type="button" class="ui-button" :disabled="busy" @click="control(current.id, 'stop')">停止</button>
+          </div>
         </div>
         <p v-if="error" class="record-error" role="alert">{{ error }}</p>
-      </section>
-      <section aria-labelledby="listing-history-heading">
-        <h2 id="listing-history-heading">任务记录</h2>
-        <p v-if="!items.length" class="hint">暂无任务记录。</p>
-        <article v-for="item in items" :key="item.id" class="card mt-3">
-          <div class="card-top">
-            <time>{{ new Date(item.created_at * 1000).toLocaleString('zh-CN') }}</time>
-            <span class="pill neutral">{{ labels[item.status] || item.status }}</span>
-          </div>
-          <p>已处理 {{ item.pages }} 页，采集 {{ item.collected }} 个番号<span v-if="item.current_page"> · 当前第 {{ item.current_page }} 页</span></p>
-          <p v-if="item.stop_reason" class="hint">{{ item.stop_reason === 'history' ? '遇到历史番号' : '已到末页' }}</p>
-          <p v-if="item.error" class="record-error">{{ item.error }}</p>
+        <div class="listing-bar listing-table-bar">
+          <p class="hint" role="status">{{ selected ? '本次采集结果' : '全部采集结果' }} · {{ loading ? '正在读取…' : resultTotal + ' 个番号' }}</p>
           <div class="actions">
-            <button type="button" class="ui-button" :aria-expanded="selected === item.id"
-              @click="select(selected === item.id ? '' : item.id)">{{ selected === item.id ? '收起结果' : '查看结果' }}</button>
-            <template v-if="running.includes(item.status)">
-              <button type="button" class="ui-button" :disabled="busy"
-                @click="control(item.id, item.status === 'PAUSED' ? 'resume' : 'pause')">{{ item.status === 'PAUSED' ? '继续' : '暂停' }}</button>
-              <button type="button" class="ui-button" :disabled="busy" @click="control(item.id, 'stop')">停止</button>
-            </template>
+            <button v-if="selected" type="button" class="ui-button" @click="select('')">查看全部</button>
+            <button type="button" class="ui-button" :disabled="loading" @click="refresh()">刷新本地数据</button>
           </div>
-          <div v-if="selected === item.id" class="mt-4">
-            <p v-if="waitReason" class="hint" role="status">{{ waitReason }}</p>
-            <form class="flex flex-wrap items-end gap-3 my-3" @submit.prevent="applyFilters">
-              <label>番号或标题 <input v-model="filters.q"></label>
-              <label>是否入库 <select v-model="filters.in_db"><option value="">全部</option><option value="yes">已入库</option><option value="no">未入库</option></select></label>
-              <label>DB 字幕 <select v-model="filters.subtitle"><option value="">全部</option><option v-for="value in subtitles" :key="value">{{ value }}</option></select></label>
-              <label>DB 无码 <select v-model="filters.uncensored"><option value="">全部</option><option v-for="value in uncensored" :key="value">{{ value }}</option></select></label>
-              <label>女优 <input v-model="filters.actor"></label>
-              <button type="submit" class="ui-button" :disabled="loading">筛选</button>
-              <button type="button" class="ui-button" :disabled="loading" @click="refresh()">刷新本地数据</button>
-            </form>
-            <p class="hint" role="status">{{ loading ? '正在读取结果…' : '匹配 ' + resultTotal + ' 个番号' }}</p>
-            <div v-if="rows.length" class="overflow-x-auto">
-              <table class="w-full text-left">
-                <thead><tr><th scope="col" class="p-2">番号</th><th scope="col" class="p-2">是否在 DB 中</th><th scope="col" class="p-2">DB 字幕</th><th scope="col" class="p-2">DB 无码</th><th scope="col" class="p-2">女优名</th><th scope="col" class="p-2">标题</th></tr></thead>
-                <tbody>
-                  <tr v-for="row in rows" :key="row.code" class="border-t border-gray-700">
-                    <td class="p-2"><a :href="row.url" target="_blank" rel="noopener noreferrer" class="underline">{{ row.code }}</a></td>
-                    <td class="p-2">{{ row.in_db ? '是' : '否' }}</td>
-                    <td class="p-2"><div v-for="v in row.versions" :key="v.code">{{ row.versions.length > 1 ? v.code + ' ' : '' }}{{ v.subtitle }}</div><span v-if="!row.in_db">—</span></td>
-                    <td class="p-2"><div v-for="v in row.versions" :key="v.code">{{ row.versions.length > 1 ? v.code + ' ' : '' }}{{ v.uncensored.join('、') }}</div><span v-if="!row.in_db">—</span></td>
-                    <td class="p-2">{{ row.actors.join('、') || '—' }}</td><td class="p-2">{{ row.title || '—' }}</td>
-                  </tr>
-                </tbody>
-              </table>
+        </div>
+        <form @submit.prevent="applyFilters">
+          <div class="listing-table-scroll" tabindex="0" role="region" aria-label="采集结果表">
+            <table class="listing-table">
+              <thead>
+                <tr>
+                  <th v-for="col in columns" :key="col.key" scope="col" :class="'listing-col-' + col.key">
+                    <div class="listing-filter">
+                      <label :for="'listing-filter-' + col.key">{{ col.label }}</label>
+                      <div class="listing-filter-controls">
+                        <select v-if="col.options" :id="'listing-filter-' + col.key" v-model="filters[col.key]" @change="applyFilters">
+                          <option value="">全部</option>
+                          <option v-for="option in col.options" :key="option.value" :value="option.value">{{ option.label }}</option>
+                        </select>
+                        <input v-else :id="'listing-filter-' + col.key" v-model="filters[col.key]" type="search" placeholder="筛选"
+                          @change="applyFilters" @keydown.enter.prevent="applyFilters">
+                        <button type="button" class="listing-invert" :aria-label="col.label + '反选'"
+                          :aria-pressed="Boolean(filters['exclude_' + col.key])" :disabled="!filters[col.key]"
+                          @click="invert(col.key)">反选</button>
+                      </div>
+                    </div>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in rows" :key="row.code">
+                  <td><a :href="row.url" target="_blank" rel="noopener noreferrer">{{ row.code }}</a></td>
+                  <td><span class="pill" :class="row.in_db ? 'mint' : 'neutral'">{{ row.in_db ? '在库' : '未入库' }}</span></td>
+                  <td><div v-for="v in row.versions" :key="v.code"><small v-if="row.versions.length > 1">{{ v.code }}</small>{{ v.subtitle }}</div><span v-if="!row.in_db">—</span></td>
+                  <td><div v-for="v in row.versions" :key="v.code"><small v-if="row.versions.length > 1">{{ v.code }}</small>{{ v.uncensored.join('、') }}</div><span v-if="!row.in_db">—</span></td>
+                  <td>{{ row.actors.join('、') || (row.metadata_pending ? '待采集' : '—') }}</td>
+                  <td>{{ row.title || '—' }}</td>
+                  <td><div v-if="row.tags.length" class="listing-tags"><span v-for="tag in row.tags" :key="tag">{{ tag }}</span></div><span v-else>{{ row.metadata_pending ? '待采集' : '—' }}</span></td>
+                </tr>
+                <tr v-if="!rows.length"><td colspan="7" class="listing-empty">{{ loading ? '正在读取…' : '没有匹配的采集结果' }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </form>
+        <pagination :page="page" :total="resultTotal" :limit="25" @change="refresh" />
+
+        <details class="listing-history" :open="Boolean(selected)">
+          <summary>任务历史 <span class="muted">{{ total }} 条</span></summary>
+          <p v-if="!items.length" class="hint">暂无任务记录。</p>
+          <div v-for="item in items" :key="item.id" class="listing-history-row">
+            <div>
+              <span class="pill neutral">{{ labels[item.status] || item.status }}</span>
+              <span>{{ formatTime(item.created_at) }} · {{ triggerLabel(item.trigger) }} · {{ progressText(item) }}</span>
+              <p v-if="item.error" class="record-error">{{ item.error }}</p>
             </div>
-            <pagination :page="page" :total="resultTotal" :limit="25" @change="refresh" />
+            <div class="actions">
+              <button type="button" class="ui-button" :aria-pressed="selected === item.id" @click="select(selected === item.id ? '' : item.id)">查看结果</button>
+              <button v-if="!running.includes(item.status)" type="button" class="ui-button" :disabled="busy" @click="openDelete(item)">删除</button>
+            </div>
           </div>
-        </article>
-        <pagination :page="historyPage" :total="total" :limit="20" @change="changeHistory" />
+          <pagination :page="historyPage" :total="total" :limit="20" @change="changeHistory" />
+        </details>
+
+        <dialog ref="scheduleDialog" class="listing-dialog" aria-labelledby="listing-schedule-heading">
+          <form @submit.prevent="saveSchedule">
+            <h3 id="listing-schedule-heading">定时采集</h3>
+            <label class="listing-checkbox"><input v-model="scheduleDraft.enabled" type="checkbox"> 启用每日采集</label>
+            <label class="listing-time">采集时间 <input v-model="scheduleDraft.time" type="time" required> <span class="hint">洛杉矶时间</span></label>
+            <p v-if="dialogError" class="record-error" role="alert">{{ dialogError }}</p>
+            <div class="actions">
+              <button type="button" class="ui-button" @click="scheduleDialog.close()">取消</button>
+              <button type="submit" class="ui-button primary" :disabled="busy">保存</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog ref="deleteDialog" class="listing-dialog" aria-labelledby="listing-delete-heading">
+          <form @submit.prevent="deleteTask">
+            <h3 id="listing-delete-heading">删除任务历史</h3>
+            <p>{{ deletion.item ? formatTime(deletion.item.created_at) : '' }}的采集任务</p>
+            <label class="listing-checkbox"><input v-model="deletion.keep" type="checkbox"> 保留采集数据</label>
+            <p class="hint">{{ deletion.keep ? '这次采集的数据会保留在结果表中。' : '这次采集的数据会一并删除。其他任务采集的同番号数据仍会保留。' }}</p>
+            <p v-if="dialogError" class="record-error" role="alert">{{ dialogError }}</p>
+            <div class="actions">
+              <button type="button" class="ui-button" @click="deleteDialog.close()">取消</button>
+              <button type="submit" class="ui-button bg-red-800" :disabled="busy">删除任务</button>
+            </div>
+          </form>
+        </dialog>
       </section>
     </div>
   </script>
@@ -4525,84 +4579,98 @@
         const route = VueRouter.useRoute(), router = VueRouter.useRouter();
         const selected = computed(() => String(route.query.task || ''));
         const items = ref([]), rows = ref([]), active = ref(false), error = ref('');
+        const latest = ref(null), current = ref(null), collectedTotal = ref(0), pending = ref(0);
         const page = ref(1), resultTotal = ref(0), historyPage = ref(1), total = ref(0);
         const loading = ref(false), busy = ref(false), waitReason = ref('');
-        const filters = ref({q:'', in_db:'', subtitle:'', uncensored:'', actor:''});
-        let applied = {...filters.value};
+        const schedule = ref({enabled:false, time:'03:00'}), scheduleDraft = ref({...schedule.value});
+        const scheduleDialog = ref(null), deleteDialog = ref(null), dialogError = ref('');
+        const deletion = ref({item:null, keep:true});
         const running = ['PENDING', 'PREPARING', 'RUNNING', 'WAITING', 'PAUSED'];
         const labels = {PENDING:'排队中', PREPARING:'准备中', RUNNING:'采集中', WAITING:'等待执行',
-          PAUSED:'已暂停', DONE:'已完成', FAILED:'失败', CANCELLED:'已停止', SKIPPED:'已跳过'};
-        const subtitles = [...SUBTITLE_OPTIONS, '未分类'];
-        const uncensored = ['原装无码','无码流出','JAV 无码破解','LADA 无码破解','LTX 无码破解','无码破解','仅番号带 U','无无码标记'];
-        let timer, generation = 0, count = -1;
-
+          PAUSED:'已暂停', DONE:'已完成', FAILED:'失败', CANCELLED:'已停止', SKIPPED:'已跳过', SUSPENDED:'已挂起'};
+        const options = values => values.map(value => ({value, label:value}));
+        const columns = [
+          {key:'code', label:'番号'},
+          {key:'in_db', label:'是否入库', options:[{value:'yes', label:'在库'}, {value:'no', label:'未入库'}]},
+          {key:'subtitle', label:'DB 字幕', options:options([...SUBTITLE_OPTIONS, '未分类'])},
+          {key:'uncensored', label:'DB 无码', options:options(['原装无码','无码流出','JAV 无码破解','LADA 无码破解','LTX 无码破解','无码破解','仅番号带 U','无无码标记'])},
+          {key:'actor', label:'女优'},
+          {key:'title', label:'标题'},
+          {key:'tag', label:'标签'}
+        ];
+        const filters = ref(Object.fromEntries(columns.map(col => [col.key, ''])));
+        let timer, generation = 0, resultVersion = '', loadingTasks = false;
+        const formatTime = timestamp => new Date(timestamp * 1000).toLocaleString('zh-CN', {hour12:false});
+        const triggerLabel = trigger => trigger === 'scheduled' ? '定时触发' : '手动触发';
+        function progressText(item) {
+          const stage = item.current_code ? ' · 补充 ' + item.current_code : item.current_page ? ' · 第 ' + item.current_page + ' 页' : '';
+          return '已处理 ' + item.pages + ' 页 · 采集 ' + item.collected + ' 个' + stage;
+        }
         async function refresh(nextPage = page.value) {
-          const token = ++generation, id = selected.value;
-          if (!id) return;
+          const token = ++generation;
           loading.value = true;
           try {
-            const query = new URLSearchParams({...applied, offset:(nextPage - 1) * 25});
-            const data = await apiFetch('/api/tasks/' + encodeURIComponent(id) + '?' + query);
+            const query = new URLSearchParams({offset:(nextPage - 1) * 25});
+            for (const [key, value] of Object.entries(filters.value)) if (value) query.set(key, value);
+            const path = selected.value ? encodeURIComponent(selected.value) : 'javdb-listing/results';
+            const data = await apiFetch('/api/tasks/' + path + '?' + query);
             if (token !== generation) return;
             if (!data) throw new Error('读取采集结果失败');
+            if (nextPage > 1 && !data.items.length) return refresh(Math.max(1, Math.ceil(data.result_total / 25)));
             rows.value = data.items;
             resultTotal.value = data.result_total;
             page.value = nextPage;
-            count = data.collected;
-            waitReason.value = data.wait_reason;
           } catch (e) {
             if (token === generation) error.value = e.message;
           } finally {
             if (token === generation) loading.value = false;
           }
         }
-        function applyFilters() {
-          applied = {...filters.value};
-          refresh(1);
+        function applyFilters() { return refresh(1); }
+        function invert(key) {
+          const name = 'exclude_' + key;
+          filters.value[name] = filters.value[name] ? '' : '1';
+          applyFilters();
         }
         async function load() {
+          if (loadingTasks) return;
+          loadingTasks = true;
           try {
             const data = await apiFetch('/api/tasks?offset=' + (historyPage.value - 1) * 20);
             if (!data) throw new Error('读取任务失败');
             items.value = data.items;
             total.value = data.total;
+            latest.value = data.latest;
             active.value = data.active;
-            const id = selected.value;
-            if (!id || loading.value) return;
-            const item = items.value.find(task => task.id === id);
-            if (!item) return;
-            if (count !== item.collected) await refresh();
-            else if (running.includes(item.status)) {
-              const status = await apiFetch('/api/tasks/' + encodeURIComponent(id) + '?progress_only=1');
-              if (selected.value === id) waitReason.value = status?.wait_reason || '';
-            } else waitReason.value = '';
+            collectedTotal.value = data.collected_total;
+            pending.value = data.metadata_pending;
+            const version = [data.collected_total, data.metadata_pending, data.latest?.id, data.latest?.collected, data.total].join(':');
+            if (!loading.value && resultVersion !== version) {
+              resultVersion = version;
+              await refresh();
+            }
+            const status = data.active_id ? await apiFetch('/api/tasks/' + data.active_id + '?progress_only=1') : null;
+            current.value = status;
+            waitReason.value = status?.wait_reason || '';
           } catch (e) { error.value = e.message; }
+          finally { loadingTasks = false; }
         }
         function select(id) { return router.replace({query:id ? {task:id} : {}}); }
-        watch(selected, () => {
-          generation++;
-          loading.value = false;
-          rows.value = [];
-          resultTotal.value = 0;
-          waitReason.value = '';
-          count = -1;
-          page.value = 1;
-          if (selected.value) refresh(1);
-        });
+        watch(selected, () => refresh(1));
         function changeHistory(number) { historyPage.value = number; load(); }
         async function start() {
           busy.value = true;
           error.value = '';
           try {
-            const task = await postJson('/api/tasks/javdb-listing', {});
+            await postJson('/api/tasks/javdb-listing', {});
             historyPage.value = 1;
-            await select(task.id);
+            await select('');
             await load();
           } catch (e) { error.value = e.message; }
           finally { busy.value = false; }
         }
         async function control(id, action) {
-          if (action === 'stop' && !window.confirm('停止采集？已保存的页面仍可查看。')) return;
+          if (action === 'stop' && !window.confirm('停止采集？已保存的数据会保留。')) return;
           busy.value = true;
           error.value = '';
           try {
@@ -4611,10 +4679,60 @@
           } catch (e) { error.value = e.message; }
           finally { busy.value = false; }
         }
-        onMounted(() => { load(); timer = setInterval(() => { if (!document.hidden && !busy.value) load(); }, 5000); });
+        async function openSchedule() {
+          busy.value = true;
+          try {
+            const data = await apiFetch('/api/tasks/javdb-listing/schedule');
+            if (!data) throw new Error('读取定时设置失败');
+            schedule.value = data;
+            scheduleDraft.value = {...data};
+            dialogError.value = '';
+            scheduleDialog.value.showModal();
+          } catch (e) { error.value = e.message; }
+          finally { busy.value = false; }
+        }
+        async function saveSchedule() {
+          busy.value = true;
+          dialogError.value = '';
+          try {
+            schedule.value = await postJson('/api/tasks/javdb-listing/schedule', scheduleDraft.value);
+            scheduleDialog.value.close();
+          } catch (e) { dialogError.value = e.message; }
+          finally { busy.value = false; }
+        }
+        function openDelete(item) {
+          deletion.value = {item, keep:true};
+          dialogError.value = '';
+          deleteDialog.value.showModal();
+        }
+        async function deleteTask() {
+          const {item, keep} = deletion.value;
+          busy.value = true;
+          dialogError.value = '';
+          try {
+            const response = await fetch('/api/tasks/' + encodeURIComponent(item.id), {
+              method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keep_data:keep})
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || '删除任务失败');
+            deleteDialog.value.close();
+            if (selected.value === item.id) await select('');
+            if (items.value.length === 1 && historyPage.value > 1) historyPage.value--;
+            await load();
+            await refresh();
+          } catch (e) { dialogError.value = e.message; }
+          finally { busy.value = false; }
+        }
+        onMounted(() => {
+          load();
+          apiFetch('/api/tasks/javdb-listing/schedule').then(data => { if (data) schedule.value = data; }).catch(() => {});
+          timer = setInterval(() => { if (!document.hidden && !busy.value) load(); }, 5000);
+        });
         Vue.onUnmounted(() => { generation++; clearInterval(timer); });
-        return {items, rows, active, error, selected, page, resultTotal, historyPage, total, loading, busy, waitReason,
-          filters, running, labels, subtitles, uncensored, refresh, applyFilters, select, start, control, changeHistory};
+        return {items, rows, active, latest, current, collectedTotal, pending, error, selected, page, resultTotal, historyPage, total,
+          loading, busy, waitReason, filters, running, labels, columns, refresh, applyFilters, invert, select, start, control, changeHistory,
+          formatTime, triggerLabel, progressText, schedule, scheduleDraft, scheduleDialog, openSchedule, saveSchedule,
+          deleteDialog, deletion, openDelete, deleteTask, dialogError};
       }
     };
 

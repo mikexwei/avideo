@@ -150,3 +150,43 @@
   .admin-view .series-score-col { width: 58px; }
   .admin-view .series-member .hint { font-size: 12px; }
 }
+
+.listing-card .listing-bar, .listing-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.listing-card .listing-progress, .listing-card .listing-table-bar { margin-top: 14px; }
+.listing-card :is(.listing-bar, .listing-history-row) .actions { margin-top: 0; }
+.listing-table-scroll { margin-top: 8px; overflow-x: auto; border: 1px solid var(--line); border-radius: 9px; }
+.listing-table { width: 100%; min-width: 1020px; border-collapse: collapse; text-align: left; font-size: 12px; }
+.listing-table th { padding: 9px 10px; background: var(--subtle); vertical-align: top; }
+.listing-table td { padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: top; line-height: 1.5; }
+.listing-table tbody tr:nth-child(even) { background: rgba(127, 127, 127, .06); }
+.listing-table tbody tr:hover { background: rgba(127, 127, 127, .12); }
+.listing-table td:first-child { white-space: nowrap; font-weight: 650; }
+.listing-table a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.listing-table td small { display: block; color: var(--muted); }
+.listing-table .pill { white-space: nowrap; padding: 1px 7px; font-size: 11px; }
+.listing-col-title { width: 23%; }
+.listing-col-tag { width: 19%; }
+.listing-filter label { display: block; margin-bottom: 5px; }
+.listing-filter-controls { display: flex; gap: 4px; }
+.listing-table .listing-filter-controls :is(input, select) { width: 100%; min-width: 56px; min-height: 28px; padding: 3px 5px; font-size: 12px; }
+.listing-table .listing-filter-controls .listing-invert { min-height: 28px; white-space: nowrap; padding: 3px 5px; font-size: 11px; }
+.listing-filter-controls .listing-invert[aria-pressed="true"] { background: #402c19; color: #ffce92; border-color: #b68450; }
+.listing-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+.listing-tags span { padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; }
+.listing-empty { text-align: center; color: var(--muted); }
+.listing-history { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; font-size: var(--text-small); }
+.listing-history summary { cursor: pointer; }
+.listing-history summary span { margin-left: 6px; }
+.listing-history-row { border-bottom: 1px solid var(--line); padding: 9px 0; }
+.listing-history-row .pill { margin-right: 6px; }
+.listing-dialog { width: min(420px, calc(100% - 32px)); background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
+.listing-dialog::backdrop { background: rgba(0, 0, 0, .65); }
+.listing-dialog .actions { justify-content: flex-end; margin-top: 14px; }
+.listing-checkbox, .listing-time { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.listing-checkbox input { min-height: auto; }
