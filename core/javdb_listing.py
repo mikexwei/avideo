@@ -11,6 +11,7 @@ KIND = 'javdb_listing'
 ACTIVE = ('PREPARING', 'PENDING', 'RUNNING', 'WAITING')
 TERMINAL = ('DONE', 'FAILED', 'SKIPPED', 'CANCELLED', 'SUSPENDED')
 SCHEDULE = 'javdb_listing_schedule'
+FILTER_COLUMNS = ('code', 'in_db', 'subtitle', 'uncensored', 'actor', 'title', 'tag')
 
 
 def active_task(conn):
@@ -238,28 +239,36 @@ def results(conn, task_id, filters):
             WHERE is_ignored=0 AND name_zh IS NOT NULL AND name_zh<>'' ORDER BY id"""):
             translations.setdefault(_actor_name_key(name), zh)
 
-    def matches(key, values, *, exact=False):
-        term = filters.get(key, '').strip().casefold()
-        if not term:
-            return True
-        found = any(term == value.casefold() if exact else term in value.casefold() for value in values)
-        return found != (filters.get('exclude_' + key) == '1')
+    terms = {}
+    for key in (*FILTER_COLUMNS, 'q'):
+        values = filters.getlist(key) if hasattr(filters, 'getlist') else [filters.get(key, '')]
+        terms[key] = {value.strip().casefold() for value in values if value.strip()}
+    terms['in_db'].intersection_update(('yes', 'no'))
+    excluded = {key for key in terms if filters.get('exclude_' + key) == '1'}
+    exact_columns = {key for key in FILTER_COLUMNS if filters.get('exact_' + key) == '1'}
 
-    in_db, subtitle, uncensored = (filters.get(key, '') for key in ('in_db', 'subtitle', 'uncensored'))
+    def matches(key, values):
+        if not terms[key]:
+            return True
+        normalized = {value.casefold() for value in values}
+        if key in exact_columns or key in ('in_db', 'subtitle', 'uncensored'):
+            found = not terms[key].isdisjoint(normalized)
+        else:
+            found = any(term in value for term in terms[key] for value in normalized)
+        return found != (key in excluded)
+
+    paired = terms['subtitle'] and terms['uncensored'] and not excluded.intersection(('subtitle', 'uncensored'))
     output = []
     for item in items:
         versions = list(local.get(item['code'], {}).values())
-        if in_db in ('yes', 'no') and not matches('in_db', ['yes' if versions else 'no'], exact=True):
+        if not matches('in_db', ['yes' if versions else 'no']):
             continue
-        if any(not matches(key, values, exact=True) for key, values in (
+        if any(not matches(key, values) for key, values in (
             ('subtitle', [v['subtitle'] for v in versions]),
             ('uncensored', [tag for v in versions for tag in v['uncensored']]),
         )):
             continue
-        if subtitle and uncensored and all(filters.get('exclude_' + key) != '1' for key in ('subtitle', 'uncensored')) and not any(
-            subtitle == v['subtitle'] and uncensored in v['uncensored']
-            for v in versions
-        ):
+        if paired and not any(matches('subtitle', [v['subtitle']]) and matches('uncensored', v['uncensored']) for v in versions):
             continue
         if versions:
             originals = [name for v in versions for name in v['names']]
@@ -281,3 +290,21 @@ def results(conn, task_id, filters):
                            actors=names, tags=tags, metadata_pending=not versions and item['tags_json'] is None,
                            versions=[{k: v for k, v in version.items() if k not in ('names', 'tags', 'title_zh', 'title_jp')} for version in versions]))
     return output
+
+
+def filter_options(conn, task_id, key):
+    if key not in FILTER_COLUMNS:
+        raise ValueError('未知的筛选列')
+    if key == 'in_db':
+        return ['yes', 'no']
+    values = set()
+    for item in results(conn, task_id, {}):
+        if key == 'subtitle':
+            values.update(v['subtitle'] for v in item['versions'])
+        elif key == 'uncensored':
+            values.update(tag for v in item['versions'] for tag in v['uncensored'])
+        elif key in ('actor', 'tag'):
+            values.update(item['actors' if key == 'actor' else 'tags'])
+        elif item[key]:
+            values.add(item[key])
+    return sorted(values, key=str.casefold)

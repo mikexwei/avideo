@@ -99,6 +99,8 @@ def register_admin_api(app):
         limit = min(100, max(1, request.args.get('limit', 25, type=int)))
         offset = max(0, request.args.get('offset', 0, type=int))
         with store().connect() as conn:
+            if 'filter_options' in request.args:
+                return jsonify(options=javdb_listing.filter_options(conn, None, request.args['filter_options']))
             items = javdb_listing.results(conn, None, request.args)
         return jsonify(items=items[offset:offset + limit], result_total=len(items))
 
@@ -133,6 +135,8 @@ def register_admin_api(app):
         items = []
         if request.args.get('progress_only') != '1':
             with runtime.connect() as conn:
+                if 'filter_options' in request.args:
+                    return jsonify(options=javdb_listing.filter_options(conn, task_id, request.args['filter_options']))
                 items = javdb_listing.results(conn, task_id, request.args)
         limit = min(100, max(1, request.args.get('limit', 25, type=int)))
         offset = max(0, request.args.get('offset', 0, type=int))

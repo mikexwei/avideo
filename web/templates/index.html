@@ -777,23 +777,18 @@
             <button type="button" class="ui-button" :disabled="loading" @click="refresh()">刷新本地数据</button>
           </div>
         </div>
-        <form @submit.prevent="applyFilters">
           <div class="listing-table-scroll" tabindex="0" role="region" aria-label="采集结果表">
             <table class="listing-table">
               <thead>
                 <tr>
                   <th v-for="col in columns" :key="col.key" scope="col" :class="'listing-col-' + col.key">
                     <div class="listing-filter">
-                      <label :for="'listing-filter-' + col.key">{{ col.label }}</label>
+                      <span class="listing-filter-label">{{ col.label }}</span>
                       <div class="listing-filter-controls">
-                        <select v-if="col.options" :id="'listing-filter-' + col.key" v-model="filters[col.key]" @change="applyFilters">
-                          <option value="">全部</option>
-                          <option v-for="option in col.options" :key="option.value" :value="option.value">{{ option.label }}</option>
-                        </select>
-                        <input v-else :id="'listing-filter-' + col.key" v-model="filters[col.key]" type="search" placeholder="筛选"
-                          @change="applyFilters" @keydown.enter.prevent="applyFilters">
+                        <button type="button" class="listing-filter-button" :aria-label="col.label + '筛选'"
+                          aria-haspopup="dialog" @click="openFilter(col)">{{ filters[col.key].length ? '已选 ' + filters[col.key].length : '全部' }}</button>
                         <button type="button" class="listing-invert" :aria-label="col.label + '反选'"
-                          :aria-pressed="Boolean(filters['exclude_' + col.key])" :disabled="!filters[col.key]"
+                          :aria-pressed="Boolean(excluded[col.key])" :disabled="!filters[col.key].length"
                           @click="invert(col.key)">反选</button>
                       </div>
                     </div>
@@ -814,7 +809,6 @@
               </tbody>
             </table>
           </div>
-        </form>
         <pagination :page="page" :total="resultTotal" :limit="25" @change="refresh" />
 
         <details class="listing-history" :open="Boolean(selected)">
@@ -834,6 +828,24 @@
           <pagination :page="historyPage" :total="total" :limit="20" @change="changeHistory" />
         </details>
 
+        <dialog ref="filterDialog" class="listing-dialog" aria-labelledby="listing-filter-heading" @close="closeFilter">
+          <form @submit.prevent="saveFilter">
+            <h3 id="listing-filter-heading">筛选{{ filterColumn?.label }}</h3>
+            <input v-model="filterSearch" class="listing-option-search" type="search" aria-label="搜索筛选项" placeholder="搜索筛选项" autofocus @keydown.enter.prevent>
+            <div class="listing-options" role="group" :aria-label="filterColumn?.label + '筛选项'">
+              <label v-for="value in visibleOptions" :key="value" class="listing-checkbox">
+                <input v-model="filterDraft" type="checkbox" :value="value"> {{ optionLabel(filterColumn.key, value) }}
+              </label>
+              <p v-if="!visibleOptions.length" class="hint" role="status">{{ filterLoading ? '正在读取筛选项…' : '没有匹配的筛选项' }}</p>
+            </div>
+            <p v-if="filterError" class="record-error" role="alert">{{ filterError }}</p>
+            <div class="actions">
+              <button type="button" class="ui-button" :disabled="!filterDraft.length" @click="filterDraft = []">清空</button>
+              <button type="button" class="ui-button" @click="filterDialog.close()">取消</button>
+              <button type="submit" class="ui-button primary">应用（{{ filterDraft.length }}）</button>
+            </div>
+          </form>
+        </dialog>
         <dialog ref="scheduleDialog" class="listing-dialog" aria-labelledby="listing-schedule-heading">
           <form @submit.prevent="saveSchedule">
             <h3 id="listing-schedule-heading">定时采集</h3>
@@ -4588,17 +4600,32 @@
         const running = ['PENDING', 'PREPARING', 'RUNNING', 'WAITING', 'PAUSED'];
         const labels = {PENDING:'排队中', PREPARING:'准备中', RUNNING:'采集中', WAITING:'等待执行',
           PAUSED:'已暂停', DONE:'已完成', FAILED:'失败', CANCELLED:'已停止', SKIPPED:'已跳过', SUSPENDED:'已挂起'};
-        const options = values => values.map(value => ({value, label:value}));
         const columns = [
           {key:'code', label:'番号'},
-          {key:'in_db', label:'是否入库', options:[{value:'yes', label:'在库'}, {value:'no', label:'未入库'}]},
-          {key:'subtitle', label:'DB 字幕', options:options([...SUBTITLE_OPTIONS, '未分类'])},
-          {key:'uncensored', label:'DB 无码', options:options(['原装无码','无码流出','JAV 无码破解','LADA 无码破解','LTX 无码破解','无码破解','仅番号带 U','无无码标记'])},
+          {key:'in_db', label:'是否入库'},
+          {key:'subtitle', label:'DB 字幕'},
+          {key:'uncensored', label:'DB 无码'},
           {key:'actor', label:'女优'},
           {key:'title', label:'标题'},
           {key:'tag', label:'标签'}
         ];
-        const filters = ref(Object.fromEntries(columns.map(col => [col.key, ''])));
+        const filters = ref(Object.fromEntries(columns.map(col => [col.key, []])));
+        const excluded = ref({});
+        const filterDialog = ref(null), filterColumn = ref(null), filterSearch = ref('');
+        const filterOptions = ref([]), filterDraft = ref([]), filterLoading = ref(false), filterError = ref('');
+        let filterGeneration = 0;
+        function optionLabel(key, value) {
+          return key === 'in_db' ? (value === 'yes' ? '在库' : '未入库') : value;
+        }
+        const visibleOptions = computed(() => {
+          if (!filterColumn.value) return [];
+          const search = filterSearch.value.trim().toLowerCase();
+          return [...new Set([...filters.value[filterColumn.value.key], ...filterOptions.value])]
+            .filter(value => optionLabel(filterColumn.value.key, value).toLowerCase().includes(search));
+        });
+        const resultsPath = computed(() => '/api/tasks/' + (
+          selected.value ? encodeURIComponent(selected.value) : 'javdb-listing/results'
+        ));
         let timer, generation = 0, resultVersion = '', loadingTasks = false;
         const formatTime = timestamp => new Date(timestamp * 1000).toLocaleString('zh-CN', {hour12:false});
         const triggerLabel = trigger => trigger === 'scheduled' ? '定时触发' : '手动触发';
@@ -4611,9 +4638,13 @@
           loading.value = true;
           try {
             const query = new URLSearchParams({offset:(nextPage - 1) * 25});
-            for (const [key, value] of Object.entries(filters.value)) if (value) query.set(key, value);
-            const path = selected.value ? encodeURIComponent(selected.value) : 'javdb-listing/results';
-            const data = await apiFetch('/api/tasks/' + path + '?' + query);
+            for (const [key, values] of Object.entries(filters.value)) {
+              if (!values.length) continue;
+              for (const value of values) query.append(key, value);
+              query.set('exact_' + key, '1');
+              if (excluded.value[key]) query.set('exclude_' + key, '1');
+            }
+            const data = await apiFetch(resultsPath.value + '?' + query);
             if (token !== generation) return;
             if (!data) throw new Error('读取采集结果失败');
             if (nextPage > 1 && !data.items.length) return refresh(Math.max(1, Math.ceil(data.result_total / 25)));
@@ -4626,11 +4657,36 @@
             if (token === generation) loading.value = false;
           }
         }
-        function applyFilters() { return refresh(1); }
         function invert(key) {
-          const name = 'exclude_' + key;
-          filters.value[name] = filters.value[name] ? '' : '1';
-          applyFilters();
+          excluded.value[key] = !excluded.value[key];
+          refresh(1);
+        }
+        async function openFilter(col) {
+          const token = ++filterGeneration;
+          filterColumn.value = col;
+          filterSearch.value = '';
+          filterOptions.value = [];
+          filterDraft.value = [...filters.value[col.key]];
+          filterLoading.value = true;
+          filterError.value = '';
+          filterDialog.value.showModal();
+          try {
+            const data = await apiFetch(resultsPath.value + '?' + new URLSearchParams({filter_options:col.key}));
+            if (!data) throw new Error('读取筛选项失败');
+            if (token === filterGeneration) filterOptions.value = data.options;
+          } catch (e) {
+            if (token === filterGeneration) filterError.value = e.message;
+          } finally {
+            if (token === filterGeneration) filterLoading.value = false;
+          }
+        }
+        function closeFilter() { filterGeneration++; }
+        function saveFilter() {
+          const key = filterColumn.value.key;
+          filters.value[key] = [...filterDraft.value];
+          if (!filters.value[key].length) excluded.value[key] = false;
+          filterDialog.value.close();
+          refresh(1);
         }
         async function load() {
           if (loadingTasks) return;
@@ -4728,9 +4784,10 @@
           apiFetch('/api/tasks/javdb-listing/schedule').then(data => { if (data) schedule.value = data; }).catch(() => {});
           timer = setInterval(() => { if (!document.hidden && !busy.value) load(); }, 5000);
         });
-        Vue.onUnmounted(() => { generation++; clearInterval(timer); });
+        Vue.onUnmounted(() => { generation++; closeFilter(); clearInterval(timer); });
         return {items, rows, active, latest, current, collectedTotal, pending, error, selected, page, resultTotal, historyPage, total,
-          loading, busy, waitReason, filters, running, labels, columns, refresh, applyFilters, invert, select, start, control, changeHistory,
+          loading, busy, waitReason, filters, excluded, running, labels, columns, refresh, invert, select, start, control, changeHistory,
+          filterDialog, filterColumn, filterSearch, visibleOptions, filterDraft, filterLoading, filterError, optionLabel, openFilter, closeFilter, saveFilter,
           formatTime, triggerLabel, progressText, schedule, scheduleDraft, scheduleDialog, openSchedule, saveSchedule,
           deleteDialog, deletion, openDelete, deleteTask, dialogError};
       }

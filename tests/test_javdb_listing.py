@@ -97,6 +97,25 @@ def test_collection_checkpoints_history_and_local_refresh(tmp_path):
         assert client.get(url, query_string={'actor': '演员原名', 'in_db': 'yes'}).get_json()['result_total'] == 1
         assert client.get(url, query_string={'subtitle': '硬字幕', 'uncensored': 'LTX 无码破解'}).get_json()['result_total'] == 0
         assert client.get(url, query_string={'subtitle': '外挂 OCR 字幕', 'uncensored': 'LTX 无码破解'}).get_json()['result_total'] == 1
+        results_url = '/api/tasks/javdb-listing/results'
+        selected_codes = [('code', 'ABC-001'), ('code', 'ABC-004'), ('exact_code', '1')]
+        for endpoint in (url, results_url):
+            assert client.get(endpoint, query_string={'filter_options': 'actor'}).get_json() == {
+                'options': ['未知演员', '演员译名'],
+            }
+            assert [r['code'] for r in client.get(endpoint, query_string=selected_codes).get_json()['items']] == [
+                'ABC-001', 'ABC-004',
+            ]
+        inverted = client.get(url, query_string=selected_codes + [
+            ('exclude_code', '1'), ('tag', '类别 A'), ('tag', '其他标签'), ('exact_tag', '1'),
+        ]).get_json()
+        assert [r['code'] for r in inverted['items']] == ['ABC-002']
+        assert client.get(url, query_string=[
+            ('subtitle', '硬字幕'), ('subtitle', '无字幕'), ('uncensored', 'LTX 无码破解'),
+        ]).get_json()['result_total'] == 0
+        assert client.get(url, query_string=[
+            ('subtitle', '硬字幕'), ('subtitle', '外挂 OCR 字幕'), ('uncensored', 'LTX 无码破解'),
+        ]).get_json()['result_total'] == 1
         with store.connect(write=True) as conn:
             conn.execute("UPDATE videos SET title_zh='更新标题' WHERE id=1")
         assert client.get(url, query_string={'q': '更新'}).get_json()['result_total'] == 1
