@@ -4,7 +4,7 @@ import re
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 
 TERMINAL = {'DONE', 'FAILED', 'SKIPPED', 'CANCELLED'}
@@ -234,9 +234,9 @@ class QueueStore:
             if interrupted:
                 conn.execute('UPDATE scrape_tasks SET queued_at=? WHERE id=?', (time.time(), task_id))
 
-    def finish(self, task_id, status, result=None, error=None):
+    def finish(self, task_id, status, result=None, error=None, *, connection=None):
         encoded = json.dumps(result, ensure_ascii=False) if result is not None else None
-        with self.connect(write=True) as conn:
+        with (self.connect(write=True) if connection is None else nullcontext(connection)) as conn:
             row = conn.execute('SELECT * FROM scrape_tasks WHERE id=?', (task_id,)).fetchone()
             if not row or row['status'] != 'RUNNING':
                 return

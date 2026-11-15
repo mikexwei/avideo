@@ -8,6 +8,7 @@ from core.browser_queue import BROWSER_TIMEZONE
 from core.subtitle_policy import VERSION_SUFFIX, stored_subtitle
 
 KIND = 'javdb_listing'
+DETAIL_KIND = 'javdb_listing_detail'
 ACTIVE = ('PREPARING', 'PENDING', 'RUNNING', 'WAITING')
 TERMINAL = ('DONE', 'FAILED', 'SKIPPED', 'CANCELLED', 'SUSPENDED')
 SCHEDULE = 'javdb_listing_schedule'
@@ -17,6 +18,11 @@ FILTER_COLUMNS = ('code', 'in_db', 'subtitle', 'uncensored', 'actor', 'title', '
 def active_task(conn):
     return conn.execute("""SELECT id FROM scrape_tasks WHERE kind=? AND deleted=0 AND cancel_requested=0
         AND status IN (?, ?, ?, ?) LIMIT 1""", (KIND, *ACTIVE)).fetchone()
+
+
+def active_detail(conn):
+    return conn.execute("""SELECT * FROM scrape_tasks WHERE kind=? AND deleted=0 AND cancel_requested=0
+        AND status IN (?, ?, ?, ?) LIMIT 1""", (DETAIL_KIND, *ACTIVE)).fetchone()
 
 
 def submit(runtime, conn, trigger):
@@ -177,11 +183,22 @@ def local_codes(conn):
     return {base_code(row[0]) for row in conn.execute('SELECT DISTINCT code FROM videos WHERE deleted=0')}
 
 
-def pending_detail(conn, task_id):
+def pending_detail(conn, source_id, failed=()):
     local = local_codes(conn)
-    rows = conn.execute("""SELECT i.code, i.url FROM javdb_listing_items i
-        WHERE i.tags_json IS NULL ORDER BY i.task_id=? DESC, i.rowid""", (task_id,))
-    return next((row for row in rows if row['code'] not in local), None)
+    rows = conn.execute("""SELECT i.code, i.url FROM javdb_listing_items i JOIN scrape_tasks t ON t.id=i.task_id
+        WHERE i.tags_json IS NULL AND t.status IN (?, ?, ?, ?, ?)
+        ORDER BY i.task_id=? DESC, i.rowid""", (*TERMINAL, source_id))
+    excluded = local.union(failed)
+    return next((row for row in rows if row['code'] not in excluded), None)
+
+
+def enqueue_details(runtime, conn, source_id, paused=False):
+    if active_detail(conn) or not pending_detail(conn, source_id):
+        return
+    task_id = runtime.submit(DETAIL_KIND, payload={'source_id': source_id}, priority=-100,
+                             connection=conn)
+    if paused:
+        conn.execute('UPDATE scrape_tasks SET paused=1 WHERE id=?', (task_id,))
 
 
 def save_detail(conn, code, result):

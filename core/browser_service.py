@@ -1,13 +1,5 @@
-"""Exclusive browser owner. Business work arrives only through durable commands."""
-import logging
-import random
-import threading
-import time
-import uuid
+"""Execute browser requests with an exclusive Playwright session."""
 from urllib.parse import urlsplit
-
-from core.task_policy import TargetChanged, validate_command
-from core.scraper.video_scraper import ScrapeInterrupted, scrape_control, browser_operation
 
 
 class BrowserBlocked(PermissionError):
@@ -163,139 +155,54 @@ class Browser:
 
 
 class BrowserService:
-    def __init__(self, store, browser=None):
-        self.store = store
-        self.owner = uuid.uuid4().hex
-        self.browser = browser or Browser(self.progress)
-        self.current = None
-        self.terminate = threading.Event()
-        self.session_read_at = float('-inf')
+    """Execute a supplied browser request on the thread that owns Playwright."""
+    def __init__(self, progress, browser=None):
+        self.progress = progress
+        self.browser = browser or Browser(progress)
 
-    def checkpoint(self):
-        if self.terminate.is_set():
-            raise ScrapeInterrupted('浏览器服务退出')
-        if self.current:
-            validate_command(self.store, self.current)
-            # Only yield at scraper checkpoints. Every attempted command reserves cooldown first.
-            with self.store.connect() as conn:
-                urgent = conn.execute("SELECT 1 FROM dependency_commands WHERE service='browser' AND status='PENDING' AND priority>? AND cancel_requested=0 LIMIT 1",
-                                      (self.current['priority'],)).fetchone()
-            if urgent:
-                raise ScrapeInterrupted('让出浏览器给高优先级命令')
+    def execute(self, kind, payload, checkpoint):
+        from core.scraper.video_scraper import scrape_control, browser_operation
 
-    def progress(self, state, message):
-        self.store.service('browser', state=state, message=message)
-        if self.current:
-            self.store.event(self.current['task_id'], {'step': 'scrape', 'status': 'running', 'message': message}, execution_id=self.current['execution_id'])
-        self.checkpoint()
+        self.browser.last_status = None
+        with scrape_control(checkpoint, lambda: False), browser_operation():
+            return self.handlers[kind](self, payload)
 
-    def tick(self):
-        control = self.store.service('browser')
-        settings = self.store.settings('browser')
-        now = time.monotonic()
-        if now - self.session_read_at >= 3:
-            self.session_read_at = now
-            opened, logged_in = self.browser.session_status()
-            session = dict(session_open=opened, session_logged_in=logged_in, session_generation=control['generation'])
-            if any(settings.get(key) != value for key, value in session.items()):
-                self.store.set_settings('browser', session)
-        if time.time() < settings['next_allowed_at']:
-            self.store.service('browser', state='cooling_down', message=settings.get('cooldown_reason', '等待统一冷却结束'), current_id=None)
-            return False
-        if self.store.browser_quota_until():
-            self.store.service('browser', state='hourly_limit', message='本小时访问额度已用尽', current_id=None)
-            return False
-        command = self.store.claim_command('browser', self.owner, control_only=bool(control['paused']))
-        if not command:
-            if not control['paused']:
-                self.store.service('browser', state='idle', current_id=None)
-            return False
-        self.current = command
-        self.store.service('browser', state='scraping', current_id=command['id'])
-        try:
-            payload = validate_command(self.store, command)
-            if command['kind'] == 'javdb_listing_detail':
-                from core.javdb_listing import local_codes
-                with self.store.connect() as conn:
-                    in_library = payload['code'] in local_codes(conn)
-                if in_library:
-                    self.store.publish(command, 'DONE', None)
-                    return True
-            # Reserve before any network access, so crashes and preemption retain the interval.
-            until = self.store.reserve_browser_access(command['kind'], random.uniform(settings['interval_min'], settings['interval_max']))
-            if until:
-                self.store.publish(command, 'INTERRUPTED', error='等待浏览器冷却或小时额度恢复', retry_at=until)
-                return True
-            code = payload.get('code', '')
-            self.browser.last_status = None
-            with scrape_control(self.checkpoint, lambda: False), browser_operation():
-                kind = command['kind']
-                if kind == 'video':
-                    from core.scrape_queue import base_code
-                    result = self.browser.scrape(base_code(code))
-                elif kind == 'javdb_listing':
-                    self.progress('scraping', f'正在读取 JavDB 列表第 {payload["page"]} 页')
-                    result = self.browser.collect_listing_page(payload['page'])
-                elif kind == 'javdb_listing_detail':
-                    self.progress('scraping', f'正在读取 {code} 的女优与标签')
-                    result = self.browser.collect_listing_detail(payload['url'])
-                elif kind == 'actor':
-                    result = self.browser.actor(code)
-                    if not isinstance(result, dict):
-                        result = {'avatar_url': None, 'name_zh': result[1] if result else None}
-                elif kind == 'login_status':
-                    result = self.browser.check_login()
-                elif kind == 'open_login':
-                    result = self.browser.open_login()
-                else:
-                    raise ValueError('浏览器命令不受支持')
-            self.store.publish(command, 'DONE', result)
-            if command['kind'] == 'login_status':
-                self.store.set_settings('browser', {'logged_in': bool(result), 'login_checked_at': time.time()})
-            self.store.set_settings('browser', {'failures': 0})
-        except TargetChanged as exc:
-            self.store.publish(command, 'SKIPPED', error=str(exc))
-        except ScrapeInterrupted as exc:
-            self.store.publish(command, 'INTERRUPTED', error=str(exc), retry_at=0)
-        except PermissionError as exc:
-            self.store.publish(command, 'LOGIN_REQUIRED', error=str(exc), retry_at=0)
-            self.store.set_settings('browser', {'logged_in': False, 'login_checked_at': time.time(), 'session_logged_in': False})
-            self.store.service('browser', paused=1, state='waiting_verification' if isinstance(exc, BrowserBlocked) else 'waiting_login', message=str(exc))
-        except Exception as exc:
-            logging.exception('Browser command %s failed', command['id'])
-            failures = settings['failures'] + 1
-            backoff = min(settings['backoff_max'], settings['backoff_base'] * 2 ** min(failures-1, 20))
-            self.store.set_settings('browser', {'failures': failures, 'next_allowed_at': max(self.store.settings('browser')['next_allowed_at'], time.time() + backoff), 'cooldown_reason': str(exc)})
-            self.store.publish(command, 'FAILED', error=str(exc),
-                               retry_at=time.time() + backoff if command['attempt'] < 3 else None)
-        finally:
-            self.current = None
-        return True
+    def video(self, payload):
+        from core.scrape_queue import base_code
+        return self.browser.scrape(base_code(payload['code']))
 
-    def run(self):
-        self.store.recover_service('browser')
-        self.store.start_browser_access_tracking()
-        refresh_at = time.monotonic() + random.uniform(1200, 2400)
-        try:
-            while not self.terminate.is_set():
-                control = self.store.service('browser')
-                if control['desired'] != 'run' or control['restart_token'] != control['generation']:
-                    break
-                if self.tick():
-                    continue
-                if not control['paused'] and time.monotonic() >= refresh_at:
-                    settings = self.store.settings('browser')
-                    if self.browser.page and time.time() >= settings['next_allowed_at']:
-                        until = self.store.reserve_browser_access('refresh', random.uniform(settings['interval_min'], settings['interval_max']))
-                        if not until:
-                            try:
-                                self.browser.page.reload(wait_until='domcontentloaded', timeout=30000)
-                            except Exception:
-                                logging.exception('Idle page refresh failed')
-                    refresh_at = time.monotonic() + random.uniform(1200, 2400)
-                if control['paused']:
-                    if control['state'] not in ('waiting_login', 'waiting_verification', 'hourly_limit'):
-                        self.store.service('browser', state='paused', current_id=None)
-                self.terminate.wait(0.25)
-        finally:
-            self.browser.close()
+    def actor(self, payload):
+        result = self.browser.actor(payload['code'])
+        if isinstance(result, dict):
+            return result
+        return {'avatar_url': None, 'name_zh': result[1] if result else None}
+
+    def listing_page(self, payload):
+        self.progress('scraping', f'正在读取 JavDB 列表第 {payload["page"]} 页')
+        return self.browser.collect_listing_page(payload['page'])
+
+    def listing_detail(self, payload):
+        self.progress('scraping', f'正在读取 {payload["code"]} 的女优与标签')
+        return self.browser.collect_listing_detail(payload['url'])
+
+    @property
+    def page_open(self):
+        return self.browser.page is not None
+
+    def refresh(self):
+        self.browser.page.reload(wait_until='domcontentloaded', timeout=30000)
+
+    def session_status(self):
+        return self.browser.session_status()
+
+    def close(self):
+        self.browser.close()
+
+    handlers = {
+        'video': video,
+        'actor': actor,
+        'login_status': lambda service, _: service.browser.check_login(),
+        'open_login': lambda service, _: service.browser.open_login(),
+        'javdb_listing': listing_page,
+        'javdb_listing_detail': listing_detail,
+    }

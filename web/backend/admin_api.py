@@ -43,6 +43,21 @@ def register_admin_api(app):
                     pages=state.get('pages', 0), collected=state.get('collected', 0),
                     stop_reason=state.get('stop_reason'))
 
+    def detail_summary(row, browser):
+        state = json.loads(row['checkpoint_json'])
+        status = row['status']
+        wait_reason = None
+        if status in javdb_listing.ACTIVE and row['paused']:
+            status = 'PAUSED'
+        elif status == 'WAITING':
+            if browser['current_id'] and browser['current_id'] == state.get('waiting_command'):
+                status = 'RUNNING'
+            elif browser['state'] in ('hourly_limit', 'cooling_down', 'waiting_login', 'waiting_verification'):
+                wait_reason = browser['message']
+        return dict(id=row['id'], status=status, current_code=state.get('current_code'),
+                    completed=state.get('completed', 0), failed=len(state.get('failed', [])),
+                    error=row['error'], wait_reason=wait_reason)
+
     @api.get('/api/tasks')
     def async_tasks():
         limit = min(100, max(1, request.args.get('limit', 20, type=int)))
@@ -54,6 +69,10 @@ def register_admin_api(app):
                 ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?""",
                 (javdb_listing.KIND, limit, offset)).fetchall()
             active = javdb_listing.active_task(conn)
+            detail = javdb_listing.active_detail(conn) or conn.execute("""SELECT * FROM scrape_tasks
+                WHERE kind=? AND deleted=0 ORDER BY created_at DESC,id DESC LIMIT 1""",
+                (javdb_listing.DETAIL_KIND,)).fetchone()
+            browser = conn.execute("SELECT state,message,current_id FROM service_state WHERE name='browser'").fetchone()
             latest = conn.execute("""SELECT * FROM scrape_tasks t WHERE kind=? AND (deleted=0 OR EXISTS (
                 SELECT 1 FROM javdb_listing_items i WHERE i.task_id=t.id))
                 ORDER BY created_at DESC,id DESC LIMIT 1""", (javdb_listing.KIND,)).fetchone()
@@ -63,7 +82,7 @@ def register_admin_api(app):
             pending = len(pending_codes - javdb_listing.local_codes(conn)) if pending_codes else 0
         return jsonify(items=[listing_summary(row) for row in rows], total=total, active=bool(active),
                        active_id=active['id'] if active else None, latest=listing_summary(latest) if latest else None,
-                       collected_total=count, metadata_pending=pending)
+                       collected_total=count, metadata_pending=pending, detail=detail_summary(detail, browser) if detail else None)
 
     @api.post('/api/tasks/javdb-listing')
     def start_listing():
@@ -108,7 +127,7 @@ def register_admin_api(app):
     def control_listing(task_id, action):
         runtime = store()
         task = runtime.get(task_id)
-        if not task or task['deleted'] or task['kind'] != javdb_listing.KIND:
+        if not task or task['deleted'] or task['kind'] not in (javdb_listing.KIND, javdb_listing.DETAIL_KIND):
             return jsonify(error='任务不存在'), 404
         if action == 'stop':
             runtime.cancel_task(task_id)

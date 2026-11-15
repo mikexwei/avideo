@@ -8,8 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from core import javdb_listing, series_catalog, workflows
+from core.browser_service import BrowserService
 from core.scrape_queue import StoredJob
 from core.task_policy import TargetChanged, is_special_code, matches_video_snapshot, snapshot
+
+DEPENDENCY_KINDS = ('translate', 'short_title', 'series_translate', 'series_report', 'metadata_assets', 'avatar')
+SUBTITLE_KINDS = ('subtitle_cache',)
+RESULT_KINDS = (*BrowserService.handlers, *DEPENDENCY_KINDS, *SUBTITLE_KINDS)
 
 
 def execute_dependency(command):
@@ -106,24 +111,12 @@ class Consumer:
 
     def advance_listing(self, task, state):
         if state.get('stop_reason'):
-            if 'response' in state:
-                result = self.response(state)
-                code = state.pop('current_code')
-
-                def apply_detail(conn):
-                    if result is not None:
-                        javdb_listing.save_detail(conn, code, result)
-
-                self.commit_phase(task, state, apply_detail)
-                return
-            with self.store.connect() as conn:
-                item = javdb_listing.pending_detail(conn, task['id'])
-            if item:
-                state.update(phase='detail', index=state.get('index', 0) + 1, current_code=item['code'])
-                self.request(task, state, 'browser', 'javdb_listing_detail', {'url': item['url'], 'code': item['code']})
-                return
-            state['result'] = {key: state[key] for key in ('pages', 'collected', 'stop_reason')}
-            self.finish(task, state)
+            with self.store.connect(write=True) as conn:
+                if state.get('phase') == 'detail':
+                    self.save_legacy_detail(conn, task, state)
+                self.finish_listing(conn, task, state)
+            if self.store.get(task['id'])['status'] == 'DONE':
+                self.emit(task, 'done', 'done', '番号列表采集完成')
             return
         number = state.get('pages', 0) + 1
         if 'response' not in state:
@@ -139,6 +132,76 @@ class Consumer:
 
         self.commit_phase(task, state, apply)
 
+    def finish_listing(self, conn, task, state):
+        result = {key: state[key] for key in ('pages', 'collected', 'stop_reason')}
+        self.store.finish(task['id'], 'DONE', result, connection=conn)
+        row = conn.execute('SELECT status FROM scrape_tasks WHERE id=?', (task['id'],)).fetchone()
+        if row['status'] == 'DONE':
+            javdb_listing.enqueue_details(self.store, conn, task['id'], task['paused'])
+
+    def migrate_listing_details(self):
+        query = """SELECT * FROM scrape_tasks WHERE kind=? AND status IN (?, ?, ?, ?)
+            AND deleted=0 AND cancel_requested=0 AND json_extract(checkpoint_json,'$.phase')='detail'"""
+        args = (javdb_listing.KIND, *javdb_listing.ACTIVE)
+        with self.store.connect() as conn:
+            if not conn.execute(query, args).fetchone():
+                return
+        with self.store.connect(write=True) as conn:
+            for task in conn.execute(query, args).fetchall():
+                state = json.loads(task['checkpoint_json'])
+                command = conn.execute('SELECT * FROM dependency_commands WHERE id=?',
+                                       (state.pop('waiting_command', None),)).fetchone()
+                if command and command['status'] == 'RUNNING':
+                    continue
+                if command:
+                    response = conn.execute("""SELECT outcome,result_json FROM dependency_results
+                        WHERE command_id=? AND attempt=? AND outcome='DONE'""",
+                        (command['id'], command['attempt'])).fetchone()
+                    if response:
+                        state['response'] = {'outcome': 'DONE', 'result': json.loads(response['result_json'])}
+                    conn.execute("""UPDATE dependency_commands SET status='CANCELLED',cancel_requested=1
+                        WHERE id=? AND status='PENDING'""", (command['id'],))
+                conn.execute("UPDATE scrape_tasks SET status='RUNNING' WHERE id=?", (task['id'],))
+                self.save_legacy_detail(conn, task, state)
+                self.finish_listing(conn, task, state)
+
+    def save_legacy_detail(self, conn, task, state):
+        response = state.pop('response', None)
+        code = state.pop('current_code', None)
+        if code and response and response['outcome'] == 'DONE' and response['result'] is not None:
+            javdb_listing.save_detail(conn, code, response['result'])
+        state['phase'] = 'page'
+        conn.execute("UPDATE scrape_tasks SET checkpoint_json=? WHERE id=? AND status='RUNNING'",
+                     (json.dumps(state, ensure_ascii=False), task['id']))
+
+    def advance_listing_detail(self, task, state, source_id):
+        failed = state.setdefault('failed', [])
+        if 'response' in state:
+            response = state.pop('response')
+            code = state.pop('current_code')
+            result = response['result']
+            if response['outcome'] != 'DONE':
+                failed.append(code)
+                self.emit(task, 'detail', 'error', response['error'] or response['outcome'], code=code)
+            elif result is not None:
+                state['completed'] = state.get('completed', 0) + 1
+
+            def apply(conn):
+                if response['outcome'] == 'DONE' and result is not None:
+                    javdb_listing.save_detail(conn, code, result)
+
+            self.commit_phase(task, state, apply)
+            return
+        with self.store.connect() as conn:
+            item = javdb_listing.pending_detail(conn, source_id, failed)
+        if item:
+            state.update(phase='detail', index=state.get('index', 0) + 1, current_code=item['code'])
+            self.request(task, state, 'browser', javdb_listing.DETAIL_KIND, {'url': item['url'], 'code': item['code']})
+        elif failed:
+            self.store.finish(task['id'], 'FAILED', error=f'{len(failed)} 个番号补录失败')
+        else:
+            self.finish(task, {'result': {'completed': state.get('completed', 0)}})
+
     def advance(self, task):
         payload = json.loads(task['payload_json'])
         state = json.loads(task['checkpoint_json'])
@@ -147,6 +210,9 @@ class Consumer:
         kind = task['kind']
         if kind == javdb_listing.KIND:
             self.advance_listing(task, state)
+            return
+        if kind == javdb_listing.DETAIL_KIND:
+            self.advance_listing_detail(task, state, payload.get('source_id'))
             return
         if kind == 'daily_finalize':
             self.advance_daily(task, state, payload)
@@ -418,12 +484,13 @@ class Consumer:
             return False
         if time.monotonic() >= self.next_listing_schedule_check:
             self.next_listing_schedule_check = time.monotonic() + 15
+            self.migrate_listing_details()
             javdb_listing.schedule_due(self.store)
-        progressed = self.store.consume_result()
+        progressed = self.store.consume_result(kinds=RESULT_KINDS)
         if len(self.futures) < 2:
-            command = self.store.claim_command('dependency', self.owner)
+            command = self.store.claim_command('dependency', self.owner, kinds=DEPENDENCY_KINDS)
             if command is None and not any(job['service'] == 'subtitle' for job in self.futures.values()):
-                command = self.store.claim_command('subtitle', self.owner)
+                command = self.store.claim_command('subtitle', self.owner, kinds=SUBTITLE_KINDS)
             if command:
                 self.futures[self.pool.submit(execute_dependency, command)] = command
                 progressed = True

@@ -160,7 +160,8 @@ class RuntimeStore(QueueStore):
         with self.connect(write=True) as conn:
             row = conn.execute("""SELECT * FROM scrape_tasks WHERE status='PENDING'
                 AND kind NOT IN ('ltx','ltx_preview') AND deleted=0 AND cancel_requested=0 AND paused=0 AND next_run_at<=?
-                ORDER BY forced DESC,priority DESC,queued_at,id LIMIT 1""", (time.time(),)).fetchone()
+                ORDER BY CASE WHEN kind='javdb_listing_detail' THEN 2 WHEN kind='javdb_listing' THEN 0 ELSE 1 END,
+                    forced DESC,priority DESC,queued_at,id LIMIT 1""", (time.time(),)).fetchone()
             if row is None:
                 return None
             execution = row['execution_id'] or uuid.uuid4().hex
@@ -194,13 +195,31 @@ class RuntimeStore(QueueStore):
                          (json.dumps(checkpoint, ensure_ascii=False), task['id']))
         return command['id']
 
-    def claim_command(self, service, owner, control_only=False):
+    def claim_command(self, service, owner, *, kinds, control_only=False):
+        kinds = tuple(kinds)
+        if not kinds:
+            return None
+        now = time.time()
+        placeholders = ','.join('?' for _ in kinds)
         with self.connect(write=True) as conn:
-            row = conn.execute('''SELECT c.* FROM dependency_commands c JOIN scrape_tasks t ON t.id=c.task_id
+            row = conn.execute(f'''SELECT c.* FROM dependency_commands c JOIN scrape_tasks t ON t.id=c.task_id
                 WHERE c.service=? AND c.status='PENDING' AND c.next_run_at<=? AND c.cancel_requested=0
+                AND c.kind IN ({placeholders})
                 AND t.execution_id=c.execution_id AND t.status='WAITING' AND t.cancel_requested=0 AND t.deleted=0 AND t.paused=0
                 AND (?=0 OR c.kind IN ('login_status','open_login'))
-                ORDER BY c.priority DESC,c.created_at,c.id LIMIT 1''', (service, time.time(), int(control_only))).fetchone()
+                AND (c.service<>'browser' OR c.kind IN ('login_status','open_login','javdb_listing') OR NOT EXISTS (
+                    SELECT 1 FROM scrape_tasks listing WHERE listing.kind='javdb_listing'
+                    AND (listing.status IN ('PENDING','RUNNING') OR
+                        (listing.status='WAITING' AND EXISTS (
+                            SELECT 1 FROM dependency_results r
+                            WHERE r.command_id=json_extract(listing.checkpoint_json,'$.waiting_command')
+                            AND r.acknowledged_at IS NULL)))
+                    AND listing.paused=0 AND listing.deleted=0
+                    AND listing.cancel_requested=0 AND listing.next_run_at<=?))
+                ORDER BY CASE WHEN c.service<>'browser' THEN 2
+                    WHEN c.kind IN ('login_status','open_login') THEN 0 WHEN c.kind='javdb_listing' THEN 1
+                    WHEN c.kind='javdb_listing_detail' THEN 3 ELSE 2 END,
+                    c.priority DESC,c.created_at,c.id LIMIT 1''', (service, now, *kinds, int(control_only), now)).fetchone()
             if row is None:
                 return None
             conn.execute("UPDATE dependency_commands SET status='RUNNING',owner=?,attempt=attempt+1,started_at=? WHERE id=?",
@@ -229,11 +248,16 @@ class RuntimeStore(QueueStore):
                              (time.time(), command['id'], command['attempt']))
         return True
 
-    def consume_result(self):
+    def consume_result(self, *, kinds):
         """Acknowledge a result atomically with recording the workflow continuation."""
+        kinds = tuple(kinds)
+        if not kinds:
+            return False
+        placeholders = ','.join('?' for _ in kinds)
         with self.connect(write=True) as conn:
-            row = conn.execute('''SELECT r.*,c.task_id,c.kind FROM dependency_results r
-                JOIN dependency_commands c ON c.id=r.command_id WHERE r.acknowledged_at IS NULL ORDER BY r.id LIMIT 1''').fetchone()
+            row = conn.execute(f'''SELECT r.*,c.task_id,c.kind FROM dependency_results r
+                JOIN dependency_commands c ON c.id=r.command_id WHERE r.acknowledged_at IS NULL
+                AND c.kind IN ({placeholders}) ORDER BY r.id LIMIT 1''', kinds).fetchone()
             if row is None:
                 return False
             task = conn.execute('SELECT * FROM scrape_tasks WHERE id=?', (row['task_id'],)).fetchone()
@@ -280,6 +304,11 @@ class RuntimeStore(QueueStore):
             row = conn.execute('SELECT * FROM scrape_tasks WHERE id=?', (task_id,)).fetchone()
             if not row or row['kind'] in ('ltx', 'ltx_preview'):
                 raise ValueError('任务不可重试')
+            if row['kind'] == 'javdb_listing_detail':
+                from core.javdb_listing import active_detail
+                active = active_detail(conn)
+                if active and active['id'] != task_id:
+                    raise ValueError('已有补录任务在运行')
             checkpoint = json.loads(row['checkpoint_json'])
             if row['status'] == 'DONE' and row['kind'] == 'pipeline_rescrape':
                 codes = [item['code'] for item in checkpoint.get('items', []) if not item['ok']]
@@ -298,6 +327,9 @@ class RuntimeStore(QueueStore):
                 checkpoint.pop('waiting_command', None)
                 if checkpoint.get('phase') in ('direct', 'actor_asset'):
                     checkpoint['phase'] = 'start'
+                if row['kind'] == 'javdb_listing_detail':
+                    checkpoint.pop('failed', None)
+                    checkpoint.pop('current_code', None)
                 conn.execute("""UPDATE scrape_tasks SET status='PENDING',execution_id=?,checkpoint_json=?,cancel_requested=0,paused=0,
                     deleted=0,error=NULL,next_run_at=0,started_at=NULL,attempts=attempts+1,queued_at=? WHERE id=?""",
                     (uuid.uuid4().hex, json.dumps(checkpoint, ensure_ascii=False), time.time(), task_id))

@@ -13,8 +13,9 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from core.browser_queue import BROWSER_TIMEZONE, RuntimeStore
-from core.browser_service import Browser, BrowserService
-from core.event_consumer import Consumer, StoredJob
+from core.browser_service import Browser
+from core.browser_consumer import BrowserConsumer
+from core.event_consumer import Consumer, RESULT_KINDS, StoredJob
 from core.task_policy import snapshot
 from core import series_catalog, workflows
 from dal.db_manager import get_video_by_code, get_videos_by_series, list_all_series_with_count
@@ -54,7 +55,7 @@ class RuntimeTests(unittest.TestCase):
         self.browser.scrape.return_value = {'title_jp': '作品', 'actors': '', 'categories': ''}
         self.browser.check_login.return_value = True
         self.browser.session_status.return_value = (False, None)
-        self.service = BrowserService(self.store, self.browser)
+        self.service = BrowserConsumer(self.store, self.browser)
         for target in ('core.workflows.DB_PATH', 'dal.db_manager.DB_PATH'):
             guard = patch(target, self.path)
             guard.start()
@@ -309,8 +310,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(self.store.publish(current, 'DONE', False))
         reopened = RuntimeStore(self.path)
         reopened.recover_service('consumer')
-        self.assertTrue(self.store.consume_result())
-        self.assertFalse(self.store.consume_result())
+        self.assertFalse(self.store.consume_result(kinds=('actor',)))
+        self.assertTrue(self.store.consume_result(kinds=RESULT_KINDS))
+        self.assertFalse(self.store.consume_result(kinds=RESULT_KINDS))
         self.consumer.tick()
         self.assertEqual(self.store.get(task_id)['status'], 'DONE')
         self.assertTrue(json.loads(self.store.get(task_id)['result_json']))
@@ -320,7 +322,7 @@ class RuntimeTests(unittest.TestCase):
         self.browser.check_login.side_effect = RuntimeError('temporary')
         self.service.tick()
         self.assertEqual(self.store.command(command['id'])['status'], 'PENDING')
-        self.assertFalse(self.store.consume_result())
+        self.assertFalse(self.store.consume_result(kinds=RESULT_KINDS))
         self.assertEqual(self.store.get(task_id)['status'], 'WAITING')
 
     def test_forced_command_obeys_persisted_cooldown_after_restart(self):
@@ -328,7 +330,7 @@ class RuntimeTests(unittest.TestCase):
         self.consumer.tick()
         self.store.set_settings('browser', {'next_allowed_at': time.time() + 60})
         self.assertFalse(self.service.tick())
-        restarted = BrowserService(RuntimeStore(self.path), self.browser)
+        restarted = BrowserConsumer(RuntimeStore(self.path), self.browser)
         self.assertFalse(restarted.tick())
         self.browser.check_login.assert_not_called()
         self.assertEqual(self.store.get(task_id)['status'], 'WAITING')
@@ -383,20 +385,21 @@ class RuntimeTests(unittest.TestCase):
 
     def test_cancelled_task_and_old_execution_result_cannot_resume(self):
         task_id, command = self.dispatch()
-        leased = self.store.claim_command('browser', 'old')
+        leased = self.store.claim_command('browser', 'old', kinds=('login_status', 'open_login'))
         self.store.cancel_task(task_id)
         self.store.retry_task(task_id)
         self.consumer.tick()
         self.store.publish(leased, 'DONE', False)
-        self.store.consume_result()
+        self.store.consume_result(kinds=RESULT_KINDS)
         self.assertEqual(self.store.get(task_id)['status'], 'WAITING')
         self.assertNotEqual(self.store.get(task_id)['execution_id'], command['execution_id'])
 
     def test_concurrent_command_claim_only_has_one_owner(self):
         self.dispatch()
+        self.assertIsNone(self.store.claim_command('browser', 'unregistered', kinds=('actor',)))
         claimed = []
         def claim():
-            row = self.store.claim_command('browser', threading.current_thread().name)
+            row = self.store.claim_command('browser', threading.current_thread().name, kinds=('login_status', 'open_login'))
             if row:
                 claimed.append(row)
         threads = [threading.Thread(target=claim) for _ in range(4)]
@@ -408,18 +411,18 @@ class RuntimeTests(unittest.TestCase):
 
     def test_browser_recovery_preserves_cooldown_and_marks_interrupted_attempt(self):
         task_id, command = self.dispatch()
-        leased = self.store.claim_command('browser', 'dead')
+        leased = self.store.claim_command('browser', 'dead', kinds=('login_status', 'open_login'))
         self.store.set_settings('browser', {'next_allowed_at': time.time() + 50})
         self.store.recover_service('browser')
         self.assertEqual(self.store.command(command['id'])['status'], 'PENDING')
         self.assertFalse(self.store.publish(leased, 'DONE', True))
         self.assertGreater(self.store.settings('browser')['next_allowed_at'], time.time())
-        self.assertFalse(self.store.consume_result())
+        self.assertFalse(self.store.consume_result(kinds=RESULT_KINDS))
         self.assertEqual(self.store.get(task_id)['status'], 'WAITING')
 
     def test_consumer_recovery_leaves_browser_command_running(self):
         self.dispatch()
-        leased = self.store.claim_command('browser', 'browser')
+        leased = self.store.claim_command('browser', 'browser', kinds=('login_status', 'open_login'))
         self.store.recover_service('consumer')
         self.store.recover_service('dependency')
         self.assertEqual(self.store.command(leased['id'])['status'], 'RUNNING')
@@ -428,10 +431,10 @@ class RuntimeTests(unittest.TestCase):
         first, c1 = self.dispatch()
         second = self.store.submit('open_login', forced=True)
         self.consumer.tick()
-        c2 = self.store.claim_command('browser', 'owner')
+        c2 = self.store.claim_command('browser', 'owner', kinds=('login_status', 'open_login'))
         self.assertEqual(c2['task_id'], second)
         self.store.publish(c2, 'DONE', True)
-        self.assertEqual(self.store.claim_command('browser', 'owner')['id'], c1['id'])
+        self.assertEqual(self.store.claim_command('browser', 'owner', kinds=('login_status', 'open_login'))['id'], c1['id'])
 
     def test_workflows_for_same_video_are_serialized(self):
         first, _ = self.dispatch('video', 'RBD-001')
@@ -518,7 +521,7 @@ class RuntimeTests(unittest.TestCase):
     def test_metadata_commit_and_stage_roll_back_together(self):
         task_id, _ = self.dispatch('video', 'RBD-001')
         self.service.tick()
-        self.store.consume_result()
+        self.store.consume_result(kinds=RESULT_KINDS)
         task = self.store.claim_workflow('test')
         original = workflows.update_video_metadata
         def fail(*args, **kwargs):
@@ -545,7 +548,7 @@ class RuntimeTests(unittest.TestCase):
         def fail_after_enqueue(*args, **kwargs):
             original_submit(*args, **kwargs)
             raise RuntimeError('crash before phase commit')
-        self.store.consume_result()
+        self.store.consume_result(kinds=RESULT_KINDS)
         task = self.store.claim_workflow('test')
         with patch.object(self.store, 'submit_actor', side_effect=fail_after_enqueue):
             with self.assertRaises(RuntimeError):
@@ -1183,7 +1186,7 @@ manager.run_service(sys.argv[3])
     def test_cancel_between_result_validation_and_commit_prevents_business_write(self):
         task_id, _ = self.dispatch('video', 'RBD-001')
         self.service.tick()
-        self.store.consume_result()
+        self.store.consume_result(kinds=RESULT_KINDS)
         task = self.store.claim_workflow('test')
         self.consumer.validate_result(task)
         self.store.cancel_task(task_id)

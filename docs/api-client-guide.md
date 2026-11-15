@@ -206,17 +206,17 @@ curl -fsSN "$BASE/api/jobs/$JOB_ID/stream"
 
 | 方法和路径 | 请求 | 响应 |
 | --- | --- | --- |
-| `GET /api/tasks` | `limit` 默认 20，最大 100，`offset` 默认 0 | `{items, total, active, active_id, latest, collected_total, metadata_pending}`。摘要含 `id`、`status`、`created_at`、`finished_at`、`trigger`（`manual` 或 `scheduled`）、`current_page`、`current_code`、`pages`、`collected`、`stop_reason`、`error`。时间戳单位为秒 |
+| `GET /api/tasks` | `limit` 默认 20，最大 100，`offset` 默认 0 | `{items, total, active, active_id, latest, collected_total, metadata_pending, detail}`。摘要含 `id`、`status`、`created_at`、`finished_at`、`trigger`（`manual` 或 `scheduled`）、`current_page`、`current_code`、`pages`、`collected`、`stop_reason`、`error`。时间戳单位为秒。`active` 与 `active_id` 只统计列表任务。`detail` 是补录任务摘要，含 `id`、`status`、`current_code`、`completed`、`failed`、`error`、`wait_reason`，没有任务时为 `null` |
 | `POST /api/tasks/javdb-listing` | 请求体可空 | `202` 和 `{id}`。已有活动采集时返回同一任务 ID |
 | `GET /api/tasks/javdb-listing/schedule` | 无 | `{enabled, time, timezone}`，时区为 `America/Los_Angeles` |
-| `POST /api/tasks/javdb-listing/schedule` | JSON `enabled` 为布尔值，`time` 为 24 小时制的 `HH:MM` | 更新后的定时设置。当天达到所设时间后由 Consumer 提交一次。若有采集任务运行，等它结束后在当天提交 |
+| `POST /api/tasks/javdb-listing/schedule` | JSON `enabled` 为布尔值，`time` 为 24 小时制的 `HH:MM` | 更新后的定时设置。当天达到所设时间后由 Consumer 提交一次。若有列表采集正在运行，等它结束后在当天提交。补录期间仍可触发列表采集 |
 | `GET /api/tasks/javdb-listing/results` | 见下方筛选参数 | `{items, result_total}`，汇总全部保留的结果，同一基础番号只返回一条 |
 | `GET /api/tasks/{task_id}` | 见下方筛选参数。只查询进度时用 `progress_only=1` | 摘要及 `wait_reason`、`result_total`、`items` |
-| `POST /api/tasks/{task_id}/{action}` | `pause`、`resume` 或 `stop` | `{ok}`。暂停允许当前页面读完，继续时从已保存的进度接着处理。停止后保留已保存结果 |
+| `POST /api/tasks/{task_id}/{action}` | `pause`、`resume` 或 `stop`，适用于列表和补录任务 | `{ok}`。暂停允许当前页面读完，继续时从已保存的进度接着处理。停止后保留已保存结果 |
 | `DELETE /api/tasks/{task_id}` | JSON `keep_data` 为布尔值，任务须已结束且无正在执行的命令 | `{ok}`。隐藏任务历史。`keep_data=false` 同时删除该任务的结果；其他任务保存的同番号结果仍可查到 |
 | `DELETE /api/admin/workflows/{task_id}` | 任务已结束，且没有仍在执行的命令 | `{ok}`。软删除后从工作流和异步任务列表隐藏。仍在运行时返回 `409` |
 
-从 JavDB 的 `vft=6&vst=2` 列表第一页开始，跳过每周推荐，按页保存主列表结果。遇到已成功采集且仍保留的番号，或确认没有下一页时停止翻页。已入库的番号使用本地女优和全部标签。未入库的番号通过浏览器队列补采女优及全部分类标签，并用本地女优译名匹配，缺少译名时显示原名。
+从 JavDB 的 `vft=6&vst=2` 列表第一页开始，跳过每周推荐，按页保存主列表结果。遇到已成功采集且仍保留的番号，或确认没有下一页时停止翻页。列表完成后，新发现的未入库番号自动进入补录队列，按基础番号去重。列表请求优先使用浏览器额度，补录只在没有其他可执行浏览器请求时领取。已入库的番号使用本地女优和全部标签。未入库的番号从 JavDB 补采女优及全部分类标签，并用本地女优译名匹配，缺少译名时显示原名。
 
 结果项含 `code`、`url`、`page`、`title`、`actors`、`tags`、`metadata_pending`、`in_db`、`versions`。在库版本含 `code`、`subtitle`、`uncensored`、`actors`。支持 `limit`（默认 25，最大 100）和 `offset`，以及 `q`（番号或标题）、`code`、`title`、`actor`、`tag`、`in_db=yes/no`、`subtitle`、`uncensored`。同一个字段可重复传入多个值，例如 `tag=A&tag=B` 匹配任意一个选中的标签，各列条件同时生效。给该字段加 `exclude_<字段>=1` 可排除命中任一选中值的结果。字幕与无码同时正向筛选时须由同一在库版本满足。`code`、`title`、`actor` 和 `tag` 默认按子串匹配，加 `exact_<字段>=1` 可按完整值匹配。
 

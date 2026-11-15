@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -5,9 +6,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.browser_queue import BROWSER_TIMEZONE, RuntimeStore
-from core.browser_service import BrowserService
+from core.browser_consumer import BrowserConsumer
 from core.event_consumer import Consumer
-from core.javdb_listing import KIND, SCHEDULE, list_url, read_page, save_page, schedule_due
+from core.javdb_listing import DETAIL_KIND, KIND, SCHEDULE, list_url, read_page, save_page, schedule_due
 from tests.test_add_video_api import _init_full_schema
 from web.backend.app import app
 
@@ -57,7 +58,7 @@ def test_collection_checkpoints_history_and_local_refresh(tmp_path):
         {'items': [entry('ABC-004'), entry('ABC-003'), entry('ABC-005')], 'has_next': True},
     ]
     browser.collect_listing_detail.return_value = {'actors': ['演员原名', '未知演员'], 'tags': ['类别 A', '类别 B']}
-    service = BrowserService(store, browser)
+    service = BrowserConsumer(store, browser)
     client = app.test_client()
     with patch('web.backend.admin_api.store', return_value=store), patch('web.backend.admin_api.ensure_worker'), \
          patch.object(store, 'reserve_browser_access', return_value=None):
@@ -76,10 +77,15 @@ def test_collection_checkpoints_history_and_local_refresh(tmp_path):
         assert consumer.tick()
         assert service.tick()
         assert consumer.tick()
+        assert not service.tick()
+        assert consumer.tick()
+        assert store.get(task)['status'] == 'DONE'
+        browser.collect_listing_detail.assert_not_called()
         for _ in range(16):
             consumer.tick()
             service.tick()
-            if store.get(task)['status'] == 'DONE':
+            detail = client.get('/api/tasks').get_json()['detail']
+            if detail['status'] == 'DONE':
                 break
         consumer.pool.shutdown()
         assert [call.args for call in browser.collect_listing_page.call_args_list] == [(1,), (2,)]
@@ -153,3 +159,81 @@ def test_listing_schedule(tmp_path):
     assert not schedule_due(store, now.replace(minute=16))
     assert schedule_due(store, now.replace(day=14))
     assert store.settings(SCHEDULE)['last_day'] == '2026-11-14'
+
+
+def test_schedule_takes_next_quota_slot_and_backfill_resumes_after_other_work(tmp_path):
+    path = tmp_path / 'listing-priority.db'
+    with sqlite3.connect(path) as conn:
+        _init_full_schema(conn)
+    store = RuntimeStore(path)
+    browser = MagicMock()
+    browser.session_status.return_value = (True, True)
+    browser.collect_listing_page.side_effect = [
+        {'items': [entry('NEW-002'), entry('NEW-002')], 'has_next': True},
+        {'items': [entry('OLD-001')], 'has_next': True},
+    ]
+    browser.collect_listing_detail.return_value = {'actors': ['女优'], 'tags': ['类型']}
+    browser.actor.return_value = {}
+    consumer = Consumer(store)
+    service = BrowserConsumer(store, browser)
+    now = datetime(2026, 11, 15, 22, 58, tzinfo=BROWSER_TIMEZONE)
+    hour = now.replace(minute=0).timestamp()
+
+    with patch('time.time', return_value=now.timestamp()) as clock:
+        with store.connect(write=True) as conn:
+            store.submit(KIND, task_id='legacy', connection=conn)
+            save_page(conn, 'legacy', 1, {'items': [entry('OLD-001')], 'has_next': False})
+            conn.execute("INSERT INTO browser_quota VALUES (?,?)", (hour, json.dumps({'limits': [1, *([10] * 21), 1, 10]})))
+            conn.execute("INSERT INTO browser_access(accessed_at,kind) VALUES (?,?)", (hour + 1, 'video'))
+        task = store.claim_workflow('legacy')
+        legacy_command = store.dispatch(task, '2:detail', 'browser', DETAIL_KIND,
+                                        {'url': entry('OLD-001')['url'], 'code': 'OLD-001'},
+                                        {'phase': 'detail', 'pages': 1, 'collected': 1,
+                                         'stop_reason': 'last_page', 'current_code': 'OLD-001'})
+        consumer.tick()
+        assert store.get('legacy')['status'] == 'DONE'
+        assert store.command(legacy_command)['status'] == 'CANCELLED'
+        with store.connect() as conn:
+            queued = conn.execute('SELECT id,status FROM scrape_tasks WHERE kind=?', (DETAIL_KIND,)).fetchone()
+        assert queued['status'] == 'WAITING'
+        assert not service.tick()
+
+        store.set_settings(SCHEDULE, {'enabled': True, 'time': '22:58'})
+        assert schedule_due(store, now)
+        clock.return_value = hour + 3600
+        assert not service.tick()  # Listing workflow exists before its first request is dispatched.
+        assert consumer.tick()
+        assert service.tick()
+        browser.collect_listing_page.assert_called_once_with(1)
+        browser.collect_listing_detail.assert_not_called()
+        clock.return_value += 110
+        assert not service.tick()  # First page result awaits Consumer acknowledgement.
+        assert consumer.tick()
+        assert consumer.tick()
+        assert service.tick()
+        assert consumer.tick()
+        assert consumer.tick()
+        assert browser.collect_listing_page.call_count == 2
+
+        actor_id = store.submit('actor', '演员')
+        assert consumer.tick()
+        clock.return_value += 110
+        assert service.tick()
+        browser.actor.assert_called_once_with('演员')
+        browser.collect_listing_detail.assert_not_called()
+        assert consumer.tick()
+        assert store.get(actor_id)['status'] == 'DONE'
+
+        for _ in range(8):
+            clock.return_value += 110
+            service.tick()
+            consumer.tick()
+            if store.get(queued['id'])['status'] == 'DONE':
+                break
+        consumer.pool.shutdown()
+        assert store.get(queued['id'])['status'] == 'DONE'
+        assert [call.args for call in browser.collect_listing_detail.call_args_list] == [
+            (entry('OLD-001')['url'],), (entry('NEW-002')['url'],),
+        ]
+        with store.connect() as conn:
+            assert conn.execute('SELECT COUNT(*) FROM scrape_tasks WHERE kind=?', (DETAIL_KIND,)).fetchone()[0] == 1

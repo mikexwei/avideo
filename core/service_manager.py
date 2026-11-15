@@ -56,8 +56,8 @@ def run_service(name):
         state = store.service(name)
         store.service(name, generation=state['restart_token'], pid=os.getpid(), heartbeat=time.time(), state='starting', message='')
         if name == 'browser':
-            from core.browser_service import BrowserService
-            service = BrowserService(store)
+            from core.browser_consumer import BrowserConsumer
+            service = BrowserConsumer(store)
         else:
             from core.event_consumer import Consumer
             service = Consumer(store)

@@ -4,7 +4,7 @@ AVideo runs three independently controlled processes.
 
 - Web serves the existing library UI, synchronous local operations, Admin and SSE.
 - Event Consumer advances workflows and commits business data. Browser requests and model calls release the workflow until a durable result arrives.
-- Browser Service alone owns Playwright and the persistent JavDB profile. Every browser operation enters its durable command queue and obeys service cooldown, including highest-priority work and login operations.
+- Browser Consumer claims registered browser commands and manages cooldown, hourly quotas, and retries. In the same process, Browser Service owns Playwright and the persistent JavDB profile and executes requests from Browser Consumer. Login operations use the shared browser budget.
 
 LTX is disabled for this phase. Its HTTP endpoints return 410. Existing pending or running LTX tasks become `SUSPENDED`; completed results and history remain stored.
 
@@ -44,7 +44,7 @@ The old `core.scrape_worker` entry point delegates to the Consumer supervisor. I
 - `workflow_targets` serializes workflows targeting the same film. Synchronous edits remain available; snapshots prevent stale external results from overwriting them.
 - `admin_history` records service controls, settings changes, cancellation, priority changes and retries.
 
-Command insertion and entering the waiting stage commit together. Browser completion and result publication commit together. Consumer acknowledges a result while saving it in the durable workflow continuation. Business metadata/field writes and the next stage then commit in one transaction, so a crash between acknowledgement and business processing can resume from the saved response.
+Each command and result consumer claims only the types it registers. Command insertion and entering the waiting stage commit together. Browser completion and result publication commit together. Consumer acknowledges a result while saving it in the durable workflow continuation. Business metadata/field writes and the next stage then commit in one transaction, so a crash between acknowledgement and business processing can resume from the saved response.
 
 Upload reception, file placement and initial insertion complete synchronously before returning the workflow ID. If Web exits during local preparation, Consumer resumes the saved upload plan after its owning PID disappears. Subsequent stages are browser scrape, metadata, asynchronous image/series work, translation, short title and local rename. Batch rescrapes save each film's result and continue independently.
 

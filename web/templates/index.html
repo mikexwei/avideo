@@ -769,6 +769,19 @@
             <button type="button" class="ui-button" :disabled="busy" @click="control(current.id, 'stop')">停止</button>
           </div>
         </div>
+        <div v-if="detail" class="listing-bar listing-progress">
+          <p class="hint" role="status">
+            补女优和标签 · {{ labels[detail.status] || detail.status }} · 已补 {{ detail.completed }} 个
+            <span v-if="detail.failed"> · {{ detail.failed }} 个失败</span>
+            <span v-if="detail.current_code"> · {{ detail.current_code }}</span>
+            <span v-if="detail.status === 'WAITING'"> · {{ detail.wait_reason || (current && current.status !== 'PAUSED' ? '等待列表采集' : '等待浏览器空闲') }}</span>
+          </p>
+          <div v-if="running.includes(detail.status)" class="actions">
+            <button type="button" class="ui-button" :disabled="busy" :aria-label="detail.status === 'PAUSED' ? '继续补录' : '暂停补录'"
+              @click="control(detail.id, detail.status === 'PAUSED' ? 'resume' : 'pause')">{{ detail.status === 'PAUSED' ? '继续' : '暂停' }}</button>
+            <button type="button" class="ui-button" :disabled="busy" aria-label="停止补录" @click="control(detail.id, 'stop')">停止</button>
+          </div>
+        </div>
         <p v-if="error" class="record-error" role="alert">{{ error }}</p>
         <div class="listing-bar listing-table-bar">
           <p class="hint" role="status">{{ selected ? '本次采集结果' : '全部采集结果' }} · {{ loading ? '正在读取…' : resultTotal + ' 个番号' }}</p>
@@ -4591,7 +4604,7 @@
         const route = VueRouter.useRoute(), router = VueRouter.useRouter();
         const selected = computed(() => String(route.query.task || ''));
         const items = ref([]), rows = ref([]), active = ref(false), error = ref('');
-        const latest = ref(null), current = ref(null), collectedTotal = ref(0), pending = ref(0);
+        const latest = ref(null), current = ref(null), detail = ref(null), collectedTotal = ref(0), pending = ref(0);
         const page = ref(1), resultTotal = ref(0), historyPage = ref(1), total = ref(0);
         const loading = ref(false), busy = ref(false), waitReason = ref('');
         const schedule = ref({enabled:false, time:'03:00'}), scheduleDraft = ref({...schedule.value});
@@ -4700,6 +4713,7 @@
             active.value = data.active;
             collectedTotal.value = data.collected_total;
             pending.value = data.metadata_pending;
+            detail.value = data.detail;
             const version = [data.collected_total, data.metadata_pending, data.latest?.id, data.latest?.collected, data.total].join(':');
             if (!loading.value && resultVersion !== version) {
               resultVersion = version;
@@ -4726,7 +4740,7 @@
           finally { busy.value = false; }
         }
         async function control(id, action) {
-          if (action === 'stop' && !window.confirm('停止采集？已保存的数据会保留。')) return;
+          if (action === 'stop' && !window.confirm(id === detail.value?.id ? '停止补录？已保存的数据会保留。' : '停止采集？已保存的数据会保留。')) return;
           busy.value = true;
           error.value = '';
           try {
@@ -4785,7 +4799,7 @@
           timer = setInterval(() => { if (!document.hidden && !busy.value) load(); }, 5000);
         });
         Vue.onUnmounted(() => { generation++; closeFilter(); clearInterval(timer); });
-        return {items, rows, active, latest, current, collectedTotal, pending, error, selected, page, resultTotal, historyPage, total,
+        return {items, rows, active, latest, current, detail, collectedTotal, pending, error, selected, page, resultTotal, historyPage, total,
           loading, busy, waitReason, filters, excluded, running, labels, columns, refresh, invert, select, start, control, changeHistory,
           filterDialog, filterColumn, filterSearch, visibleOptions, filterDraft, filterLoading, filterError, optionLabel, openFilter, closeFilter, saveFilter,
           formatTime, triggerLabel, progressText, schedule, scheduleDraft, scheduleDialog, openSchedule, saveSchedule,
