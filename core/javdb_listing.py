@@ -207,6 +207,8 @@ def save_detail(conn, code, result):
 
 
 def local_versions(conn, codes):
+    from dal.db_manager import _to_simplified
+
     versions = {}
     for row in conn.execute('SELECT id,code,title_zh,title_jp FROM videos WHERE deleted=0 ORDER BY id'):
         key = base_code(row['code'])
@@ -226,7 +228,7 @@ def local_versions(conn, codes):
         JOIN video_actor_link l ON l.video_id=v.id JOIN actors a ON a.id=l.actor_id WHERE v.deleted=0 AND a.is_ignored=0"""):
         key = base_code(code)
         if key in versions:
-            versions[key][code]['actors'].add(zh or name)
+            versions[key][code]['actors'].add(_to_simplified(zh.strip()) if zh and zh.strip() else name)
             versions[key][code]['names'].update(n for n in (name, zh) if n)
     for group in versions.values():
         for item in group.values():
@@ -248,13 +250,20 @@ def results(conn, task_id, filters):
     else:
         items = list(conn.execute('SELECT * FROM javdb_listing_items WHERE task_id=? ORDER BY rowid', (task_id,)))
     local = local_versions(conn, {item['code'] for item in items}) if items else {}
-    from dal.db_manager import _actor_name_key
+    from dal.db_manager import _actor_name_key, _to_simplified
 
     translations = {}
+    tag_names = {}
     if items:
         for name, zh in conn.execute("""SELECT name,name_zh FROM actors
             WHERE is_ignored=0 AND name_zh IS NOT NULL AND name_zh<>'' ORDER BY id"""):
-            translations.setdefault(_actor_name_key(name), zh)
+            translated = _to_simplified(zh.strip())
+            if translated:
+                for alias in (name, zh):
+                    translations.setdefault(_actor_name_key(alias), translated)
+        for name, in conn.execute('SELECT name FROM tags ORDER BY id'):
+            simplified = _to_simplified(name.strip())
+            tag_names.setdefault(simplified, simplified)
 
     terms = {}
     for key in (*FILTER_COLUMNS, 'q'):
@@ -295,13 +304,15 @@ def results(conn, task_id, filters):
             originals = json.loads(item['actors_json'])
             names = list(dict.fromkeys(translations.get(_actor_name_key(name), name) for name in originals))
             tags = json.loads(item['tags_json'] or '[]')
+        original_tags = tags
+        tags = list(dict.fromkeys(tag_names.get(_to_simplified(tag.strip()), tag) for tag in original_tags))
         if not matches('actor', names + originals):
             continue
         title = next((v['title_zh'] for v in versions if v['title_zh']), None) or (
             next((v['title_jp'] for v in versions if v['title_jp']), None) or item['title']
         )
         if not (matches('q', [item['code'], title, item['title']]) and matches('code', [item['code']])
-                and matches('title', [title, item['title']]) and matches('tag', tags)):
+                and matches('title', [title, item['title']]) and matches('tag', tags + original_tags)):
             continue
         output.append(dict(code=item['code'], url=item['url'], page=item['page'], in_db=bool(versions), title=title,
                            actors=names, tags=tags, metadata_pending=not versions and item['tags_json'] is None,

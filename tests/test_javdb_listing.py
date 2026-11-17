@@ -33,6 +33,45 @@ def test_read_page_distinguishes_last_page_from_parse_failure():
         read_page(page, 1)
 
 
+def test_localized_names_apply_to_history_filters_and_local_refresh(tmp_path):
+    path = tmp_path / 'listing-names.db'
+    with sqlite3.connect(path) as conn:
+        _init_full_schema(conn)
+        conn.executescript("""
+            INSERT INTO actors(name,name_zh) VALUES
+                ('羽生アリサ','羽生亞梨沙'), ('櫻美雪','櫻美雪'), ('原名のみ','');
+            INSERT INTO tags(name) VALUES ('单体作品'), ('已婚妇女');
+        """)
+    runtime = RuntimeStore(path)
+    with runtime.connect(write=True) as conn:
+        runtime.submit(KIND, task_id='names', connection=conn)
+        save_page(conn, 'names', 1, {'items': [entry('TEST-001')], 'has_next': False})
+        conn.execute("""UPDATE javdb_listing_items SET actors_json=?,tags_json=?""", (
+            json.dumps(['羽生アリサ', '羽生亞梨沙', '樱美雪', '原名のみ', '未知の女優']),
+            json.dumps(['單體作品', '单体作品', '已婚婦女', '未登録タグ']),
+        ))
+    client = app.test_client()
+    with patch('web.backend.admin_api.store', return_value=runtime):
+        for endpoint in ('/api/tasks/names', '/api/tasks/javdb-listing/results'):
+            row = client.get(endpoint).get_json()['items'][0]
+            assert row['actors'] == ['羽生亚梨沙', '樱美雪', '原名のみ', '未知の女優']
+            assert row['tags'] == ['单体作品', '已婚妇女', '未登録タグ']
+            assert set(client.get(endpoint, query_string={'filter_options': 'tag'}).get_json()['options']) == set(row['tags'])
+            for filters in (
+                {'actor': '羽生亚梨沙', 'exact_actor': '1'},
+                {'actor': '羽生アリサ'},
+                {'tag': '单体作品', 'exact_tag': '1'},
+                {'tag': '單體作品'},
+            ):
+                assert client.get(endpoint, query_string=filters).get_json()['result_total'] == 1
+            assert client.get(endpoint, query_string={
+                'tag': '单体作品', 'exact_tag': '1', 'exclude_tag': '1',
+            }).get_json()['result_total'] == 0
+        with runtime.connect(write=True) as conn:
+            conn.execute("UPDATE actors SET name_zh='羽生新译名' WHERE name='羽生アリサ'")
+        assert client.get('/api/tasks/names').get_json()['items'][0]['actors'][0] == '羽生新译名'
+
+
 def test_collection_checkpoints_history_and_local_refresh(tmp_path):
     path = tmp_path / 'listing.db'
     with sqlite3.connect(path) as conn:
