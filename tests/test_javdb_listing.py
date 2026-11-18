@@ -33,6 +33,32 @@ def test_read_page_distinguishes_last_page_from_parse_failure():
         read_page(page, 1)
 
 
+def test_collection_stops_only_when_whole_page_is_in_successful_history(tmp_path):
+    runtime = RuntimeStore(tmp_path / 'whole-page.db')
+    with runtime.connect(write=True) as conn:
+        runtime.submit(KIND, task_id='old', connection=conn)
+        save_page(conn, 'old', 1, {'items': [entry('OLD-001'), entry('OLD-002')], 'has_next': False})
+        conn.execute("UPDATE scrape_tasks SET status='DONE',deleted=1 WHERE id='old'")
+        runtime.submit(KIND, task_id='failed', connection=conn)
+        save_page(conn, 'failed', 1, {'items': [entry('FAILED-001')], 'has_next': False})
+        conn.execute("UPDATE scrape_tasks SET status='FAILED' WHERE id='failed'")
+        runtime.submit(KIND, task_id='new', connection=conn)
+        mixed = [entry(code) for code in ('OLD-001', 'NEW-001', 'OLD-002', 'NEW-002', 'NEW-002')]
+        assert save_page(conn, 'new', 1, {'items': mixed, 'has_next': True}) == (2, None)
+        assert save_page(conn, 'new', 1, {'items': mixed, 'has_next': True}) == (0, None)
+        assert save_page(conn, 'new', 2, {'items': [entry('NEW-001')], 'has_next': True}) == (0, None)
+        assert save_page(conn, 'new', 3, {'items': [entry('OLD-001-C'), entry('OLD-002')], 'has_next': True}) == (0, 'history')
+        assert save_page(conn, 'new', 4, {
+            'items': [entry('OLD-001'), entry('FAILED-001')], 'has_next': True,
+        }) == (1, None)
+        assert save_page(conn, 'new', 5, {
+            'items': [entry('OLD-001'), entry('NEW-003')], 'has_next': False,
+        }) == (1, 'last_page')
+        assert [row[0] for row in conn.execute(
+            "SELECT code FROM javdb_listing_items WHERE task_id='new' ORDER BY rowid"
+        )] == ['NEW-001', 'NEW-002', 'FAILED-001', 'NEW-003']
+
+
 def test_localized_names_apply_to_history_filters_and_local_refresh(tmp_path):
     path = tmp_path / 'listing-names.db'
     with sqlite3.connect(path) as conn:
@@ -94,7 +120,8 @@ def test_collection_checkpoints_history_and_local_refresh(tmp_path):
     browser.session_status.return_value = (True, True)
     browser.collect_listing_page.side_effect = [
         {'items': [entry('ABC-001'), entry('ABC-001'), entry('ABC-002')], 'has_next': True},
-        {'items': [entry('ABC-004'), entry('ABC-003'), entry('ABC-005')], 'has_next': True},
+        {'items': [entry('ABC-004'), entry('ABC-003'), entry('ABC-004')], 'has_next': True},
+        {'items': [entry('ABC-003')], 'has_next': True},
     ]
     browser.collect_listing_detail.return_value = {'actors': ['演员原名', '未知演员'], 'tags': ['类别 A', '类别 B']}
     service = BrowserConsumer(store, browser)
@@ -118,6 +145,10 @@ def test_collection_checkpoints_history_and_local_refresh(tmp_path):
         assert consumer.tick()
         assert not service.tick()
         assert consumer.tick()
+        assert store.get(task)['status'] == 'WAITING'
+        assert service.tick()
+        assert consumer.tick()
+        assert consumer.tick()
         assert store.get(task)['status'] == 'DONE'
         browser.collect_listing_detail.assert_not_called()
         for _ in range(16):
@@ -127,9 +158,9 @@ def test_collection_checkpoints_history_and_local_refresh(tmp_path):
             if detail['status'] == 'DONE':
                 break
         consumer.pool.shutdown()
-        assert [call.args for call in browser.collect_listing_page.call_args_list] == [(1,), (2,)]
+        assert [call.args for call in browser.collect_listing_page.call_args_list] == [(1,), (2,), (3,)]
         result = client.get(url).get_json()
-        assert (result['status'], result['pages'], result['stop_reason']) == ('DONE', 2, 'history')
+        assert (result['status'], result['pages'], result['stop_reason']) == ('DONE', 3, 'history')
         assert [r['code'] for r in result['items']] == ['ABC-001', 'ABC-002', 'ABC-004']
         assert result['items'][0]['title'] == '本地标题'
         assert result['items'][0]['actors'] == ['演员译名']
@@ -164,7 +195,7 @@ def test_collection_checkpoints_history_and_local_refresh(tmp_path):
         with store.connect(write=True) as conn:
             conn.execute("UPDATE videos SET title_zh='更新标题' WHERE id=1")
         assert client.get(url, query_string={'q': '更新'}).get_json()['result_total'] == 1
-        assert browser.collect_listing_page.call_count == 2
+        assert browser.collect_listing_page.call_count == 3
         assert client.get('/api/tasks/javdb-listing/results', query_string={
             'tag': '类别 A', 'exclude_tag': '1', 'actor': '演员原名',
         }).get_json()['result_total'] == 1

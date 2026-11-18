@@ -143,14 +143,14 @@ def read_page(page, number):
 
 def save_page(conn, task_id, number, result):
     before = conn.total_changes
-    history = False
+    history = bool(result['items'])
     for entry in result['items']:
         code = base_code(entry['code'])
         previous = conn.execute("""SELECT 1 FROM javdb_listing_items i JOIN scrape_tasks t ON t.id=i.task_id
             WHERE i.code=? AND t.kind=? AND t.status='DONE' AND t.id<>? LIMIT 1""", (code, KIND, task_id)).fetchone()
         if previous:
-            history = True
-            break
+            continue
+        history = False
         metadata = conn.execute("""SELECT actors_json, tags_json FROM javdb_listing_items
             WHERE code=? AND tags_json IS NOT NULL LIMIT 1""", (code,)).fetchone()
         actors, tags = tuple(metadata) if metadata else (json.dumps(entry['actors'], ensure_ascii=False), None)
