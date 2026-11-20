@@ -98,6 +98,29 @@ def test_localized_names_apply_to_history_filters_and_local_refresh(tmp_path):
         assert client.get('/api/tasks/names').get_json()['items'][0]['actors'][0] == '羽生新译名'
 
 
+def test_listing_filters_by_code_prefix(tmp_path):
+    path = tmp_path / 'listing-prefixes.db'
+    with sqlite3.connect(path) as conn:
+        _init_full_schema(conn)
+    runtime = RuntimeStore(path)
+    codes = ['ABC-001', 'ABC-002', 'ABCD-001', 'XYZ-001', 'NOHYPHEN']
+    with runtime.connect(write=True) as conn:
+        runtime.submit(KIND, task_id='prefixes', connection=conn)
+        save_page(conn, 'prefixes', 1, {'items': [entry(code) for code in codes], 'has_next': False})
+
+    client = app.test_client()
+    selected = [('code_prefix', 'abc'), ('code_prefix', 'XYZ')]
+    with patch('web.backend.admin_api.store', return_value=runtime):
+        for endpoint in ('/api/tasks/prefixes', '/api/tasks/javdb-listing/results'):
+            assert client.get(endpoint, query_string={'filter_options': 'code_prefix'}).get_json() == {
+                'options': ['ABC', 'ABCD', 'NOHYPHEN', 'XYZ'],
+            }
+            matched = client.get(endpoint, query_string=selected).get_json()
+            assert [row['code'] for row in matched['items']] == ['ABC-001', 'ABC-002', 'XYZ-001']
+            inverted = client.get(endpoint, query_string=selected + [('exclude_code_prefix', '1')]).get_json()
+            assert [row['code'] for row in inverted['items']] == ['ABCD-001', 'NOHYPHEN']
+
+
 def test_collection_checkpoints_history_and_local_refresh(tmp_path):
     path = tmp_path / 'listing.db'
     with sqlite3.connect(path) as conn:

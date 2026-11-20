@@ -220,7 +220,9 @@ curl -fsSN "$BASE/api/jobs/$JOB_ID/stream"
 
 结果项含 `code`、`url`、`page`、`title`、`actors`、`tags`、`metadata_pending`、`in_db`、`versions`。在库版本含 `code`、`subtitle`、`uncensored`、`actors`。支持 `limit`（默认 25，最大 100）和 `offset`，以及 `q`（番号或标题）、`code`、`title`、`actor`、`tag`、`in_db=yes/no`、`subtitle`、`uncensored`。同一个字段可重复传入多个值，例如 `tag=A&tag=B` 匹配任意一个选中的标签，各列条件同时生效。给该字段加 `exclude_<字段>=1` 可排除命中任一选中值的结果。字幕与无码同时正向筛选时须由同一在库版本满足。`code`、`title`、`actor` 和 `tag` 默认按子串匹配，加 `exact_<字段>=1` 可按完整值匹配。
 
-两个结果接口均支持 `filter_options=<字段>`，返回该列可选值 `{options}`。支持 `code`、`title`、`actor`、`tag`、`in_db`、`subtitle` 和 `uncensored`。选项来自对应任务或汇总的全部结果。
+两个结果接口均支持 `code_prefix`，按第一个连字符前的部分匹配，忽略大小写。没有连字符时使用整个番号。可多选，也可用 `exclude_code_prefix=1` 反选。
+
+两个结果接口均支持 `filter_options=<字段>`，返回该列可选值 `{options}`。支持 `code`、`code_prefix`、`title`、`actor`、`tag`、`in_db`、`subtitle` 和 `uncensored`。选项来自对应任务或汇总的全部结果。
 
 
 这些接口供受信任的第三方运维程序调用。

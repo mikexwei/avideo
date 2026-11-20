@@ -12,7 +12,7 @@ DETAIL_KIND = 'javdb_listing_detail'
 ACTIVE = ('PREPARING', 'PENDING', 'RUNNING', 'WAITING')
 TERMINAL = ('DONE', 'FAILED', 'SKIPPED', 'CANCELLED', 'SUSPENDED')
 SCHEDULE = 'javdb_listing_schedule'
-FILTER_COLUMNS = ('code', 'in_db', 'subtitle', 'uncensored', 'actor', 'title', 'tag')
+FILTER_COLUMNS = ('code', 'code_prefix', 'in_db', 'subtitle', 'uncensored', 'actor', 'title', 'tag')
 
 
 def active_task(conn):
@@ -277,7 +277,7 @@ def results(conn, task_id, filters):
         if not terms[key]:
             return True
         normalized = {value.casefold() for value in values}
-        if key in exact_columns or key in ('in_db', 'subtitle', 'uncensored'):
+        if key in exact_columns or key in ('code_prefix', 'in_db', 'subtitle', 'uncensored'):
             found = not terms[key].isdisjoint(normalized)
         else:
             found = any(term in value for term in terms[key] for value in normalized)
@@ -286,6 +286,8 @@ def results(conn, task_id, filters):
     paired = terms['subtitle'] and terms['uncensored'] and not excluded.intersection(('subtitle', 'uncensored'))
     output = []
     for item in items:
+        if not matches('code_prefix', [item['code'].split('-', 1)[0]]):
+            continue
         versions = list(local.get(item['code'], {}).values())
         if not matches('in_db', ['yes' if versions else 'no']):
             continue
@@ -333,6 +335,8 @@ def filter_options(conn, task_id, key):
             values.update(tag for v in item['versions'] for tag in v['uncensored'])
         elif key in ('actor', 'tag'):
             values.update(item['actors' if key == 'actor' else 'tags'])
+        elif key == 'code_prefix':
+            values.add(item['code'].split('-', 1)[0])
         elif item[key]:
             values.add(item[key])
     return sorted(values, key=str.casefold)

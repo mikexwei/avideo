@@ -798,9 +798,9 @@
                     <div class="listing-filter">
                       <span class="listing-filter-label">{{ col.label }}</span>
                       <div class="listing-filter-controls">
-                        <button type="button" class="listing-filter-button" :aria-label="col.label + '筛选'"
+                        <button type="button" class="listing-filter-button" :aria-label="(col.filterLabel || col.label) + '筛选'"
                           aria-haspopup="dialog" @click="openFilter(col)">{{ filters[col.key].length ? '已选 ' + filters[col.key].length : '全部' }}</button>
-                        <button type="button" class="listing-invert" :aria-label="col.label + '反选'"
+                        <button type="button" class="listing-invert" :aria-label="(col.filterLabel || col.label) + '反选'"
                           :aria-pressed="Boolean(excluded[col.key])" :disabled="!filters[col.key].length"
                           @click="invert(col.key)">反选</button>
                       </div>
@@ -843,9 +843,9 @@
 
         <dialog ref="filterDialog" class="listing-dialog" aria-labelledby="listing-filter-heading" @close="closeFilter">
           <form @submit.prevent="saveFilter">
-            <h3 id="listing-filter-heading">筛选{{ filterColumn?.label }}</h3>
+            <h3 id="listing-filter-heading">筛选{{ filterColumn?.filterLabel || filterColumn?.label }}</h3>
             <input v-model="filterSearch" class="listing-option-search" type="search" aria-label="搜索筛选项" placeholder="搜索筛选项" autofocus @keydown.enter.prevent>
-            <div class="listing-options" role="group" :aria-label="filterColumn?.label + '筛选项'">
+            <div class="listing-options" role="group" :aria-label="(filterColumn?.filterLabel || filterColumn?.label) + '筛选项'">
               <label v-for="value in visibleOptions" :key="value" class="listing-checkbox">
                 <input v-model="filterDraft" type="checkbox" :value="value"> {{ optionLabel(filterColumn.key, value) }}
               </label>
@@ -4614,7 +4614,7 @@
         const labels = {PENDING:'排队中', PREPARING:'准备中', RUNNING:'采集中', WAITING:'等待执行',
           PAUSED:'已暂停', DONE:'已完成', FAILED:'失败', CANCELLED:'已停止', SKIPPED:'已跳过', SUSPENDED:'已挂起'};
         const columns = [
-          {key:'code', label:'番号'},
+          {key:'code_prefix', label:'番号', filterLabel:'番号前缀'},
           {key:'in_db', label:'是否入库'},
           {key:'subtitle', label:'DB 字幕'},
           {key:'uncensored', label:'DB 无码'},
