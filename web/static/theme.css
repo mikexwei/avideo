@@ -420,6 +420,14 @@ button.library-extra-tag[aria-pressed=true]:not(:disabled):hover { background: #
   .library-more-tags summary, button.library-extra-tag { min-height: 44px; }
 }
 .film-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(10px, 1.6vw, 22px); }
+.film-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.film-list .video-card {
+  display: grid;
+  grid-template-columns: clamp(88px, 18vw, 160px) minmax(0, 1fr);
+  align-items: center;
+}
+.film-list .film-caption { padding-block: 8px; }
+.film-list .art-fallback { padding: 4px; font-size: var(--text-small); text-align: center; }
 .video-card, .actor-tile { display: block; position: relative; min-width: 0; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); transition: border-color .18s, background-color .18s; }
 .video-card:hover, .actor-tile:hover { border-color: var(--control-line); background: var(--subtle); }
 .film-art, .watch-stage, .actor-portrait { position: relative; overflow: hidden; isolation: isolate; background: radial-gradient(ellipse at 68% 14%, #42332f, var(--subtle) 62%); }
