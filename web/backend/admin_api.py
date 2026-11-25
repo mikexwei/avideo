@@ -100,18 +100,24 @@ def register_admin_api(app):
         runtime = store()
         if request.method == 'POST':
             values = request.get_json(silent=True)
-            if (not isinstance(values, dict) or not isinstance(values.get('enabled'), bool)
-                    or not isinstance(values.get('time'), str)
-                    or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', values['time'], flags=re.ASCII)):
+            if not isinstance(values, dict) or not isinstance(values.get('enabled'), bool):
                 raise ValueError('请选择有效的每日采集时间')
-            settings = runtime.set_settings(javdb_listing.SCHEDULE, {
-                'enabled': values['enabled'], 'time': values['time'], 'saved_at': time.time(),
-            })
+            times = values.get('times', [values.get('time')])
+            if not isinstance(times, list) or not times or any(
+                not isinstance(slot, str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', slot, flags=re.ASCII)
+                for slot in times
+            ):
+                raise ValueError('请至少填写一个有效的每日采集时间')
+            if len(times) != len(set(times)):
+                raise ValueError('采集时间不能重复')
+            times = sorted(times)
+            settings = javdb_listing.save_schedule(runtime, values['enabled'], times, time.time())
             if settings['enabled']:
                 ensure_worker()
         else:
             settings = runtime.settings(javdb_listing.SCHEDULE)
-        return jsonify(enabled=settings['enabled'], time=settings['time'], timezone=BROWSER_TIMEZONE.key)
+        times = javdb_listing.schedule_times(settings)
+        return jsonify(enabled=settings['enabled'], times=times, time=times[0], timezone=BROWSER_TIMEZONE.key)
 
     @api.get('/api/tasks/javdb-listing/results')
     def listing_results():

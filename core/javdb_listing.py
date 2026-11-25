@@ -29,27 +29,56 @@ def submit(runtime, conn, trigger):
     return runtime.submit(KIND, payload={'trigger': trigger}, priority=-100, connection=conn)
 
 
+def schedule_times(settings):
+    return settings['times'] if 'times' in settings else [settings['time']]
+
+
+def save_schedule(runtime, enabled, times, saved_at):
+    with runtime.connect(write=True) as conn:
+        settings = json.loads(conn.execute('SELECT value_json FROM scrape_settings WHERE key=?',
+                                           (SCHEDULE,)).fetchone()[0])
+        if settings.get('last_day') and 'completed_times' not in settings:
+            settings['completed_times'] = schedule_times(settings)[:1]
+        settings.update(enabled=enabled, times=times, time=times[0], saved_at=saved_at)
+        conn.execute('UPDATE scrape_settings SET value_json=? WHERE key=?', (json.dumps(settings), SCHEDULE))
+    return settings
+
+
 def schedule_due(runtime, now=None):
     now = now or datetime.now(BROWSER_TIMEZONE)
     day = now.date().isoformat()
 
-    def due(settings):
-        if not settings['enabled'] or settings.get('last_day') == day:
-            return False
-        hour, minute = map(int, settings['time'].split(':'))
-        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        return now >= target and target.timestamp() >= settings.get('saved_at', 0)
+    def completed_times(settings):
+        if settings.get('last_day') != day:
+            return []
+        # The old single-time scheduler recorded only the date.
+        return settings.get('completed_times', schedule_times(settings)[:1])
 
-    if not due(runtime.settings(SCHEDULE)):
+    def due_time(settings):
+        if not settings['enabled']:
+            return None
+        completed = completed_times(settings)
+        for slot in schedule_times(settings):
+            if slot in completed:
+                continue
+            hour, minute = map(int, slot.split(':'))
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0, fold=0)
+            if now >= target and target.timestamp() >= settings.get('saved_at', 0):
+                return slot
+        return None
+
+    if due_time(runtime.settings(SCHEDULE)) is None:
         return False
     with runtime.connect(write=True) as conn:
         settings = json.loads(conn.execute('SELECT value_json FROM scrape_settings WHERE key=?',
                                            (SCHEDULE,)).fetchone()[0])
-        if not due(settings) or active_task(conn):
+        slot = due_time(settings)
+        if slot is None or active_task(conn):
             return False
         submit(runtime, conn, 'scheduled')
-        conn.execute("UPDATE scrape_settings SET value_json=json_set(value_json, '$.last_day', ?) WHERE key=?",
-                     (day, SCHEDULE))
+        conn.execute("""UPDATE scrape_settings SET value_json=json_set(
+            value_json, '$.last_day', ?, '$.completed_times', json(?)) WHERE key=?""",
+                     (day, json.dumps([*completed_times(settings), slot]), SCHEDULE))
         return True
 
 

@@ -254,6 +254,38 @@ def test_listing_schedule(tmp_path):
     assert store.settings(SCHEDULE)['last_day'] == '2026-11-14'
 
 
+def test_listing_schedule_runs_each_daily_time(tmp_path):
+    store = RuntimeStore(tmp_path / 'schedule.db')
+    client = app.test_client()
+    url = '/api/tasks/javdb-listing/schedule'
+    now = datetime(2026, 11, 13, 8, 15, tzinfo=BROWSER_TIMEZONE)
+    # The old scheduler already ran at 07:15, recorded without a per-time marker.
+    store.set_settings(SCHEDULE, {'enabled': True, 'time': '07:15', 'last_day': now.date().isoformat()})
+    with patch('web.backend.admin_api.store', return_value=store), patch('web.backend.admin_api.ensure_worker'), \
+         patch('web.backend.admin_api.time.time', return_value=now.replace(hour=7).timestamp()):
+        assert client.get(url).get_json()['times'] == ['07:15']
+        for invalid in (None, [], '08:15', ['08:15', '08:15'], ['08:15', '24:00'], ['08:15', 930]):
+            assert client.post(url, json={'enabled': True, 'times': invalid}).status_code == 400
+        response = client.post(url, json={'enabled': True, 'times': ['12:15', '07:15', '08:15', '06:15']})
+        assert response.status_code == 200
+        assert response.get_json()['times'] == ['06:15', '07:15', '08:15', '12:15']
+        assert client.get(url).get_json() == response.get_json()
+
+    assert not schedule_due(store, now.replace(minute=14))
+    assert schedule_due(store, now)
+    noon = now.replace(hour=12)
+    assert not schedule_due(store, noon)
+    with store.connect(write=True) as conn:
+        assert conn.execute("UPDATE scrape_tasks SET status='DONE' WHERE kind=?", (KIND,)).rowcount == 1
+    assert schedule_due(store, noon)
+    with store.connect(write=True) as conn:
+        conn.execute("UPDATE scrape_tasks SET status='DONE' WHERE kind=?", (KIND,))
+    assert not schedule_due(store, noon)
+    assert store.settings(SCHEDULE)['completed_times'] == ['07:15', '08:15', '12:15']
+    assert schedule_due(store, now.replace(day=14, hour=6))
+    assert store.settings(SCHEDULE)['completed_times'] == ['06:15']
+
+
 def test_schedule_takes_next_quota_slot_and_backfill_resumes_after_other_work(tmp_path):
     path = tmp_path / 'listing-priority.db'
     with sqlite3.connect(path) as conn:
