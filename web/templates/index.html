@@ -135,15 +135,10 @@
       </div>
       <div class="site-card library-toolbar" aria-label="影片筛选与排序" role="group">
         <div class="flex items-center gap-2 flex-wrap">
-          <button type="button" v-for="tag in primaryTags" :key="tag" @click="toggleTag(tag)"
-            class="tag-pill" :aria-pressed="selectedTags.includes(tag)">
-            {{ tag }}
-          </button>
+          <tag-filter-button v-for="tag in primaryTags" :key="tag" :tag="tag"
+            :state="tagState(tagFilters, tag)" @click="toggleTag(tag)" />
         </div>
         <div class="library-filter-controls">
-          <button type="button" class="tag-filter-switch" role="switch" :aria-checked="excludeTags" @click="toggleExclude">
-            <span class="tag-filter-switch-track" aria-hidden="true"></span>排除（Exclude）
-          </button>
           <sort-bar :sort="sort" playback @change="changeSort" />
           <div class="flex flex-wrap gap-2" role="group" aria-label="影片显示模式">
             <button type="button" class="ui-button" :class="{ 'ui-primary': !listMode }"
@@ -160,10 +155,8 @@
           <p v-if="tagCatalog === null" role="status">正在读取标签…</p>
           <p v-else-if="!otherTags.length" role="status">{{ tagCatalog.length ? '没有其他标签' : '暂无标签列表' }}</p>
           <div v-else class="library-extra-tags flex flex-wrap gap-2" role="group" aria-label="其他标签">
-            <button type="button" v-for="tag in otherTags" :key="tag" @click="toggleTag(tag)"
-              class="tag-pill library-extra-tag" :aria-pressed="selectedTags.includes(tag)">
-              {{ tag }}
-            </button>
+            <tag-filter-button v-for="tag in otherTags" :key="tag" :tag="tag" class="library-extra-tag"
+              :state="tagState(tagFilters, tag)" @click="toggleTag(tag)" />
           </div>
         </details>
       </div>
@@ -1972,14 +1965,8 @@
       <div class="library-heading"><h2>作品列表</h2><sort-bar :sort="sort" @change="changeSort" /></div>
       <!-- Tag filter -->
       <div v-if="allTags.length" class="flex flex-wrap gap-2 mb-3">
-        <button type="button" class="tag-filter-switch" role="switch" :aria-checked="excludeTags" @click="toggleExclude">
-          <span class="tag-filter-switch-track" aria-hidden="true"></span>排除（Exclude）
-        </button>
-        <button v-for="t in allTags" :key="t"
-          @click="toggleTag(t)"
-          class="tag-pill" :aria-pressed="selectedTags.has(t)">
-          {{ t }}
-        </button>
+        <tag-filter-button v-for="tag in allTags" :key="tag" :tag="tag"
+          :state="tagState(tagFilters, tag)" @click="toggleTag(tag)" />
       </div>
       <div class="film-grid">
         <video-card v-for="v in sortedVideos" :key="v.id" :video="v" />
@@ -2151,13 +2138,8 @@
       <button @click="load" class="ui-button">换一批</button>
     </header>
     <div class="flex items-center gap-2 flex-wrap mb-4">
-      <button type="button" class="tag-filter-switch" role="switch" :aria-checked="excludeTags" @click="toggleExclude">
-        <span class="tag-filter-switch-track" aria-hidden="true"></span>排除（Exclude）
-      </button>
-      <button v-for="tag in filterTags" :key="tag" @click="toggleTag(tag)"
-        class="tag-pill" :aria-pressed="selectedTags.includes(tag)">
-        {{ tag }}
-      </button>
+      <tag-filter-button v-for="tag in filterTags" :key="tag" :tag="tag"
+        :state="tagState(tagFilters, tag)" @click="toggleTag(tag)" />
     </div>
     <div v-if="loading" class="text-center py-20 text-gray-500">加载中…</div>
     <div v-else-if="items.length === 0" class="text-center py-20 text-gray-500">暂无符合条件的推荐影片</div>
@@ -2419,10 +2401,57 @@
     const FILTER_TAGS = ['无码流出', 'JAV 无码破解', 'LADA 无码破解', 'LTX 无码破解', '原装无码', ...SUBTITLE_OPTIONS];
     const defaultSubtitle = name => /-(?:UC|C)(?:[._-](?:part|cd|pt)?\d+)?(?:\.|$)/i.test(name || '') ? '硬字幕' : '无字幕';
 
-    function queryTags(query) {
-      const raw = query.tag;
-      if (!raw) return [];
-      return Array.isArray(raw) ? raw : [raw];
+    const TAG_FILTER_LABELS = {include: '包含', exclude: '排除', off: '未选中'};
+    const TagFilterButton = {
+      props: { tag: String, state: String },
+      setup: () => ({ labels: TAG_FILTER_LABELS }),
+      template: `
+        <button type="button" class="tag-pill" :data-tag-filter="state" :aria-pressed="state !== 'off'"
+          :aria-label="tag + '，' + labels[state]">
+          {{ tag }}<span v-if="state !== 'off'">{{ labels[state] }}</span>
+        </button>
+      `,
+    };
+
+    function tagState({ included, excluded }, tag) {
+      if (excluded.includes(tag)) return 'exclude';
+      return included.includes(tag) ? 'include' : 'off';
+    }
+
+    function cycleTagFilter(filters, tag) {
+      const state = tagState(filters, tag);
+      const included = filters.included.filter(name => name !== tag);
+      const excluded = filters.excluded.filter(name => name !== tag);
+      if (state === 'off') included.push(tag);
+      if (state === 'include') excluded.push(tag);
+      return { included, excluded };
+    }
+
+    function useRouteTagFilters(route, router, resetPage = false) {
+      const tagFilters = computed(() => {
+        const query = route.query;
+        const values = raw => [raw].flat().filter(Boolean);
+        const tags = [...values(query.tag), ...values(query.tags).flatMap(value => value.split(',').filter(Boolean))];
+        const excluded = values(query.exclude_tag);
+        return query.exclude === '1'
+          ? { included: [], excluded: [...excluded, ...tags] }
+          : { included: tags.filter(tag => !excluded.includes(tag)), excluded };
+      });
+      function toggleTag(tag) {
+        const { included, excluded } = cycleTagFilter(tagFilters.value, tag);
+        router.replace({ query: {
+          ...route.query, tags: undefined, exclude: undefined,
+          tag: included.length ? included : undefined,
+          exclude_tag: excluded.length ? excluded : undefined,
+          ...(resetPage ? { page: undefined } : {}),
+        } });
+      }
+      return { tagFilters, tagState, toggleTag };
+    }
+
+    function appendTagFilters(params, { included, excluded }) {
+      included.forEach(tag => params.append('tag', tag));
+      excluded.forEach(tag => params.append('exclude_tag', tag));
     }
 
     const SubtitleReviewView = {
@@ -3067,7 +3096,7 @@
     // ── HomeView ──────────────────────────────────────────────
     const HomeView = {
       template: '#tpl-home',
-      components: { VideoCard, Pagination, SortBar, AddVideoModal, BatchModal },
+      components: { VideoCard, Pagination, SortBar, TagFilterButton, AddVideoModal, BatchModal },
       setup() {
         const route = VueRouter.useRoute();
         const router = VueRouter.useRouter();
@@ -3084,7 +3113,8 @@
         }
         const page = computed(() => parseInt(route.query.page) || 1);
         const sort = computed(() => route.query.sort || 'date');
-        const selectedTags = computed(() => queryTags(route.query));
+        const tagFiltering = useRouteTagFilters(route, router, true);
+        const { tagFilters } = tagFiltering;
         const tagCatalog = ref(null);
         const primaryTags = computed(() => [...new Set([
           ...FILTER_TAGS,
@@ -3094,7 +3124,6 @@
           const primary = new Set(primaryTags.value);
           return (tagCatalog.value || []).filter(tag => !primary.has(tag));
         });
-        const excludeTags = computed(() => route.query.exclude === '1');
         let loadId = 0;
 
         const filterLabel = computed(() => {
@@ -3109,10 +3138,11 @@
           if (q.has_cover === '1') return '有封面';
           if (q.has_translation === '1') return '已翻译标题';
           if (q.scrape_status) return `刮削状态: ${q.scrape_status}`;
-          if (selectedTags.value.length) {
-            return excludeTags.value ? '排除 ' + selectedTags.value.join('、') : selectedTags.value.join(' + ');
-          }
-          return '';
+          const { included, excluded } = tagFilters.value;
+          return [
+            included.length ? '包含 ' + included.join('、') : '',
+            excluded.length ? '排除 ' + excluded.join('、') : '',
+          ].filter(Boolean).join(' · ');
         });
 
         async function load() {
@@ -3128,8 +3158,7 @@
             ...(q.has_translation  ? { has_translation: q.has_translation }   : {}),
             ...(q.scrape_status    ? { scrape_status: q.scrape_status }       : {}),
           });
-          selectedTags.value.forEach(tag => params.append('tag', tag));
-          if (excludeTags.value) params.set('exclude', '1');
+          appendTagFilters(params, tagFilters.value);
           const d = await apiFetch(`/api/videos?${params}`);
           if (id !== loadId) return;
           if (d) { items.value = d.items; total.value = d.total; }
@@ -3138,15 +3167,6 @@
         }
         function changePage(p) { router.push({ query: { ...route.query, page: p } }); }
         function changeSort(s) { router.replace({ query: { ...route.query, sort: s, page: undefined } }); }
-        function toggleTag(tag) {
-          const tags = selectedTags.value.includes(tag)
-            ? selectedTags.value.filter(t => t !== tag)
-            : [...selectedTags.value, tag];
-          router.replace({ query: { ...route.query, tag: tags.length ? tags : undefined, page: undefined } });
-        }
-        function toggleExclude() {
-          router.replace({ query: { ...route.query, exclude: excludeTags.value ? undefined : '1', page: undefined } });
-        }
         watch(() => route.query, load, { deep: true });
         onMounted(load);
         onMounted(async () => {
@@ -3204,7 +3224,7 @@
 
         return {
           items, total, page, limit, loading, sort, filterLabel, listMode, setListMode,
-          tagCatalog, primaryTags, otherTags, selectedTags, excludeTags, changePage, changeSort, toggleTag, toggleExclude,
+          tagCatalog, primaryTags, otherTags, changePage, changeSort, ...tagFiltering,
           showAddModal, openAddModal, closeAddModal,
           showManualModal, openManualModal, closeManualModal,
           showBatchModal, openBatchModal, closeBatchModal,
@@ -4041,22 +4061,14 @@
     // ── ActorView ─────────────────────────────────────────────
     const ActorView = {
       template: '#tpl-actor',
-      components: { VideoCard, SortBar },
+      components: { VideoCard, SortBar, TagFilterButton },
       setup() {
         const route = VueRouter.useRoute();
         const router = VueRouter.useRouter();
         const data = ref(null), loading = ref(true);
         const fileInput = ref(null), uploading = ref(false), avatarSrc = ref('');
         const editingName = ref(false), nameZhDraft = ref(''), nameDraft = ref('');
-        // Tags stored in URL query: ?tags=A,B,C
-        const selectedTags = computed(() => new Set(
-          route.query.tags ? route.query.tags.split(',').filter(Boolean) : []
-        ));
-
-        const excludeTags = computed(() => route.query.exclude === '1');
-        function toggleExclude() {
-          router.replace({ query: { ...route.query, exclude: excludeTags.value ? undefined : '1' } });
-        }
+        const tagFiltering = useRouteTagFilters(route, router);
 
         const allTags = computed(() => {
           if (!data.value) return [];
@@ -4067,21 +4079,14 @@
           return [...tagSet].sort();
         });
 
-        function toggleTag(t) {
-          const s = new Set(selectedTags.value);
-          s.has(t) ? s.delete(t) : s.add(t);
-          const tags = [...s].join(',') || undefined;
-          router.replace({ query: { ...route.query, tags } });
-        }
-
         const sortedVideos = computed(() => {
           if (!data.value) return [];
           let arr = [...data.value.videos];
-          if (selectedTags.value.size > 0) {
-            const tags = [...selectedTags.value];
+          const { included, excluded } = tagFiltering.tagFilters.value;
+          if (included.length || excluded.length) {
             arr = arr.filter(v => {
               const vTags = new Set((v.tags || []).map(t => t.name));
-              return excludeTags.value ? !tags.some(tag => vTags.has(tag)) : tags.every(tag => vTags.has(tag));
+              return included.every(tag => vTags.has(tag)) && !excluded.some(tag => vTags.has(tag));
             });
           }
           if (sort.value === 'score') return arr.sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -4151,7 +4156,7 @@
           data, loading, imgErr, sort, sortedVideos, changeSort,
           fileInput, uploading, avatarSrc, triggerUpload, uploadAvatar,
           editingName, nameZhDraft, nameDraft, startEditName, cancelEditName, saveEditName,
-          allTags, selectedTags, excludeTags, toggleTag, toggleExclude,
+          allTags, ...tagFiltering,
         };
       }
     };
@@ -4349,16 +4354,16 @@
 
     const RecommendView = {
       template: '#tpl-recommend',
-      components: { VideoCard },
+      components: { VideoCard, TagFilterButton },
       setup() {
         const items = ref([]);
         const loading = ref(true);
-        const selectedTags = ref([]);
-        const excludeTags = ref(false);
+        const tagFilters = ref({ included: [], excluded: [] });
+        const hasFilters = computed(() => tagFilters.value.included.length || tagFilters.value.excluded.length);
         let loadId = 0;
 
         function readCache() {
-          if (selectedTags.value.length) return null;
+          if (hasFilters.value) return null;
           try {
             const raw = localStorage.getItem(RECOMMEND_CACHE_KEY);
             if (!raw) return null;
@@ -4369,7 +4374,7 @@
         }
 
         function writeCache(data) {
-          if (selectedTags.value.length) return;
+          if (hasFilters.value) return;
           try {
             localStorage.setItem(RECOMMEND_CACHE_KEY, JSON.stringify({ ts: Date.now(), data }));
           } catch(e) {}
@@ -4384,8 +4389,7 @@
           loading.value = true;
           try {
             const params = new URLSearchParams();
-            selectedTags.value.forEach(tag => params.append('tag', tag));
-            if (excludeTags.value) params.set('exclude', '1');
+            appendTagFilters(params, tagFilters.value);
             const qs = params.toString();
             const d = await apiFetch('/api/recommendations' + (qs ? `?${qs}` : ''));
             if (id !== loadId) return;
@@ -4399,19 +4403,12 @@
         }
 
         function toggleTag(tag) {
-          selectedTags.value = selectedTags.value.includes(tag)
-            ? selectedTags.value.filter(t => t !== tag)
-            : [...selectedTags.value, tag];
-          load(true);
-        }
-
-        function toggleExclude() {
-          excludeTags.value = !excludeTags.value;
+          tagFilters.value = cycleTagFilter(tagFilters.value, tag);
           load(true);
         }
 
         onMounted(() => load(false));
-        return { items, loading, filterTags: FILTER_TAGS, selectedTags, excludeTags, toggleTag, toggleExclude,
+        return { items, loading, filterTags: FILTER_TAGS, tagFilters, tagState, toggleTag,
           load: () => load(true) };
       }
     };

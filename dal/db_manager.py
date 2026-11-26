@@ -139,17 +139,13 @@ def _version_suffix(code: str) -> str:
     return ""
 
 
-def _tag_filter_conditions(alias: str, tags: Optional[List[str]], *, exclude=False) -> tuple[list[str], list[str]]:
+def _tag_filter_conditions(alias: str, tags: Optional[List[str]], *, exclude=False,
+                           excluded_tags: Optional[List[str]] = None) -> tuple[list[str], list[str]]:
     tags = [tag.strip() for tag in tags or [] if tag.strip()]
-    if exclude and tags:
-        placeholders = ', '.join('?' for _ in tags)
-        # A tag on any active part excludes the film, even if its representative row lacks it.
-        return [f"""{alias}.code NOT IN (
-            SELECT tagged.code FROM videos tagged
-            JOIN video_tag_link link ON link.video_id = tagged.id
-            JOIN tags tag ON tag.id = link.tag_id
-            WHERE tagged.deleted = 0 AND tag.name IN ({placeholders})
-        )"""], tags
+    excluded = [tag.strip() for tag in excluded_tags or [] if tag.strip()]
+    if exclude:
+        excluded.extend(tags)
+        tags = []
     conditions = []
     for _ in tags:
         conditions.append(
@@ -161,7 +157,16 @@ def _tag_filter_conditions(alias: str, tags: Optional[List[str]], *, exclude=Fal
                   AND t_filter.name = ?
             )"""
         )
-    return conditions, tags
+    if excluded:
+        placeholders = ', '.join('?' for _ in excluded)
+        # A tag on any active part excludes the film, even if its representative row lacks it.
+        conditions.append(f"""{alias}.code NOT IN (
+            SELECT tagged.code FROM videos tagged
+            JOIN video_tag_link link ON link.video_id = tagged.id
+            JOIN tags tag ON tag.id = link.tag_id
+            WHERE tagged.deleted = 0 AND tag.name IN ({placeholders})
+        )""")
+    return conditions, tags + excluded
 
 def batch_insert_scanned_videos(scanned_results: list, scrape_status: str = 'PENDING') -> tuple[int, int]:
     """
@@ -568,6 +573,7 @@ def list_videos(
     tags: Optional[List[str]] = None,
     *,
     exclude_tags: bool = False,
+    excluded_tags: Optional[List[str]] = None,
     include_actors: bool = False,
 ) -> Dict[str, Any]:
     page = max(1, page)
@@ -593,7 +599,7 @@ def list_videos(
     if scrape_status:
         conditions.append("v.scrape_status = ?")
         params.append(scrape_status.upper())
-    tag_conditions, tag_params = _tag_filter_conditions("v", tags, exclude=exclude_tags)
+    tag_conditions, tag_params = _tag_filter_conditions("v", tags, exclude=exclude_tags, excluded_tags=excluded_tags)
     conditions.extend(tag_conditions)
     params.extend(tag_params)
 
@@ -1225,7 +1231,8 @@ def get_stats() -> Dict[str, Any]:
             conn.close()
 
 
-def get_recommendations(count: int = 8, tags: Optional[List[str]] = None, *, exclude_tags: bool = False) -> List[Dict[str, Any]]:
+def get_recommendations(count: int = 8, tags: Optional[List[str]] = None, *, exclude_tags: bool = False,
+                        excluded_tags: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Return `count` diverse successful videos with covers (no VR tags).
 
     Uses a single SQL pass: assigns each qualifying video its lexicographically
@@ -1250,7 +1257,9 @@ def get_recommendations(count: int = 8, tags: Optional[List[str]] = None, *, exc
         vr_ids = {r[0] for r in cursor.fetchall()}
 
         # Candidates: one representative row per code, has cover.
-        tag_conditions, tag_params = _tag_filter_conditions("videos", tags, exclude=exclude_tags)
+        tag_conditions, tag_params = _tag_filter_conditions(
+            "videos", tags, exclude=exclude_tags, excluded_tags=excluded_tags,
+        )
         tag_where = "".join(f"\n              AND {condition}" for condition in tag_conditions)
         cursor.execute(
             f"""

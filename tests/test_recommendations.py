@@ -88,6 +88,26 @@ class RecommendationTests(unittest.TestCase):
             included = client.get('/api/videos?tag=Drama').get_json()['items']
             self.assertEqual([item['code'] for item in included], ['LOW-001'])
 
+    def test_include_and_exclude_tags_in_one_filter(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript("""
+                INSERT INTO tags VALUES (3, 'Required'), (4, 'Blocked');
+                DELETE FROM video_tag_link WHERE video_id IN (2, 3);
+                INSERT INTO videos (id, code, cover_path, scrape_status, deleted) VALUES
+                    (4, 'LOW-001', 'cover.jpg', 'SUCCESS', 1),
+                    (5, 'OTHER-001', 'cover.jpg', 'SUCCESS', 0);
+                INSERT INTO video_tag_link VALUES
+                    (1, 3), (2, 1), (2, 3), (3, 4), (4, 4), (5, 1), (5, 2), (5, 3);
+            """)
+        query = [('tag', 'Drama'), ('tag', 'Required'), ('exclude_tag', 'Other'), ('exclude_tag', 'Blocked')]
+        with patch('dal.db_manager.DB_PATH', self.db_path):
+            client = app.test_client()
+            library = client.get('/api/videos', query_string=[*query, ('limit', '1')]).get_json()
+            self.assertEqual(library['total'], 1)
+            self.assertEqual([item['code'] for item in library['items']], ['LOW-001'])
+            recommendations = client.get('/api/recommendations', query_string=query).get_json()
+            self.assertEqual([item['code'] for item in recommendations], ['LOW-001'])
+
     def test_video_list_can_include_actors(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript("""

@@ -122,41 +122,6 @@ button.tag-pill[aria-pressed=true] {
   text-underline-offset: 3px;
 }
 button.tag-pill[aria-pressed=true]:not(:disabled):hover { background: #483423; }
-.tag-filter-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: var(--control-height);
-  padding-inline: 3px;
-  color: var(--ink);
-  font-size: var(--text-small);
-  font-weight: 600;
-  cursor: pointer;
-}
-.tag-filter-switch-track {
-  display: flex;
-  align-items: center;
-  flex: none;
-  width: 34px;
-  height: 20px;
-  padding: 2px;
-  border: 1px solid var(--control-line);
-  border-radius: 999px;
-  background: var(--subtle);
-}
-.tag-filter-switch-track::after {
-  content: "";
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-.tag-filter-switch[aria-checked=true] .tag-filter-switch-track {
-  justify-content: flex-end;
-  border-color: var(--primary);
-  background: var(--primary);
-}
-.tag-filter-switch[aria-checked=true] .tag-filter-switch-track::after { background: var(--on-primary); }
 .tag-count {
   flex: none;
   border-inline-start: 1px solid #685681;
@@ -416,6 +381,13 @@ button.library-extra-tag[aria-pressed=true] {
   color: #d8fff1;
 }
 button.library-extra-tag[aria-pressed=true]:not(:disabled):hover { background: #3d6258; }
+button.tag-pill[data-tag-filter=exclude] {
+  border-color: #dd8795;
+  background: #44232c;
+  color: #ffd2da;
+  text-decoration: none;
+}
+button.tag-pill[data-tag-filter=exclude][aria-pressed=true]:not(:disabled):hover { background: #56303b; }
 @media (pointer: coarse), (max-width: 600px) {
   .library-more-tags summary, button.library-extra-tag { min-height: 44px; }
 }
